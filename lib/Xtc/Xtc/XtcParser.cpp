@@ -15,6 +15,16 @@
 
 namespace xtc {
 
+namespace {
+constexpr uint64_t XTC_METADATA_TITLE_OFFSET = 0x00;
+constexpr uint64_t XTC_METADATA_AUTHOR_OFFSET = 0x80;
+constexpr uint64_t XTC_METADATA_LANGUAGE_OFFSET = 0xE0;
+
+uint64_t metadataBaseOffset(const XtcHeader& header) {
+  return header.metadataOffset != 0 ? header.metadataOffset : sizeof(XtcHeader);
+}
+}  // namespace
+
 XtcParser::XtcParser()
     : m_isOpen(false),
       m_defaultWidth(DISPLAY_WIDTH),
@@ -67,9 +77,17 @@ XtcError XtcParser::open(const char* filepath) {
       m_file.close();
       return m_lastError;
     }
+    m_lastError = readLanguage();
+    if (m_lastError != XtcError::OK) {
+      LOG_DBG("XTC", "Failed to read language: %s", errorToString(m_lastError));
+      // Explicit close() required: member variable persists beyond function scope
+      m_file.close();
+      return m_lastError;
+    }
     // Trim excess capacity from metadata strings
     m_title.shrink_to_fit();
     m_author.shrink_to_fit();
+    m_language.shrink_to_fit();
   }
 
   // Read first page info for default dimensions (no bulk page table allocation)
@@ -105,6 +123,7 @@ void XtcParser::close() {
   m_chapters.clear();
   m_title.clear();
   m_author.clear();
+  m_language.clear();
   m_hasChapters = false;
   memset(&m_header, 0, sizeof(m_header));
 }
@@ -161,8 +180,8 @@ XtcError XtcParser::readHeader() {
 }
 
 XtcError XtcParser::readTitle() {
-  constexpr auto titleOffset = 0x38;
-  if (!m_file.seek(titleOffset)) {
+  const uint64_t titleOffset = metadataBaseOffset(m_header) + XTC_METADATA_TITLE_OFFSET;
+  if (!m_file.seek64(titleOffset)) {
     return XtcError::READ_ERROR;
   }
 
@@ -176,8 +195,8 @@ XtcError XtcParser::readTitle() {
 
 XtcError XtcParser::readAuthor() {
   // Read author as null-terminated UTF-8 string with max length 64, directly following title
-  constexpr auto authorOffset = 0xB8;
-  if (!m_file.seek(authorOffset)) {
+  const uint64_t authorOffset = metadataBaseOffset(m_header) + XTC_METADATA_AUTHOR_OFFSET;
+  if (!m_file.seek64(authorOffset)) {
     return XtcError::READ_ERROR;
   }
 
@@ -186,6 +205,20 @@ XtcError XtcParser::readAuthor() {
   m_author = authorBuf;
 
   LOG_DBG("XTC", "Author: %s", m_author.c_str());
+  return XtcError::OK;
+}
+
+XtcError XtcParser::readLanguage() {
+  const uint64_t languageOffset = metadataBaseOffset(m_header) + XTC_METADATA_LANGUAGE_OFFSET;
+  if (!m_file.seek64(languageOffset)) {
+    return XtcError::READ_ERROR;
+  }
+
+  char languageBuf[16] = {0};
+  m_file.read(languageBuf, sizeof(languageBuf) - 1);
+  m_language = languageBuf;
+
+  LOG_DBG("XTC", "Language: %s", m_language.c_str());
   return XtcError::OK;
 }
 

@@ -91,7 +91,11 @@ bool RecentBooksStore::loadFromFile() {
   if (Storage.exists(RECENT_BOOKS_FILE_JSON)) {
     String json = Storage.readFile(RECENT_BOOKS_FILE_JSON);
     if (!json.isEmpty()) {
-      return JsonSettingsIO::loadRecentBooks(*this, json.c_str());
+      if (JsonSettingsIO::loadRecentBooks(*this, json.c_str())) {
+        refreshXtcBookData();
+        return true;
+      }
+      return false;
     }
   }
 
@@ -106,6 +110,37 @@ bool RecentBooksStore::loadFromFile() {
   }
 
   return false;
+}
+
+bool RecentBooksStore::refreshXtcBookData() {
+  bool changed = false;
+
+  for (RecentBook& book : recentBooks) {
+    const size_t lastSlash = book.path.find_last_of('/');
+    const std::string filename = lastSlash == std::string::npos ? book.path : book.path.substr(lastSlash + 1);
+    if (!FsHelpers::hasXtcExtension(filename)) {
+      continue;
+    }
+
+    RecentBook freshBook = getDataFromBook(book.path);
+    if (freshBook.title.empty()) {
+      continue;
+    }
+
+    if (book.title != freshBook.title || book.author != freshBook.author ||
+        book.coverBmpPath != freshBook.coverBmpPath) {
+      book.title = freshBook.title;
+      book.author = freshBook.author;
+      book.coverBmpPath = freshBook.coverBmpPath;
+      changed = true;
+    }
+  }
+
+  if (changed) {
+    saveToFile();
+  }
+
+  return changed;
 }
 
 bool RecentBooksStore::loadFromBinaryFile() {

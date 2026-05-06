@@ -9,6 +9,7 @@
 
 #include <Xtc.h>
 
+#include "ReaderMenuActivity.h"
 #include "activities/Activity.h"
 
 class XtcReaderActivity final : public Activity {
@@ -16,10 +17,19 @@ class XtcReaderActivity final : public Activity {
 
   uint32_t currentPage = 0;
   int pagesUntilFullRefresh = 0;
+  unsigned long lastPageTurnTime = 0UL;
+  unsigned long pageTurnDuration = 0UL;
+  bool automaticPageTurnActive = false;
+  bool pendingScreenshot = false;
 
   void renderPage();
   void saveProgress() const;
   void loadProgress();
+  void openReaderMenu();
+  void onReaderMenuConfirm(ReaderMenuActivity::MenuAction action);
+  void toggleAutoPageTurn(uint8_t selectedPageTurnOption);
+  void pageTurn(bool isForwardTurn, bool skipPages);
+  void jumpToPercent(int percent);
 
  public:
   explicit XtcReaderActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, std::unique_ptr<Xtc> xtc)

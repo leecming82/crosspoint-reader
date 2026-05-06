@@ -153,18 +153,26 @@ void EpubReaderActivity::loop() {
       bookProgress = epub->calculateProgress(currentSpineIndex, chapterProgress) * 100.0f;
     }
     const int bookProgressPercent = clampPercent(static_cast<int>(bookProgress + 0.5f));
-    startActivityForResult(std::make_unique<EpubReaderMenuActivity>(
-                               renderer, mappedInput, epub->getTitle(), currentPage, totalPages, bookProgressPercent,
-                               SETTINGS.orientation, !currentPageFootnotes.empty()),
-                           [this](const ActivityResult& result) {
-                             // Always apply orientation change even if the menu was cancelled
-                             const auto& menu = std::get<MenuResult>(result.data);
-                             applyOrientation(menu.orientation);
-                             toggleAutoPageTurn(menu.pageTurnOption);
-                             if (!result.isCancelled) {
-                               onReaderMenuConfirm(static_cast<EpubReaderMenuActivity::MenuAction>(menu.action));
-                             }
-                           });
+    uint16_t options = ReaderMenuActivity::OPTION_SELECT_CHAPTER | ReaderMenuActivity::OPTION_GO_TO_PERCENT |
+                       ReaderMenuActivity::OPTION_AUTO_PAGE_TURN | ReaderMenuActivity::OPTION_ROTATE_SCREEN |
+                       ReaderMenuActivity::OPTION_SCREENSHOT | ReaderMenuActivity::OPTION_DISPLAY_QR |
+                       ReaderMenuActivity::OPTION_GO_HOME | ReaderMenuActivity::OPTION_SYNC |
+                       ReaderMenuActivity::OPTION_DELETE_CACHE;
+    if (!currentPageFootnotes.empty()) {
+      options |= ReaderMenuActivity::OPTION_FOOTNOTES;
+    }
+    startActivityForResult(
+        std::make_unique<ReaderMenuActivity>(renderer, mappedInput, epub->getTitle(), currentPage, totalPages,
+                                             bookProgressPercent, SETTINGS.orientation, options, true),
+        [this](const ActivityResult& result) {
+          // Always apply orientation change even if the menu was cancelled
+          const auto& menu = std::get<MenuResult>(result.data);
+          applyOrientation(menu.orientation);
+          toggleAutoPageTurn(menu.pageTurnOption);
+          if (!result.isCancelled) {
+            onReaderMenuConfirm(static_cast<ReaderMenuActivity::MenuAction>(menu.action));
+          }
+        });
   }
 
   // Long press BACK (1s+) goes to file selection
@@ -306,9 +314,9 @@ void EpubReaderActivity::jumpToPercent(int percent) {
   }
 }
 
-void EpubReaderActivity::onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction action) {
+void EpubReaderActivity::onReaderMenuConfirm(ReaderMenuActivity::MenuAction action) {
   switch (action) {
-    case EpubReaderMenuActivity::MenuAction::SELECT_CHAPTER: {
+    case ReaderMenuActivity::MenuAction::SELECT_CHAPTER: {
       const int spineIdx = currentSpineIndex;
       const std::string path = epub->getPath();
       startActivityForResult(
@@ -323,7 +331,7 @@ void EpubReaderActivity::onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction 
           });
       break;
     }
-    case EpubReaderMenuActivity::MenuAction::FOOTNOTES: {
+    case ReaderMenuActivity::MenuAction::FOOTNOTES: {
       startActivityForResult(std::make_unique<EpubReaderFootnotesActivity>(renderer, mappedInput, currentPageFootnotes),
                              [this](const ActivityResult& result) {
                                if (!result.isCancelled) {
@@ -334,7 +342,7 @@ void EpubReaderActivity::onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction 
                              });
       break;
     }
-    case EpubReaderMenuActivity::MenuAction::GO_TO_PERCENT: {
+    case ReaderMenuActivity::MenuAction::GO_TO_PERCENT: {
       float bookProgress = 0.0f;
       if (epub && epub->getBookSize() > 0 && section && section->pageCount > 0) {
         const float chapterProgress = static_cast<float>(section->currentPage) / static_cast<float>(section->pageCount);
@@ -350,7 +358,7 @@ void EpubReaderActivity::onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction 
           });
       break;
     }
-    case EpubReaderMenuActivity::MenuAction::DISPLAY_QR: {
+    case ReaderMenuActivity::MenuAction::DISPLAY_QR: {
       if (section && section->currentPage >= 0 && section->currentPage < section->pageCount) {
         auto p = section->loadPageFromSectionFile();
         if (p) {
@@ -378,11 +386,11 @@ void EpubReaderActivity::onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction 
       requestUpdate();
       break;
     }
-    case EpubReaderMenuActivity::MenuAction::GO_HOME: {
+    case ReaderMenuActivity::MenuAction::GO_HOME: {
       onGoHome();
       return;
     }
-    case EpubReaderMenuActivity::MenuAction::DELETE_CACHE: {
+    case ReaderMenuActivity::MenuAction::DELETE_CACHE: {
       {
         RenderLock lock(*this);
         if (epub && section) {
@@ -398,7 +406,7 @@ void EpubReaderActivity::onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction 
       onGoHome();
       return;
     }
-    case EpubReaderMenuActivity::MenuAction::SCREENSHOT: {
+    case ReaderMenuActivity::MenuAction::SCREENSHOT: {
       {
         RenderLock lock(*this);
         pendingScreenshot = true;
@@ -406,7 +414,7 @@ void EpubReaderActivity::onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction 
       requestUpdate();
       break;
     }
-    case EpubReaderMenuActivity::MenuAction::SYNC: {
+    case ReaderMenuActivity::MenuAction::SYNC: {
       if (KOREADER_STORE.hasCredentials()) {
         const int currentPage = section ? section->currentPage : nextPageNumber;
         const int totalPages = section ? section->pageCount : cachedChapterTotalPageCount;

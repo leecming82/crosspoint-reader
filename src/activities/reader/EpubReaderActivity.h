@@ -5,7 +5,7 @@
 
 #include <optional>
 
-#include "EpubReaderMenuActivity.h"
+#include "ReaderMenuActivity.h"
 #include "activities/Activity.h"
 
 class EpubReaderActivity final : public Activity {
@@ -48,7 +48,7 @@ class EpubReaderActivity final : public Activity {
   void saveProgress(int spineIndex, int currentPage, int pageCount);
   // Jump to a percentage of the book (0-100), mapping it to spine and page.
   void jumpToPercent(int percent);
-  void onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction action);
+  void onReaderMenuConfirm(ReaderMenuActivity::MenuAction action);
   void applyOrientation(uint8_t orientation);
   void toggleAutoPageTurn(uint8_t selectedPageTurnOption);
   void pageTurn(bool isForwardTurn);

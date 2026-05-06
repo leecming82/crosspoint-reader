@@ -12,14 +12,33 @@
 #include <HalStorage.h>
 #include <I18n.h>
 
+#include <iterator>
+
 #include "CrossPointSettings.h"
 #include "CrossPointState.h"
+#include "EpubReaderPercentSelectionActivity.h"
 #include "MappedInputManager.h"
+#include "ReaderMenuActivity.h"
 #include "ReaderUtils.h"
 #include "RecentBooksStore.h"
 #include "XtcReaderChapterSelectionActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "util/ScreenshotUtil.h"
+
+namespace {
+constexpr int PAGE_TURN_RATES[] = {1, 1, 3, 6, 12};
+
+int clampPercent(int percent) {
+  if (percent < 0) {
+    return 0;
+  }
+  if (percent > 100) {
+    return 100;
+  }
+  return percent;
+}
+}  // namespace
 
 void XtcReaderActivity::onEnter() {
   Activity::onEnter();
@@ -51,17 +70,40 @@ void XtcReaderActivity::onExit() {
 }
 
 void XtcReaderActivity::loop() {
-  // Enter chapter selection activity
-  if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
-    if (xtc && xtc->hasChapters() && !xtc->getChapters().empty()) {
-      startActivityForResult(
-          std::make_unique<XtcReaderChapterSelectionActivity>(renderer, mappedInput, xtc, currentPage),
-          [this](const ActivityResult& result) {
-            if (!result.isCancelled) {
-              currentPage = std::get<PageResult>(result.data).page;
-            }
-          });
+  if (!xtc) {
+    finish();
+    return;
+  }
+
+  if (automaticPageTurnActive) {
+    if (currentPage >= xtc->getPageCount()) {
+      automaticPageTurnActive = false;
+      requestUpdate();
+      return;
     }
+
+    if (mappedInput.wasReleased(MappedInputManager::Button::Confirm) ||
+        mappedInput.wasReleased(MappedInputManager::Button::Back)) {
+      automaticPageTurnActive = false;
+      requestUpdate();
+      return;
+    }
+
+    if (RenderLock::peek()) {
+      lastPageTurnTime = millis();
+      return;
+    }
+
+    if ((millis() - lastPageTurnTime) >= pageTurnDuration) {
+      pageTurn(true, false);
+      return;
+    }
+  }
+
+  // Enter reader menu activity
+  if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
+    openReaderMenu();
+    return;
   }
 
   // Long press BACK (1s+) goes to file selection
@@ -95,22 +137,8 @@ void XtcReaderActivity::loop() {
 
   const bool skipPages = !fromTilt && SETTINGS.longPressButtonBehavior == SETTINGS.CHAPTER_SKIP &&
                          mappedInput.getHeldTime() > ReaderUtils::SKIP_HOLD_MS;
-  const int skipAmount = skipPages ? 10 : 1;
 
-  if (prevTriggered) {
-    if (currentPage >= static_cast<uint32_t>(skipAmount)) {
-      currentPage -= skipAmount;
-    } else {
-      currentPage = 0;
-    }
-    requestUpdate();
-  } else if (nextTriggered) {
-    currentPage += skipAmount;
-    if (currentPage >= xtc->getPageCount()) {
-      currentPage = xtc->getPageCount();  // Allow showing "End of book"
-    }
-    requestUpdate();
-  }
+  pageTurn(nextTriggered, skipPages);
 }
 
 void XtcReaderActivity::render(RenderLock&&) {
@@ -128,7 +156,121 @@ void XtcReaderActivity::render(RenderLock&&) {
   }
 
   renderPage();
+  if (pendingScreenshot) {
+    pendingScreenshot = false;
+    ScreenshotUtil::takeScreenshot(renderer);
+  }
   saveProgress();
+}
+
+void XtcReaderActivity::openReaderMenu() {
+  uint16_t options = ReaderMenuActivity::OPTION_GO_TO_PERCENT | ReaderMenuActivity::OPTION_AUTO_PAGE_TURN |
+                     ReaderMenuActivity::OPTION_SCREENSHOT | ReaderMenuActivity::OPTION_GO_HOME;
+  if (xtc->hasChapters() && !xtc->getChapters().empty()) {
+    options |= ReaderMenuActivity::OPTION_SELECT_CHAPTER;
+  }
+
+  const uint32_t pageCount = xtc->getPageCount();
+  const uint32_t clampedPage = (pageCount > 0 && currentPage >= pageCount) ? pageCount - 1 : currentPage;
+  const int currentPageDisplay = pageCount > 0 ? static_cast<int>(clampedPage) + 1 : 0;
+  const int progress = pageCount > 0 ? xtc->calculateProgress(clampedPage) : 0;
+
+  startActivityForResult(
+      std::make_unique<ReaderMenuActivity>(renderer, mappedInput, xtc->getTitle(), currentPageDisplay,
+                                           static_cast<int>(pageCount), progress, SETTINGS.orientation, options),
+      [this](const ActivityResult& result) {
+        const auto& menu = std::get<MenuResult>(result.data);
+        toggleAutoPageTurn(menu.pageTurnOption);
+        if (!result.isCancelled) {
+          onReaderMenuConfirm(static_cast<ReaderMenuActivity::MenuAction>(menu.action));
+        }
+      });
+}
+
+void XtcReaderActivity::onReaderMenuConfirm(const ReaderMenuActivity::MenuAction action) {
+  switch (action) {
+    case ReaderMenuActivity::MenuAction::SELECT_CHAPTER: {
+      if (xtc && xtc->hasChapters() && !xtc->getChapters().empty()) {
+        startActivityForResult(
+            std::make_unique<XtcReaderChapterSelectionActivity>(renderer, mappedInput, xtc, currentPage),
+            [this](const ActivityResult& result) {
+              if (!result.isCancelled) {
+                currentPage = std::get<PageResult>(result.data).page;
+                requestUpdate();
+              }
+            });
+      }
+      break;
+    }
+    case ReaderMenuActivity::MenuAction::GO_TO_PERCENT: {
+      const uint32_t pageCount = xtc ? xtc->getPageCount() : 0;
+      const uint32_t clampedPage = (pageCount > 0 && currentPage >= pageCount) ? pageCount - 1 : currentPage;
+      const int initialPercent = pageCount > 0 ? xtc->calculateProgress(clampedPage) : 0;
+      startActivityForResult(
+          std::make_unique<EpubReaderPercentSelectionActivity>(renderer, mappedInput, initialPercent),
+          [this](const ActivityResult& result) {
+            if (!result.isCancelled) {
+              jumpToPercent(std::get<PercentResult>(result.data).percent);
+            }
+          });
+      break;
+    }
+    case ReaderMenuActivity::MenuAction::SCREENSHOT: {
+      pendingScreenshot = true;
+      requestUpdate();
+      break;
+    }
+    case ReaderMenuActivity::MenuAction::GO_HOME: {
+      onGoHome();
+      return;
+    }
+    default:
+      break;
+  }
+}
+
+void XtcReaderActivity::toggleAutoPageTurn(const uint8_t selectedPageTurnOption) {
+  if (selectedPageTurnOption == 0 || selectedPageTurnOption >= std::size(PAGE_TURN_RATES)) {
+    automaticPageTurnActive = false;
+    return;
+  }
+
+  lastPageTurnTime = millis();
+  pageTurnDuration = (1UL * 60 * 1000) / PAGE_TURN_RATES[selectedPageTurnOption];
+  automaticPageTurnActive = true;
+}
+
+void XtcReaderActivity::pageTurn(const bool isForwardTurn, const bool skipPages) {
+  const uint32_t pageCount = xtc->getPageCount();
+  const uint32_t skipAmount = skipPages ? 10 : 1;
+
+  if (isForwardTurn) {
+    currentPage += skipAmount;
+    if (currentPage >= pageCount) {
+      currentPage = pageCount;
+    }
+  } else if (currentPage >= skipAmount) {
+    currentPage -= skipAmount;
+  } else {
+    currentPage = 0;
+  }
+
+  lastPageTurnTime = millis();
+  requestUpdate();
+}
+
+void XtcReaderActivity::jumpToPercent(int percent) {
+  if (!xtc) {
+    return;
+  }
+  const uint32_t pageCount = xtc->getPageCount();
+  if (pageCount == 0) {
+    return;
+  }
+
+  percent = clampPercent(percent);
+  currentPage = static_cast<uint32_t>((static_cast<uint64_t>(pageCount - 1) * static_cast<uint32_t>(percent)) / 100);
+  requestUpdate();
 }
 
 void XtcReaderActivity::renderPage() {

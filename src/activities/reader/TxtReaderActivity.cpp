@@ -7,19 +7,35 @@
 #include <Serialization.h>
 #include <Utf8.h>
 
+#include <iterator>
+
 #include "CrossPointSettings.h"
 #include "CrossPointState.h"
+#include "EpubReaderPercentSelectionActivity.h"
 #include "MappedInputManager.h"
+#include "ReaderMenuActivity.h"
 #include "ReaderUtils.h"
 #include "RecentBooksStore.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "util/ScreenshotUtil.h"
 
 namespace {
 constexpr size_t CHUNK_SIZE = 8 * 1024;  // 8KB chunk for reading
 // Cache file magic and version
 constexpr uint32_t CACHE_MAGIC = 0x54585449;  // "TXTI"
 constexpr uint8_t CACHE_VERSION = 2;          // Increment when cache format changes
+constexpr int PAGE_TURN_RATES[] = {1, 1, 3, 6, 12};
+
+int clampPercent(int percent) {
+  if (percent < 0) {
+    return 0;
+  }
+  if (percent > 100) {
+    return 100;
+  }
+  return percent;
+}
 }  // namespace
 
 void TxtReaderActivity::onEnter() {
@@ -58,6 +74,35 @@ void TxtReaderActivity::onExit() {
 }
 
 void TxtReaderActivity::loop() {
+  if (!txt) {
+    finish();
+    return;
+  }
+
+  if (automaticPageTurnActive) {
+    if (mappedInput.wasReleased(MappedInputManager::Button::Confirm) ||
+        mappedInput.wasReleased(MappedInputManager::Button::Back)) {
+      automaticPageTurnActive = false;
+      requestUpdate();
+      return;
+    }
+
+    if (RenderLock::peek()) {
+      lastPageTurnTime = millis();
+      return;
+    }
+
+    if ((millis() - lastPageTurnTime) >= pageTurnDuration) {
+      pageTurn(true);
+      return;
+    }
+  }
+
+  if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
+    openReaderMenu();
+    return;
+  }
+
   // Long press BACK (1s+) goes to file selection
   if (mappedInput.isPressed(MappedInputManager::Button::Back) && mappedInput.getHeldTime() >= ReaderUtils::GO_HOME_MS) {
     activityManager.goToFileBrowser(txt ? txt->getPath() : "");
@@ -76,17 +121,110 @@ void TxtReaderActivity::loop() {
     return;
   }
 
-  if (prevTriggered && currentPage > 0) {
-    currentPage--;
-    requestUpdate();
+  if (prevTriggered) {
+    pageTurn(false);
   } else if (nextTriggered) {
+    pageTurn(true);
+  }
+}
+
+void TxtReaderActivity::openReaderMenu() {
+  const uint16_t options = ReaderMenuActivity::OPTION_GO_TO_PERCENT | ReaderMenuActivity::OPTION_ROTATE_SCREEN |
+                           ReaderMenuActivity::OPTION_AUTO_PAGE_TURN | ReaderMenuActivity::OPTION_SCREENSHOT |
+                           ReaderMenuActivity::OPTION_GO_HOME;
+  const int progress = totalPages > 0 ? static_cast<int>((currentPage + 1) * 100.0f / totalPages + 0.5f) : 0;
+  startActivityForResult(std::make_unique<ReaderMenuActivity>(renderer, mappedInput, txt->getTitle(), currentPage + 1,
+                                                              totalPages, progress, SETTINGS.orientation, options),
+                         [this](const ActivityResult& result) {
+                           const auto& menu = std::get<MenuResult>(result.data);
+                           applyOrientation(menu.orientation);
+                           toggleAutoPageTurn(menu.pageTurnOption);
+                           if (!result.isCancelled) {
+                             onReaderMenuConfirm(static_cast<ReaderMenuActivity::MenuAction>(menu.action));
+                           }
+                         });
+}
+
+void TxtReaderActivity::onReaderMenuConfirm(const ReaderMenuActivity::MenuAction action) {
+  switch (action) {
+    case ReaderMenuActivity::MenuAction::GO_TO_PERCENT: {
+      const int initialPercent = totalPages > 0 ? static_cast<int>((currentPage + 1) * 100.0f / totalPages + 0.5f) : 0;
+      startActivityForResult(
+          std::make_unique<EpubReaderPercentSelectionActivity>(renderer, mappedInput, initialPercent),
+          [this](const ActivityResult& result) {
+            if (!result.isCancelled) {
+              jumpToPercent(std::get<PercentResult>(result.data).percent);
+            }
+          });
+      break;
+    }
+    case ReaderMenuActivity::MenuAction::SCREENSHOT: {
+      pendingScreenshot = true;
+      requestUpdate();
+      break;
+    }
+    case ReaderMenuActivity::MenuAction::GO_HOME: {
+      onGoHome();
+      return;
+    }
+    default:
+      break;
+  }
+}
+
+void TxtReaderActivity::applyOrientation(const uint8_t orientation) {
+  if (SETTINGS.orientation == orientation) {
+    return;
+  }
+
+  {
+    RenderLock lock(*this);
+    SETTINGS.orientation = orientation;
+    SETTINGS.saveToFile();
+    ReaderUtils::applyOrientation(renderer, SETTINGS.orientation);
+    saveProgress();
+    pageOffsets.clear();
+    currentPageLines.clear();
+    initialized = false;
+  }
+}
+
+void TxtReaderActivity::toggleAutoPageTurn(const uint8_t selectedPageTurnOption) {
+  if (selectedPageTurnOption == 0 || selectedPageTurnOption >= std::size(PAGE_TURN_RATES)) {
+    automaticPageTurnActive = false;
+    return;
+  }
+
+  lastPageTurnTime = millis();
+  pageTurnDuration = (1UL * 60 * 1000) / PAGE_TURN_RATES[selectedPageTurnOption];
+  automaticPageTurnActive = true;
+}
+
+void TxtReaderActivity::pageTurn(const bool isForwardTurn) {
+  if (isForwardTurn) {
     if (currentPage < totalPages - 1) {
       currentPage++;
+      lastPageTurnTime = millis();
       requestUpdate();
     } else {
+      automaticPageTurnActive = false;
       onGoHome();
     }
+  } else if (currentPage > 0) {
+    currentPage--;
+    lastPageTurnTime = millis();
+    requestUpdate();
   }
+}
+
+void TxtReaderActivity::jumpToPercent(int percent) {
+  if (totalPages <= 0) {
+    return;
+  }
+
+  percent = clampPercent(percent);
+  currentPage = static_cast<int>(((totalPages - 1) * static_cast<int32_t>(percent)) / 100);
+  requestUpdate();
 }
 
 void TxtReaderActivity::initializeReader() {
@@ -328,6 +466,10 @@ void TxtReaderActivity::render(RenderLock&&) {
 
   // Save progress
   saveProgress();
+  if (pendingScreenshot) {
+    pendingScreenshot = false;
+    ScreenshotUtil::takeScreenshot(renderer);
+  }
 }
 
 void TxtReaderActivity::renderPage() {

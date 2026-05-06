@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "CrossPointSettings.h"
+#include "ReaderMenuActivity.h"
 #include "activities/Activity.h"
 
 class TxtReaderActivity final : public Activity {
@@ -13,6 +14,10 @@ class TxtReaderActivity final : public Activity {
   int currentPage = 0;
   int totalPages = 1;
   int pagesUntilFullRefresh = 0;
+  unsigned long lastPageTurnTime = 0UL;
+  unsigned long pageTurnDuration = 0UL;
+  bool automaticPageTurnActive = false;
+  bool pendingScreenshot = false;
 
   // Streaming text reader - stores file offsets for each page
   std::vector<size_t> pageOffsets;  // File offset for start of each page
@@ -32,6 +37,12 @@ class TxtReaderActivity final : public Activity {
 
   void renderPage();
   void renderStatusBar() const;
+  void openReaderMenu();
+  void onReaderMenuConfirm(ReaderMenuActivity::MenuAction action);
+  void applyOrientation(uint8_t orientation);
+  void toggleAutoPageTurn(uint8_t selectedPageTurnOption);
+  void pageTurn(bool isForwardTurn);
+  void jumpToPercent(int percent);
 
   void initializeReader();
   bool loadPageAtOffset(size_t offset, std::vector<std::string>& outLines, size_t& nextOffset);

@@ -50,6 +50,7 @@ class RecentBooksStore {
 
  private:
   bool loadFromBinaryFile();
+  bool refreshXtcBookData();
 };
 
 // Helper macro to access recent books store

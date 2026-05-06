@@ -11,6 +11,44 @@
 #include <HalStorage.h>
 #include <Logging.h>
 
+namespace {
+std::string titleFromFilename(const std::string& filepath) {
+  size_t lastSlash = filepath.find_last_of('/');
+  size_t lastDot = filepath.find_last_of('.');
+
+  if (lastSlash == std::string::npos) {
+    lastSlash = 0;
+  } else {
+    lastSlash++;
+  }
+
+  if (lastDot == std::string::npos || lastDot <= lastSlash) {
+    return filepath.substr(lastSlash);
+  }
+
+  return filepath.substr(lastSlash, lastDot - lastSlash);
+}
+
+bool isEnglishLanguageTag(const std::string& language) {
+  if (language.empty()) {
+    return true;
+  }
+
+  std::string primaryTag;
+  for (char c : language) {
+    if (c == '-' || c == '_') {
+      break;
+    }
+    if (c >= 'A' && c <= 'Z') {
+      c = static_cast<char>(c - 'A' + 'a');
+    }
+    primaryTag.push_back(c);
+  }
+
+  return primaryTag == "en" || primaryTag == "eng";
+}
+}  // namespace
+
 bool Xtc::load() {
   LOG_DBG("XTC", "Loading XTC: %s", filepath.c_str());
 
@@ -64,31 +102,25 @@ std::string Xtc::getTitle() const {
     return "";
   }
 
+  if (!isEnglishLanguageTag(parser->getLanguage())) {
+    return titleFromFilename(filepath);
+  }
+
   // Try to get title from XTC metadata first
   std::string title = parser->getTitle();
   if (!title.empty()) {
     return title;
   }
 
-  // Fallback: extract filename from path as title
-  size_t lastSlash = filepath.find_last_of('/');
-  size_t lastDot = filepath.find_last_of('.');
-
-  if (lastSlash == std::string::npos) {
-    lastSlash = 0;
-  } else {
-    lastSlash++;
-  }
-
-  if (lastDot == std::string::npos || lastDot <= lastSlash) {
-    return filepath.substr(lastSlash);
-  }
-
-  return filepath.substr(lastSlash, lastDot - lastSlash);
+  return titleFromFilename(filepath);
 }
 
 std::string Xtc::getAuthor() const {
   if (!loaded || !parser) {
+    return "";
+  }
+
+  if (!isEnglishLanguageTag(parser->getLanguage())) {
     return "";
   }
 
