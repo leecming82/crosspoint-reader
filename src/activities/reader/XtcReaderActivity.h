@@ -9,6 +9,8 @@
 
 #include <Xtc.h>
 
+#include <string>
+
 #include "activities/Activity.h"
 
 class XtcReaderActivity final : public Activity {
@@ -17,7 +19,16 @@ class XtcReaderActivity final : public Activity {
   uint32_t currentPage = 0;
   int pagesUntilFullRefresh = 0;
 
+  enum class StatusBarOverlayPosition { Bottom, Top };
+  struct StatusBarPageInfo {
+    int currentPage;
+    int pageCount;
+  };
+
   void renderPage();
+  void renderStatusBarOverlay(StatusBarOverlayPosition position) const;
+  std::string getStatusBarTitle() const;
+  StatusBarPageInfo getStatusBarPageInfo() const;
   void saveProgress() const;
   void loadProgress();
 
