@@ -134,12 +134,12 @@ void XtcReaderActivity::render(RenderLock&&) {
 }
 
 XtcReaderActivity::StatusBarInfo XtcReaderActivity::getStatusBarInfo() const {
-  const int bookPageCount = xtc ? static_cast<int>(xtc->getPageCount()) : 0;
+  const int bookPageCount = static_cast<int>(xtc->getPageCount());
   const int bookPage = static_cast<int>(currentPage) + 1;
   std::string title =
-      xtc && SETTINGS.statusBarTitle == CrossPointSettings::STATUS_BAR_TITLE::BOOK_TITLE ? xtc->getTitle() : "";
+      SETTINGS.statusBarTitle == CrossPointSettings::STATUS_BAR_TITLE::BOOK_TITLE ? xtc->getTitle() : "";
 
-  if (!xtc || !xtc->hasChapters()) {
+  if (!xtc->hasChapters()) {
     return StatusBarInfo{bookPage, bookPageCount, std::move(title)};
   }
 
