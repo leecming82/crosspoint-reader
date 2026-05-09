@@ -106,6 +106,9 @@ void EpubReaderActivity::onExit() {
 
   // Reset orientation back to portrait for the rest of the UI
   renderer.setOrientation(GfxRenderer::Orientation::Portrait);
+  if (auto* fcm = renderer.getFontCacheManager()) {
+    fcm->clearPersistentCache();
+  }
 
   APP_STATE.readerActivityLoadCount = 0;
   APP_STATE.saveToFile();
