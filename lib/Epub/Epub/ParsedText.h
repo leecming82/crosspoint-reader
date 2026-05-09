@@ -32,6 +32,9 @@ class ParsedText {
                    const std::function<void(std::shared_ptr<TextBlock>)>& processLine, const GfxRenderer& renderer,
                    int fontId);
   std::vector<uint16_t> calculateWordWidths(const GfxRenderer& renderer, int fontId);
+  bool shouldUseCjkWrapper() const;
+  void layoutAndExtractCjkLines(const GfxRenderer& renderer, int fontId, int pageWidth,
+                                const std::function<void(std::shared_ptr<TextBlock>)>& processLine);
 
  public:
   explicit ParsedText(const bool extraParagraphSpacing, const bool hyphenationEnabled = false,

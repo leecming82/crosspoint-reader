@@ -19,6 +19,19 @@ namespace {
 constexpr char SOFT_HYPHEN_UTF8[] = "\xC2\xAD";
 constexpr size_t SOFT_HYPHEN_BYTES = 2;
 
+struct CjkUnit {
+  size_t wordIndex;
+  size_t startByte;
+  size_t endByte;
+  uint32_t firstCp;
+  uint32_t lastCp;
+  uint16_t width;
+  bool noGapBefore;
+  bool noBreakBefore;
+  bool isCjk;
+  EpdFontFamily::Style style;
+};
+
 // Returns the first rendered codepoint of a word (skipping leading soft hyphens).
 uint32_t firstCodepoint(const std::string& word) {
   const auto* ptr = reinterpret_cast<const unsigned char*>(word.c_str());
@@ -48,6 +61,114 @@ void stripSoftHyphensInPlace(std::string& word) {
   size_t pos = 0;
   while ((pos = word.find(SOFT_HYPHEN_UTF8, pos)) != std::string::npos) {
     word.erase(pos, SOFT_HYPHEN_BYTES);
+  }
+}
+
+bool isCjkCodepoint(const uint32_t cp) {
+  return (cp >= 0x3040 && cp <= 0x30FF) ||  // Hiragana + Katakana
+         (cp >= 0x31F0 && cp <= 0x31FF) ||  // Katakana phonetic extensions
+         (cp >= 0x3400 && cp <= 0x4DBF) ||  // CJK extension A
+         (cp >= 0x4E00 && cp <= 0x9FFF) ||  // CJK unified ideographs
+         (cp >= 0xF900 && cp <= 0xFAFF) ||  // CJK compatibility ideographs
+         (cp >= 0xFF00 && cp <= 0xFFEF) ||  // Fullwidth forms
+         (cp >= 0x20000 && cp <= 0x2FA1F);  // CJK extensions B-F + compatibility supplement
+}
+
+bool isCjkNoLineStart(const uint32_t cp) {
+  switch (cp) {
+    case 0x0021:  // !
+    case 0x0025:  // %
+    case 0x0029:  // )
+    case 0x002C:  // ,
+    case 0x002E:  // .
+    case 0x003F:  // ?
+    case 0x005D:  // ]
+    case 0x007D:  // }
+    case 0x00A2:
+    case 0x00B0:
+    case 0x2019:
+    case 0x201D:
+    case 0x2026:
+    case 0x3001:  // 、
+    case 0x3002:  // 。
+    case 0x3005:
+    case 0x3009:
+    case 0x300B:
+    case 0x300D:
+    case 0x300F:
+    case 0x3011:
+    case 0x3015:
+    case 0x3017:
+    case 0x3019:
+    case 0x301B:
+    case 0x301F:
+    case 0x3041:
+    case 0x3043:
+    case 0x3045:
+    case 0x3047:
+    case 0x3049:
+    case 0x3063:
+    case 0x3083:
+    case 0x3085:
+    case 0x3087:
+    case 0x308E:
+    case 0x309D:
+    case 0x309E:
+    case 0x30A1:
+    case 0x30A3:
+    case 0x30A5:
+    case 0x30A7:
+    case 0x30A9:
+    case 0x30C3:
+    case 0x30E3:
+    case 0x30E5:
+    case 0x30E7:
+    case 0x30EE:
+    case 0x30F5:
+    case 0x30F6:
+    case 0x30FC:
+    case 0x30FD:
+    case 0x30FE:
+    case 0xFF01:
+    case 0xFF05:
+    case 0xFF09:
+    case 0xFF0C:
+    case 0xFF0E:
+    case 0xFF1F:
+    case 0xFF3D:
+    case 0xFF5D:
+    case 0xFF60:
+    case 0xFFE0:
+      return true;
+    default:
+      return false;
+  }
+}
+
+bool isCjkNoLineEnd(const uint32_t cp) {
+  switch (cp) {
+    case 0x0028:  // (
+    case 0x005B:  // [
+    case 0x007B:  // {
+    case 0x2018:
+    case 0x201C:
+    case 0x3008:
+    case 0x300A:
+    case 0x300C:
+    case 0x300E:
+    case 0x3010:
+    case 0x3014:
+    case 0x3016:
+    case 0x3018:
+    case 0x301A:
+    case 0x301D:
+    case 0xFF08:
+    case 0xFF3B:
+    case 0xFF5B:
+    case 0xFF5F:
+      return true;
+    default:
+      return false;
   }
 }
 
@@ -132,6 +253,11 @@ void ParsedText::layoutAndExtractLines(const GfxRenderer& renderer, const int fo
   }
 
   const int pageWidth = viewportWidth;
+  if (includeLastLine && shouldUseCjkWrapper()) {
+    layoutAndExtractCjkLines(renderer, fontId, pageWidth, processLine);
+    return;
+  }
+
   auto wordWidths = calculateWordWidths(renderer, fontId);
 
   std::vector<size_t> lineBreakIndices;
@@ -154,6 +280,235 @@ void ParsedText::layoutAndExtractLines(const GfxRenderer& renderer, const int fo
     wordStyles.erase(wordStyles.begin(), wordStyles.begin() + consumed);
     wordContinues.erase(wordContinues.begin(), wordContinues.begin() + consumed);
   }
+}
+
+bool ParsedText::shouldUseCjkWrapper() const {
+  size_t cjkCount = 0;
+  size_t otherLetterCount = 0;
+
+  for (const auto& word : words) {
+    const auto* ptr = reinterpret_cast<const unsigned char*>(word.c_str());
+    while (const uint32_t cp = utf8NextCodepoint(&ptr)) {
+      if (cp == 0x00AD || cp <= 0x20) {
+        continue;
+      }
+      if (isCjkCodepoint(cp)) {
+        ++cjkCount;
+      } else {
+        ++otherLetterCount;
+      }
+    }
+  }
+
+  return cjkCount >= 8 && cjkCount >= otherLetterCount;
+}
+
+void ParsedText::layoutAndExtractCjkLines(const GfxRenderer& renderer, const int fontId, const int pageWidth,
+                                          const std::function<void(std::shared_ptr<TextBlock>)>& processLine) {
+  std::vector<CjkUnit> units;
+  size_t byteCount = 0;
+  for (const auto& word : words) {
+    byteCount += word.size();
+  }
+  units.reserve(byteCount / 3 + words.size());
+
+  // Rotated tategaki fonts can report very narrow advances for kana/punctuation. Use a representative
+  // full-width glyph as the CJK cell, with a conservative line-height fallback when the glyph is absent.
+  const int representativeCjkAdvance =
+      std::max(renderer.getTextAdvanceX(fontId, "\xe6\x97\xa5", EpdFontFamily::REGULAR),   // 日
+               renderer.getTextAdvanceX(fontId, "\xe3\x81\x82", EpdFontFamily::REGULAR));  // あ
+  const int cjkCellAdvance =
+      std::max(1, representativeCjkAdvance > 0 ? representativeCjkAdvance : renderer.getLineHeight(fontId) * 9 / 10);
+
+  // Refine the parser's coarse "words" into layout units. CJK text can usually break between
+  // characters, while embedded Latin/numeric runs should stay together as a single measured unit.
+  bool previousUnitWasCjk = false;
+  for (size_t wordIndex = 0; wordIndex < words.size(); ++wordIndex) {
+    const std::string& word = words[wordIndex];
+    size_t offset = 0;
+    bool firstUnitInWord = true;
+
+    while (offset < word.size()) {
+      const auto* ptr = reinterpret_cast<const unsigned char*>(word.c_str() + offset);
+      const uint32_t cp = utf8NextCodepoint(&ptr);
+      if (cp == 0) {
+        break;
+      }
+      const size_t nextOffset = static_cast<size_t>(reinterpret_cast<const char*>(ptr) - word.c_str());
+      const bool cpIsCjk = isCjkCodepoint(cp);
+      const bool noGapBefore = !units.empty() && (!firstUnitInWord || (firstUnitInWord && wordContinues[wordIndex]) ||
+                                                  (previousUnitWasCjk && cpIsCjk));
+      const bool noBreakBefore = !units.empty() && firstUnitInWord && wordContinues[wordIndex];
+
+      if (!cpIsCjk) {
+        size_t runEnd = nextOffset;
+        uint32_t lastCpInRun = cp;
+        while (runEnd < word.size()) {
+          const auto* lookaheadPtr = reinterpret_cast<const unsigned char*>(word.c_str() + runEnd);
+          const uint32_t lookaheadCp = utf8NextCodepoint(&lookaheadPtr);
+          if (lookaheadCp == 0 || isCjkCodepoint(lookaheadCp)) {
+            break;
+          }
+          lastCpInRun = lookaheadCp;
+          runEnd = static_cast<size_t>(reinterpret_cast<const char*>(lookaheadPtr) - word.c_str());
+        }
+        const std::string run = word.substr(offset, runEnd - offset);
+        units.push_back({wordIndex, offset, runEnd, cp, lastCpInRun,
+                         static_cast<uint16_t>(measureWordWidth(renderer, fontId, run, wordStyles[wordIndex])),
+                         noGapBefore, noBreakBefore, false, wordStyles[wordIndex]});
+        previousUnitWasCjk = false;
+        offset = runEnd;
+        firstUnitInWord = false;
+        continue;
+      }
+
+      char cpText[5] = {};
+      const size_t cpBytes = nextOffset - offset;
+      for (size_t i = 0; i < cpBytes && i < 4; ++i) {
+        cpText[i] = word[offset + i];
+      }
+      units.push_back({wordIndex, offset, nextOffset, cp, cp,
+                       static_cast<uint16_t>(
+                           std::max(cjkCellAdvance, renderer.getTextAdvanceX(fontId, cpText, wordStyles[wordIndex]))),
+                       noGapBefore, noBreakBefore, true, wordStyles[wordIndex]});
+      previousUnitWasCjk = true;
+      offset = nextOffset;
+      firstUnitInWord = false;
+    }
+  }
+
+  if (units.empty()) {
+    words.clear();
+    wordStyles.clear();
+    wordContinues.clear();
+    return;
+  }
+
+  const int firstLineIndent =
+      blockStyle.textIndentDefined && (blockStyle.textIndent < 0 || !extraParagraphSpacing) &&
+              (blockStyle.alignment == CssTextAlign::Justify || blockStyle.alignment == CssTextAlign::Left)
+          ? blockStyle.textIndent
+          : 0;
+
+  auto canBreakAfter = [&units](const size_t unitIndex) {
+    if (unitIndex + 1 >= units.size()) {
+      return true;
+    }
+    if (units[unitIndex + 1].noBreakBefore) {
+      return false;
+    }
+    return !isCjkNoLineEnd(units[unitIndex].lastCp) && !isCjkNoLineStart(units[unitIndex + 1].firstCp);
+  };
+
+  auto gapBefore = [&renderer, fontId](const CjkUnit& previous, const CjkUnit& current) {
+    if (current.noGapBefore) {
+      if (previous.isCjk || current.isCjk) {
+        return 0;
+      }
+      return renderer.getKerning(fontId, previous.lastCp, current.firstCp, previous.style);
+    }
+    return renderer.getSpaceAdvance(fontId, previous.lastCp, current.firstCp, previous.style);
+  };
+
+  auto emitLine = [&](const size_t start, const size_t end, const int lineWidth, const bool isFirstLine) {
+    if (start >= end) {
+      return;
+    }
+
+    const int effectivePageWidth = pageWidth - (isFirstLine ? firstLineIndent : 0);
+    int lineOffset = isFirstLine ? firstLineIndent : 0;
+    if (blockStyle.alignment == CssTextAlign::Right) {
+      lineOffset += effectivePageWidth - lineWidth;
+    } else if (blockStyle.alignment == CssTextAlign::Center) {
+      lineOffset += (effectivePageWidth - lineWidth) / 2;
+    }
+
+    std::vector<std::string> lineWords;
+    std::vector<int16_t> lineXPos;
+    std::vector<EpdFontFamily::Style> lineWordStyles;
+    lineWords.reserve(end - start);
+    lineXPos.reserve(end - start);
+    lineWordStyles.reserve(end - start);
+
+    // Build the TextBlock's parallel arrays for this single rendered line. CJK units stay
+    // individually positioned so rotated-font advance quirks cannot collapse neighboring glyphs.
+    int xpos = lineOffset;
+    for (size_t i = start; i < end; ++i) {
+      if (i > start) {
+        xpos += gapBefore(units[i - 1], units[i]);
+      }
+
+      const CjkUnit& unit = units[i];
+      const std::string& source = words[unit.wordIndex];
+      const bool canMerge = !lineWords.empty() && unit.noGapBefore && !unit.isCjk && !units[i - 1].isCjk &&
+                            lineWordStyles.back() == unit.style;
+      if (canMerge) {
+        lineWords.back().append(source, unit.startByte, unit.endByte - unit.startByte);
+      } else {
+        lineWords.emplace_back(source, unit.startByte, unit.endByte - unit.startByte);
+        lineXPos.push_back(static_cast<int16_t>(xpos));
+        lineWordStyles.push_back(unit.style);
+      }
+      xpos += unit.width;
+    }
+
+    processLine(
+        std::make_shared<TextBlock>(std::move(lineWords), std::move(lineXPos), std::move(lineWordStyles), blockStyle));
+  };
+
+  size_t lineStart = 0;
+  bool isFirstLine = true;
+  while (lineStart < units.size()) {
+    const int effectivePageWidth = pageWidth - (isFirstLine ? firstLineIndent : 0);
+    int lineWidth = 0;
+    size_t bestBreak = lineStart;
+    int widthAtBestBreak = 0;
+    size_t i = lineStart;
+
+    // Greedily pack units until the next one would exceed the page width, remembering the
+    // latest legal kinsoku-aware break point as the preferred end of the line.
+    for (; i < units.size(); ++i) {
+      int candidateWidth = lineWidth + units[i].width;
+      if (i > lineStart) {
+        candidateWidth += gapBefore(units[i - 1], units[i]);
+      }
+
+      if (candidateWidth > effectivePageWidth && i > lineStart) {
+        break;
+      }
+
+      lineWidth = candidateWidth;
+      if (canBreakAfter(i)) {
+        bestBreak = i + 1;
+        widthAtBestBreak = lineWidth;
+      }
+
+      if (candidateWidth > effectivePageWidth) {
+        ++i;
+        break;
+      }
+    }
+
+    if (i >= units.size()) {
+      emitLine(lineStart, units.size(), lineWidth, isFirstLine);
+      break;
+    }
+
+    size_t lineEnd = bestBreak > lineStart ? bestBreak : i;
+    int emittedWidth = bestBreak > lineStart ? widthAtBestBreak : lineWidth;
+    if (lineEnd <= lineStart) {
+      lineEnd = lineStart + 1;
+      emittedWidth = units[lineStart].width;
+    }
+
+    emitLine(lineStart, lineEnd, emittedWidth, isFirstLine);
+    lineStart = lineEnd;
+    isFirstLine = false;
+  }
+
+  words.clear();
+  wordStyles.clear();
+  wordContinues.clear();
 }
 
 std::vector<uint16_t> ParsedText::calculateWordWidths(const GfxRenderer& renderer, const int fontId) {
