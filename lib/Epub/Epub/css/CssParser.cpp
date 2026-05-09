@@ -45,6 +45,10 @@ constexpr size_t MAX_RULES = 1500;
 // If below this threshold, we skip CSS to avoid display artifacts.
 constexpr size_t MIN_FREE_HEAP_FOR_CSS = 48 * 1024;
 
+// Stop adding stylesheet rules before the allocator reaches the cliff where
+// std::bad_alloc terminates the firmware on embedded builds.
+constexpr size_t MIN_FREE_HEAP_FOR_RULE_INSERT = 32 * 1024;
+
 // Maximum length for a single selector string
 // Prevents parsing of extremely long or malformed selectors
 constexpr size_t MAX_SELECTOR_LENGTH = 256;
@@ -372,6 +376,10 @@ CssStyle CssParser::parseDeclarations(const std::string& declBlock) {
 // Rule processing
 
 void CssParser::processRuleBlockWithStyle(const std::string& selectorGroup, const CssStyle& style) {
+  if (!style.defined.anySet()) {
+    return;
+  }
+
   // Check if we've reached the rule limit before processing
   if (rulesBySelector_.size() >= MAX_RULES) {
     LOG_DBG("CSS", "Reached max rules limit (%zu), stopping CSS parsing", MAX_RULES);
@@ -447,13 +455,17 @@ void CssParser::processRuleBlockWithStyle(const std::string& selectorGroup, cons
       LOG_DBG("CSS", "Reached max rules limit, stopping selector processing");
       return;
     }
+    if (ESP.getFreeHeap() < MIN_FREE_HEAP_FOR_RULE_INSERT) {
+      LOG_DBG("CSS", "Low heap (%u bytes), stopping CSS rule insertion", ESP.getFreeHeap());
+      return;
+    }
 
     // Store or merge with existing
     auto it = rulesBySelector_.find(key);
     if (it != rulesBySelector_.end()) {
       it->second.applyOver(style);
     } else {
-      rulesBySelector_[key] = style;
+      rulesBySelector_.emplace(std::move(key), style);
     }
   }
 }

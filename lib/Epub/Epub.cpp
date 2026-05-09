@@ -7,6 +7,7 @@
 #include <PngToBmpConverter.h>
 #include <ZipFile.h>
 
+#include "Epub/DebugStyleConfig.h"
 #include "Epub/parsers/ContainerParser.h"
 #include "Epub/parsers/ContentOpfParser.h"
 #include "Epub/parsers/TocNavParser.h"
@@ -255,6 +256,13 @@ bool Epub::parseTocNavFile() const {
 }
 
 void Epub::parseCssFiles() const {
+  if (DEBUG_IGNORE_EMBEDDED_EPUB_CSS) {
+    LOG_DBG("EBP", "Ignoring embedded EPUB CSS for debug build");
+    cssParser->deleteCache();
+    cssParser->clear();
+    return;
+  }
+
   // Maximum CSS file size we'll attempt to parse (uncompressed)
   // Larger files risk memory exhaustion on ESP32
   constexpr size_t MAX_CSS_FILE_SIZE = 128 * 1024;  // 128KB
@@ -344,7 +352,7 @@ bool Epub::load(const bool buildIfMissing, const bool skipLoadingCss) {
 
   // Try to load existing cache first
   if (bookMetadataCache->load()) {
-    if (!skipLoadingCss) {
+    if (!skipLoadingCss && !DEBUG_IGNORE_EMBEDDED_EPUB_CSS) {
       // Rebuild CSS cache when missing or when cache version changed (loadFromCache removes stale file)
       if (!cssParser->hasCache() || !cssParser->loadFromCache()) {
         LOG_DBG("EBP", "CSS rules cache missing or stale, attempting to parse CSS files");
@@ -455,7 +463,7 @@ bool Epub::load(const bool buildIfMissing, const bool skipLoadingCss) {
     return false;
   }
 
-  if (!skipLoadingCss) {
+  if (!skipLoadingCss && !DEBUG_IGNORE_EMBEDDED_EPUB_CSS) {
     // Parse CSS files after cache reload
     parseCssFiles();
     Storage.removeDir((cachePath + "/sections").c_str());

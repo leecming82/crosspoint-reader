@@ -4,6 +4,7 @@
 #include <Logging.h>
 #include <Serialization.h>
 
+#include "Epub/DebugStyleConfig.h"
 #include "Epub/css/CssParser.h"
 #include "Page.h"
 #include "hyphenation/Hyphenator.h"
@@ -205,7 +206,8 @@ bool Section::createSectionFile(const int fontId, const float lineCompression, c
   std::string imageBasePath = epub->getCachePath() + "/img_" + std::to_string(spineIndex) + "_";
 
   CssParser* cssParser = nullptr;
-  if (embeddedStyle) {
+  const bool applyEmbeddedStyle = embeddedStyle && !DEBUG_IGNORE_EMBEDDED_EPUB_CSS;
+  if (applyEmbeddedStyle) {
     cssParser = epub->getCssParser();
     if (cssParser) {
       if (!cssParser->loadFromCache()) {
@@ -220,7 +222,7 @@ bool Section::createSectionFile(const int fontId, const float lineCompression, c
       [this, &lut](std::unique_ptr<Page> page, const uint16_t paragraphIndex) {
         lut.push_back({this->onPageComplete(std::move(page)), paragraphIndex});
       },
-      embeddedStyle, contentBase, imageBasePath, imageRendering, popupFn, cssParser);
+      applyEmbeddedStyle, contentBase, imageBasePath, imageRendering, popupFn, cssParser);
   Hyphenator::setPreferredLanguage(epub->getLanguage());
   success = visitor.parseAndBuildPages();
 

@@ -1,5 +1,6 @@
 #include "ParsedText.h"
 
+#include <Arduino.h>
 #include <GfxRenderer.h>
 #include <Utf8.h>
 
@@ -18,6 +19,9 @@ namespace {
 // Soft hyphen byte pattern used throughout EPUBs (UTF-8 for U+00AD).
 constexpr char SOFT_HYPHEN_UTF8[] = "\xC2\xAD";
 constexpr size_t SOFT_HYPHEN_BYTES = 2;
+constexpr size_t MIN_FREE_HEAP_FOR_CJK_LAYOUT = 48 * 1024;
+constexpr size_t MIN_CJK_LAYOUT_ALLOC_MARGIN = 8 * 1024;
+constexpr size_t MAX_CJK_LAYOUT_UNITS = 1024;
 
 struct CjkUnit {
   size_t wordIndex;
@@ -254,8 +258,9 @@ void ParsedText::layoutAndExtractLines(const GfxRenderer& renderer, const int fo
 
   const int pageWidth = viewportWidth;
   if (includeLastLine && shouldUseCjkWrapper()) {
-    layoutAndExtractCjkLines(renderer, fontId, pageWidth, processLine);
-    return;
+    if (layoutAndExtractCjkLines(renderer, fontId, pageWidth, processLine)) {
+      return;
+    }
   }
 
   auto wordWidths = calculateWordWidths(renderer, fontId);
@@ -303,14 +308,20 @@ bool ParsedText::shouldUseCjkWrapper() const {
   return cjkCount >= 8 && cjkCount >= otherLetterCount;
 }
 
-void ParsedText::layoutAndExtractCjkLines(const GfxRenderer& renderer, const int fontId, const int pageWidth,
+bool ParsedText::layoutAndExtractCjkLines(const GfxRenderer& renderer, const int fontId, const int pageWidth,
                                           const std::function<void(std::shared_ptr<TextBlock>)>& processLine) {
   std::vector<CjkUnit> units;
   size_t byteCount = 0;
   for (const auto& word : words) {
     byteCount += word.size();
   }
-  units.reserve(byteCount / 3 + words.size());
+  const size_t estimatedUnits = byteCount / 3 + words.size();
+  const size_t estimatedBytes = estimatedUnits * sizeof(CjkUnit);
+  if (estimatedUnits > MAX_CJK_LAYOUT_UNITS || ESP.getFreeHeap() < MIN_FREE_HEAP_FOR_CJK_LAYOUT ||
+      ESP.getMaxAllocHeap() < estimatedBytes + MIN_CJK_LAYOUT_ALLOC_MARGIN) {
+    return false;
+  }
+  units.reserve(estimatedUnits);
 
   // Rotated tategaki fonts can report very narrow advances for kana/punctuation. Use a representative
   // full-width glyph as the CJK cell, with a conservative line-height fallback when the glyph is absent.
@@ -381,7 +392,7 @@ void ParsedText::layoutAndExtractCjkLines(const GfxRenderer& renderer, const int
     words.clear();
     wordStyles.clear();
     wordContinues.clear();
-    return;
+    return true;
   }
 
   const int firstLineIndent =
@@ -509,6 +520,7 @@ void ParsedText::layoutAndExtractCjkLines(const GfxRenderer& renderer, const int
   words.clear();
   wordStyles.clear();
   wordContinues.clear();
+  return true;
 }
 
 std::vector<uint16_t> ParsedText::calculateWordWidths(const GfxRenderer& renderer, const int fontId) {
