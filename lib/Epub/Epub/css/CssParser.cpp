@@ -8,6 +8,8 @@
 #include <cctype>
 #include <string_view>
 
+#include "../DebugStyleConfig.h"
+
 namespace {
 
 // Stack-allocated string buffer to avoid heap reallocations during parsing
@@ -77,6 +79,27 @@ std::string_view stripTrailingImportant(std::string_view value) {
     value.remove_suffix(1);
   }
   return value;
+}
+
+void filterStyleForDebugMode(CssStyle& style) {
+  if (!DEBUG_FILTER_EMBEDDED_EPUB_CSS_TO_TYPOGRAPHY) {
+    return;
+  }
+
+  // Keep only properties that affect lightweight text presentation.
+  // Drop layout-heavy properties: margins, padding, indents, image sizing, display.
+  style.defined.textIndent = 0;
+  style.defined.marginTop = 0;
+  style.defined.marginBottom = 0;
+  style.defined.marginLeft = 0;
+  style.defined.marginRight = 0;
+  style.defined.paddingTop = 0;
+  style.defined.paddingBottom = 0;
+  style.defined.paddingLeft = 0;
+  style.defined.paddingRight = 0;
+  style.defined.imageHeight = 0;
+  style.defined.imageWidth = 0;
+  style.defined.display = 0;
 }
 
 }  // anonymous namespace
@@ -370,13 +393,17 @@ CssStyle CssParser::parseDeclarations(const std::string& declBlock) {
     }
   }
 
+  filterStyleForDebugMode(style);
   return style;
 }
 
 // Rule processing
 
 void CssParser::processRuleBlockWithStyle(const std::string& selectorGroup, const CssStyle& style) {
-  if (!style.defined.anySet()) {
+  CssStyle filteredStyle = style;
+  filterStyleForDebugMode(filteredStyle);
+
+  if (!filteredStyle.defined.anySet()) {
     return;
   }
 
@@ -463,9 +490,9 @@ void CssParser::processRuleBlockWithStyle(const std::string& selectorGroup, cons
     // Store or merge with existing
     auto it = rulesBySelector_.find(key);
     if (it != rulesBySelector_.end()) {
-      it->second.applyOver(style);
+      it->second.applyOver(filteredStyle);
     } else {
-      rulesBySelector_.emplace(std::move(key), style);
+      rulesBySelector_.emplace(std::move(key), filteredStyle);
     }
   }
 }
@@ -915,6 +942,7 @@ bool CssParser::loadFromCache() {
     style.defined.imageWidth = (definedBits & 1 << 14) != 0;
     style.defined.display = (definedBits & 1 << 15) != 0;
 
+    filterStyleForDebugMode(style);
     rulesBySelector_[selector] = style;
   }
 
