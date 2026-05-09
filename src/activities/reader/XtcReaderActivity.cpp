@@ -22,6 +22,7 @@
 #include "XtcReaderChapterSelectionActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "util/StringUtils.h"
 
 void XtcReaderActivity::onEnter() {
   Activity::onEnter();
@@ -136,8 +137,9 @@ void XtcReaderActivity::render(RenderLock&&) {
 XtcReaderActivity::StatusBarInfo XtcReaderActivity::getStatusBarInfo() const {
   const int bookPageCount = static_cast<int>(xtc->getPageCount());
   const int bookPage = static_cast<int>(currentPage) + 1;
-  std::string title =
-      SETTINGS.statusBarTitle == CrossPointSettings::STATUS_BAR_TITLE::BOOK_TITLE ? xtc->getTitle() : "";
+  std::string title = SETTINGS.statusBarTitle == CrossPointSettings::STATUS_BAR_TITLE::BOOK_TITLE
+                          ? StringUtils::uiSafeBookTitle(xtc->getTitle(), xtc->getPath())
+                          : "";
 
   if (!xtc->hasChapters()) {
     return StatusBarInfo{bookPage, bookPageCount, std::move(title)};
@@ -153,7 +155,9 @@ XtcReaderActivity::StatusBarInfo XtcReaderActivity::getStatusBarInfo() const {
   }
 
   if (SETTINGS.statusBarTitle == CrossPointSettings::STATUS_BAR_TITLE::CHAPTER_TITLE) {
-    title = chapterIt->name.empty() ? tr(STR_UNNAMED) : chapterIt->name;
+    const std::string pageRange =
+        std::string("Pages ") + std::to_string(chapterIt->startPage + 1) + "-" + std::to_string(chapterIt->endPage + 1);
+    title = StringUtils::uiSafeLabelOrFallback(chapterIt->name, pageRange);
   }
 
   return StatusBarInfo{static_cast<int>(currentPage - chapterIt->startPage) + 1,

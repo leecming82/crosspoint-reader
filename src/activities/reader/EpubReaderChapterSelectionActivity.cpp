@@ -6,6 +6,7 @@
 #include "MappedInputManager.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "util/StringUtils.h"
 
 int EpubReaderChapterSelectionActivity::getTotalItems() const { return epub->getTocItemsCount(); }
 
@@ -124,8 +125,10 @@ void EpubReaderChapterSelectionActivity::render(RenderLock&&) {
 
     // Indent per TOC level while keeping content within the gutter-safe region.
     const int indentSize = contentX + 20 + (item.level - 1) * 15;
+    const std::string chapterFallback = std::string("Chapter ") + std::to_string(itemIndex + 1);
+    const std::string displayTitle = StringUtils::uiSafeLabelOrFallback(item.title, chapterFallback);
     const std::string chapterName =
-        renderer.truncatedText(UI_10_FONT_ID, item.title.c_str(), contentWidth - 40 - indentSize);
+        renderer.truncatedText(UI_10_FONT_ID, displayTitle.c_str(), contentWidth - 40 - indentSize);
 
     renderer.drawText(UI_10_FONT_ID, indentSize, displayY, chapterName.c_str(), !isSelected);
   }

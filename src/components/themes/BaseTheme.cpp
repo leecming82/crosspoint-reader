@@ -13,6 +13,7 @@
 #include "RecentBooksStore.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "util/StringUtils.h"
 
 // Internal constants
 namespace {
@@ -534,8 +535,8 @@ void BaseTheme::drawRecentBookCover(GfxRenderer& renderer, Rect rect, const std:
   }
 
   if (hasContinueReading) {
-    const std::string& lastBookTitle = recentBooks[0].title;
-    const std::string& lastBookAuthor = recentBooks[0].author;
+    const std::string lastBookTitle = StringUtils::uiSafeBookTitle(recentBooks[0].title, recentBooks[0].path);
+    const std::string lastBookAuthor = StringUtils::uiSafeAuthor(recentBooks[0].author);
 
     // Invert text colors based on selection state:
     // - With cover: selected = white text on black box, unselected = black text on white box

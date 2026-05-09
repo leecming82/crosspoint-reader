@@ -10,6 +10,7 @@
 #include "RecentBooksStore.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "util/StringUtils.h"
 
 namespace {
 constexpr unsigned long GO_HOME_MS = 1000;
@@ -100,7 +101,8 @@ void RecentBooksActivity::render(RenderLock&&) {
   } else {
     GUI.drawList(
         renderer, Rect{0, contentTop, pageWidth, contentHeight}, recentBooks.size(), selectorIndex,
-        [this](int index) { return recentBooks[index].title; }, [this](int index) { return recentBooks[index].author; },
+        [this](int index) { return StringUtils::uiSafeBookTitle(recentBooks[index].title, recentBooks[index].path); },
+        [this](int index) { return StringUtils::uiSafeAuthor(recentBooks[index].author); },
         [this](int index) { return UITheme::getFileIcon(recentBooks[index].path); });
   }
 
