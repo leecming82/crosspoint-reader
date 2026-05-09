@@ -199,6 +199,13 @@ uint16_t measureWordWidth(const GfxRenderer& renderer, const int fontId, const s
   return renderer.getTextAdvanceX(fontId, sanitized.c_str(), style);
 }
 
+uint16_t measureRunWidth(const GfxRenderer& renderer, const int fontId, const std::string& run,
+                         const EpdFontFamily::Style style) {
+  const int advanceWidth = measureWordWidth(renderer, fontId, run, style);
+  const int boundsWidth = renderer.getTextWidth(fontId, run.c_str(), style);
+  return static_cast<uint16_t>(std::max(advanceWidth, boundsWidth));
+}
+
 }  // namespace
 
 void ParsedText::addWord(std::string word, const EpdFontFamily::Style fontStyle, const bool underline,
@@ -365,8 +372,8 @@ bool ParsedText::layoutAndExtractCjkLines(const GfxRenderer& renderer, const int
         }
         const std::string run = word.substr(offset, runEnd - offset);
         units.push_back({wordIndex, offset, runEnd, cp, lastCpInRun,
-                         static_cast<uint16_t>(measureWordWidth(renderer, fontId, run, wordStyles[wordIndex])),
-                         noGapBefore, noBreakBefore, false, wordStyles[wordIndex]});
+                         measureRunWidth(renderer, fontId, run, wordStyles[wordIndex]), noGapBefore, noBreakBefore,
+                         false, wordStyles[wordIndex]});
         previousUnitWasCjk = false;
         offset = runEnd;
         firstUnitInWord = false;

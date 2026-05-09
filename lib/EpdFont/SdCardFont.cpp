@@ -996,6 +996,9 @@ bool SdCardFont::hasAdvanceTable() const {
 
 uint16_t SdCardFont::getAdvance(uint32_t codepoint, uint8_t style) const {
   style &= (MAX_STYLES - 1);
+  if (!advanceTable_[style] && style != 0) {
+    style = 0;
+  }
   if (!advanceTable_[style]) return 0;
   const AdvanceEntry* table = advanceTable_[style];
   const uint32_t size = advanceTableSize_[style];
@@ -1017,6 +1020,17 @@ uint16_t SdCardFont::getAdvance(uint32_t codepoint, uint8_t style) const {
 
 int SdCardFont::buildAdvanceTable(const char* utf8Text, uint8_t styleMask) {
   if (!loaded_) return -1;
+
+  // Match EpdFontFamily's rendering fallback: when a requested style is absent
+  // from a single-style SD font, layout must measure with regular instead of
+  // returning zero-width words.
+  if (styles_[0].present) {
+    for (uint8_t si = 1; si < MAX_STYLES; si++) {
+      if ((styleMask & (1 << si)) && !styles_[si].present) {
+        styleMask |= 1;
+      }
+    }
+  }
 
   // Note: advance table is preserved across calls. We only fetch codepoints
   // not already present, then merge them in. Use clearPersistentCache() to
