@@ -85,8 +85,16 @@ class ChapterHtmlSlimParser {
   std::vector<std::pair<int, FootnoteEntry>> pendingFootnotes;  // <wordIndex, entry>
   int wordsExtractedInBlock = 0;
 
+  enum class RubyCaptureMode : uint8_t { None, Base, Text, Parenthesis };
+  bool insideRuby = false;
+  int rubyDepth = -1;
+  RubyCaptureMode rubyCaptureMode = RubyCaptureMode::None;
+  std::string rubyBase;
+  std::string rubyText;
+
   void updateEffectiveInlineStyle();
   void startNewTextBlock(const BlockStyle& blockStyle);
+  void appendToPartWordBuffer(const char* text, int len);
   void flushPartWordBuffer();
   void makePages();
   // XML callbacks

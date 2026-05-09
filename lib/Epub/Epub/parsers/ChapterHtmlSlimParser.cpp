@@ -113,6 +113,32 @@ void ChapterHtmlSlimParser::flushPartWordBuffer() {
   nextWordContinues = false;
 }
 
+void ChapterHtmlSlimParser::appendToPartWordBuffer(const char* text, const int len) {
+  for (int i = 0; i < len; i++) {
+    if (partWordBufferIndex >= MAX_WORD_SIZE) {
+      const int safeLen = utf8SafeTruncateBuffer(partWordBuffer, partWordBufferIndex);
+
+      if (safeLen < partWordBufferIndex && safeLen > 0) {
+        const int overflow = partWordBufferIndex - safeLen;
+        char saved[4];
+        for (int j = 0; j < overflow; j++) {
+          saved[j] = partWordBuffer[safeLen + j];
+        }
+        partWordBufferIndex = safeLen;
+        flushPartWordBuffer();
+        for (int j = 0; j < overflow; j++) {
+          partWordBuffer[j] = saved[j];
+        }
+        partWordBufferIndex = overflow;
+      } else {
+        flushPartWordBuffer();
+      }
+    }
+
+    partWordBuffer[partWordBufferIndex++] = text[i];
+  }
+}
+
 // start a new text block if needed
 void ChapterHtmlSlimParser::startNewTextBlock(const BlockStyle& blockStyle) {
   nextWordContinues = false;  // New block = new paragraph, no continuation
@@ -192,6 +218,32 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
   // Skip elements with display:none before all fast paths (tables, links, etc.).
   if (cssStyle.hasDisplay() && cssStyle.display == CssDisplay::None) {
     self->skipUntilDepth = self->depth;
+    self->depth += 1;
+    return;
+  }
+
+  if (strcmp(name, "ruby") == 0) {
+    if (self->partWordBufferIndex > 0) {
+      self->flushPartWordBuffer();
+      self->nextWordContinues = true;
+    }
+    self->insideRuby = true;
+    self->rubyDepth = self->depth;
+    self->rubyCaptureMode = RubyCaptureMode::Base;
+    self->rubyBase.clear();
+    self->rubyText.clear();
+    self->depth += 1;
+    return;
+  }
+
+  if (self->insideRuby) {
+    if (strcmp(name, "rb") == 0) {
+      self->rubyCaptureMode = RubyCaptureMode::Base;
+    } else if (strcmp(name, "rt") == 0) {
+      self->rubyCaptureMode = RubyCaptureMode::Text;
+    } else if (strcmp(name, "rp") == 0) {
+      self->rubyCaptureMode = RubyCaptureMode::Parenthesis;
+    }
     self->depth += 1;
     return;
   }
@@ -738,6 +790,15 @@ void XMLCALL ChapterHtmlSlimParser::characterData(void* userData, const XML_Char
     return;
   }
 
+  if (self->insideRuby) {
+    if (self->rubyCaptureMode == RubyCaptureMode::Base) {
+      self->rubyBase.append(s, len);
+    } else if (self->rubyCaptureMode == RubyCaptureMode::Text) {
+      self->rubyText.append(s, len);
+    }
+    return;
+  }
+
   // Collect footnote link display text (for the number label)
   // Skip whitespace and brackets to normalize noterefs like "[1]" → "1"
   if (self->insideFootnoteLink) {
@@ -909,6 +970,38 @@ void XMLCALL ChapterHtmlSlimParser::defaultHandlerExpand(void* userData, const X
 
 void XMLCALL ChapterHtmlSlimParser::endElement(void* userData, const XML_Char* name) {
   auto* self = static_cast<ChapterHtmlSlimParser*>(userData);
+
+  if (self->insideRuby) {
+    self->depth -= 1;
+
+    if (self->skipUntilDepth == self->depth) {
+      self->skipUntilDepth = INT_MAX;
+    }
+
+    if (strcmp(name, "rb") == 0) {
+      self->rubyCaptureMode = RubyCaptureMode::None;
+    } else if (strcmp(name, "rt") == 0) {
+      self->rubyCaptureMode = RubyCaptureMode::Base;
+    } else if (strcmp(name, "rp") == 0) {
+      self->rubyCaptureMode = RubyCaptureMode::Base;
+    } else if (strcmp(name, "ruby") == 0 && self->depth == self->rubyDepth) {
+      // Fallback rendering: aggregate ruby as base（reading） instead of flattening rb/rt pairs inline.
+      std::string fallback = self->rubyBase;
+      if (!self->rubyText.empty()) {
+        fallback += "\xef\xbc\x88";  // fullwidth left parenthesis
+        fallback += self->rubyText;
+        fallback += "\xef\xbc\x89";  // fullwidth right parenthesis
+      }
+      self->appendToPartWordBuffer(fallback.c_str(), static_cast<int>(fallback.size()));
+      self->nextWordContinues = true;
+      self->insideRuby = false;
+      self->rubyDepth = -1;
+      self->rubyCaptureMode = RubyCaptureMode::None;
+      self->rubyBase.clear();
+      self->rubyText.clear();
+    }
+    return;
+  }
 
   // Check if any style state will change after we decrement depth
   // If so, we MUST flush the partWordBuffer with the CURRENT style first
