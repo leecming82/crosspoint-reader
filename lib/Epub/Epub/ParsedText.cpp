@@ -69,7 +69,8 @@ void stripSoftHyphensInPlace(std::string& word) {
 }
 
 bool isCjkCodepoint(const uint32_t cp) {
-  return (cp >= 0x3040 && cp <= 0x30FF) ||  // Hiragana + Katakana
+  return (cp >= 0x3000 && cp <= 0x303F) ||  // CJK symbols and punctuation
+         (cp >= 0x3040 && cp <= 0x30FF) ||  // Hiragana + Katakana
          (cp >= 0x31F0 && cp <= 0x31FF) ||  // Katakana phonetic extensions
          (cp >= 0x3400 && cp <= 0x4DBF) ||  // CJK extension A
          (cp >= 0x4E00 && cp <= 0x9FFF) ||  // CJK unified ideographs
@@ -175,6 +176,48 @@ bool isCjkNoLineEnd(const uint32_t cp) {
       return false;
   }
 }
+
+bool isCjkClosingPunctuation(const uint32_t cp) {
+  switch (cp) {
+    case 0x0021:  // !
+    case 0x0025:  // %
+    case 0x0029:  // )
+    case 0x002C:  // ,
+    case 0x002E:  // .
+    case 0x003F:  // ?
+    case 0x005D:  // ]
+    case 0x007D:  // }
+    case 0x2019:
+    case 0x201D:
+    case 0x2026:
+    case 0x3001:  // 、
+    case 0x3002:  // 。
+    case 0x3009:
+    case 0x300B:
+    case 0x300D:
+    case 0x300F:
+    case 0x3011:
+    case 0x3015:
+    case 0x3017:
+    case 0x3019:
+    case 0x301B:
+    case 0x301F:
+    case 0xFF01:
+    case 0xFF05:
+    case 0xFF09:
+    case 0xFF0C:
+    case 0xFF0E:
+    case 0xFF1F:
+    case 0xFF3D:
+    case 0xFF5D:
+    case 0xFF60:
+      return true;
+    default:
+      return false;
+  }
+}
+
+bool isCjkSentenceEndingPeriod(const uint32_t cp) { return cp == 0x002E || cp == 0x3002 || cp == 0xFF0E; }
 
 // Returns the advance width for a word while ignoring soft hyphen glyphs and optionally appending a visible hyphen.
 // Uses advance width (sum of glyph advances + kerning) rather than bounding box width so that italic glyph overhangs
@@ -535,9 +578,11 @@ bool ParsedText::layoutAndExtractCjkLines(const GfxRenderer& renderer, const int
       for (size_t i = 0; i < cpBytes && i < 4; ++i) {
         cpText[i] = word[offset + i];
       }
-      units.push_back({wordIndex, offset, nextOffset, cp, cp,
-                       static_cast<uint16_t>(
-                           std::max(cjkCellAdvance, renderer.getTextAdvanceX(fontId, cpText, wordStyles[wordIndex]))),
+      const int measuredAdvance = renderer.getTextAdvanceX(fontId, cpText, wordStyles[wordIndex]);
+      const int unitWidth = isCjkClosingPunctuation(cp) && measuredAdvance > 0
+                                ? measuredAdvance
+                                : std::max(cjkCellAdvance, measuredAdvance);
+      units.push_back({wordIndex, offset, nextOffset, cp, cp, static_cast<uint16_t>(std::max(1, unitWidth)),
                        noGapBefore, noBreakBefore, true, wordStyles[wordIndex]});
       previousUnitWasCjk = true;
       offset = nextOffset;
@@ -577,6 +622,17 @@ bool ParsedText::layoutAndExtractCjkLines(const GfxRenderer& renderer, const int
       return renderer.getKerning(fontId, previous.lastCp, current.firstCp, previous.style);
     }
     return renderer.getSpaceAdvance(fontId, previous.lastCp, current.firstCp, previous.style);
+  };
+
+  auto canHangClosingPunctuation = [cjkCellAdvance](const CjkUnit& unit, const int currentLineWidth,
+                                                    const int candidateWidth, const int effectivePageWidth) {
+    if (!unit.isCjk || !isCjkClosingPunctuation(unit.firstCp) || currentLineWidth > effectivePageWidth) {
+      return false;
+    }
+    const int overflow = candidateWidth - effectivePageWidth;
+    const int maxOverflow =
+        isCjkSentenceEndingPeriod(unit.firstCp) ? std::max(1, cjkCellAdvance) : std::max(1, cjkCellAdvance / 2);
+    return overflow > 0 && overflow <= maxOverflow;
   };
 
   auto emitLine = [&](const size_t start, const size_t end, const int lineWidth, const bool isFirstLine) {
@@ -642,7 +698,9 @@ bool ParsedText::layoutAndExtractCjkLines(const GfxRenderer& renderer, const int
         candidateWidth += gapBefore(units[i - 1], units[i]);
       }
 
-      if (candidateWidth > effectivePageWidth && i > lineStart) {
+      const bool hangingClosingPunctuation =
+          canHangClosingPunctuation(units[i], lineWidth, candidateWidth, effectivePageWidth);
+      if (candidateWidth > effectivePageWidth && i > lineStart && !hangingClosingPunctuation) {
         break;
       }
 
