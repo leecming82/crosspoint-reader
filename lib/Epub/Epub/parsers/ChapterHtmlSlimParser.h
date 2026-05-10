@@ -76,6 +76,7 @@ class ChapterHtmlSlimParser {
   int completedPageCount = 0;
   std::vector<std::pair<std::string, uint16_t>> anchorData;
   std::string pendingAnchorId;  // deferred until after previous text block is flushed
+  bool anchorLimitLogged = false;
   uint16_t xpathParagraphIndex = 0;
   uint16_t xpathListItemIndex = 0;
 
@@ -98,6 +99,7 @@ class ChapterHtmlSlimParser {
   void startNewTextBlock(const BlockStyle& blockStyle);
   void appendToPartWordBuffer(const char* text, int len);
   void flushPartWordBuffer();
+  void commitPendingAnchor();
   void makePages();
   // XML callbacks
   static void XMLCALL startElement(void* userData, const XML_Char* name, const XML_Char** atts);

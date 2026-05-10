@@ -19,6 +19,7 @@
 // Minimum file size (in bytes) to show indexing popup - smaller chapters don't benefit from it
 constexpr size_t MIN_SIZE_FOR_POPUP = 10 * 1024;  // 10KB
 constexpr size_t PARSE_BUFFER_SIZE = 1024;
+constexpr size_t MAX_ANCHOR_MAP_ENTRIES = 2048;
 constexpr uint32_t INDEXING_HEARTBEAT_MS = 2000;
 
 constexpr const char* HEADER_TAGS[] = {"h1", "h2", "h3", "h4", "h5", "h6"};
@@ -64,6 +65,13 @@ bool isHeaderOrBlock(const char* name) {
 
 bool isTableStructuralTag(const char* name) {
   return strcmp(name, "table") == 0 || strcmp(name, "tr") == 0 || strcmp(name, "td") == 0 || strcmp(name, "th") == 0;
+}
+
+bool isGeneratedKoboAnchor(const char* id) {
+  if (!id || id[0] == '\0') {
+    return false;
+  }
+  return strncmp(id, "kobo.", 5) == 0 || strncmp(id, "kobospan", 8) == 0 || strcmp(id, "koboSpanStyle") == 0;
 }
 
 // Update effective bold/italic/underline based on block style and inline style stack
@@ -114,6 +122,20 @@ void ChapterHtmlSlimParser::flushPartWordBuffer() {
   nextWordContinues = false;
 }
 
+void ChapterHtmlSlimParser::commitPendingAnchor() {
+  if (pendingAnchorId.empty()) {
+    return;
+  }
+
+  if (anchorData.size() < MAX_ANCHOR_MAP_ENTRIES) {
+    anchorData.push_back({std::move(pendingAnchorId), static_cast<uint16_t>(completedPageCount)});
+  } else if (!anchorLimitLogged) {
+    LOG_ERR("EHP", "Anchor map limit reached; skipping additional anchors");
+    anchorLimitLogged = true;
+  }
+  pendingAnchorId.clear();
+}
+
 void ChapterHtmlSlimParser::appendToPartWordBuffer(const char* text, const int len) {
   for (int i = 0; i < len; i++) {
     if (partWordBufferIndex >= MAX_WORD_SIZE) {
@@ -154,20 +176,14 @@ void ChapterHtmlSlimParser::startNewTextBlock(const BlockStyle& blockStyle) {
       const auto style = currentTextBlock->getBlockStyle();
       currentTextBlock->setBlockStyle(style.getCombinedBlockStyle(blockStyle, BlockStyle::CombineAxis::Vertical));
 
-      if (!pendingAnchorId.empty()) {
-        anchorData.push_back({std::move(pendingAnchorId), static_cast<uint16_t>(completedPageCount)});
-        pendingAnchorId.clear();
-      }
+      commitPendingAnchor();
       return;
     }
 
     makePages();
   }
   // Record deferred anchor after previous block is flushed
-  if (!pendingAnchorId.empty()) {
-    anchorData.push_back({std::move(pendingAnchorId), static_cast<uint16_t>(completedPageCount)});
-    pendingAnchorId.clear();
-  }
+  commitPendingAnchor();
   currentTextBlock.reset(new ParsedText(extraParagraphSpacing, hyphenationEnabled, blockStyle));
   wordsExtractedInBlock = 0;
 }
@@ -197,7 +213,7 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
         classAttr = atts[i + 1];
       } else if (strcmp(atts[i], "style") == 0) {
         styleAttr = atts[i + 1];
-      } else if (strcmp(atts[i], "id") == 0) {
+      } else if (strcmp(atts[i], "id") == 0 && !isGeneratedKoboAnchor(atts[i + 1])) {
         // Defer recording until startNewTextBlock, after previous block is flushed to pages
         self->pendingAnchorId = atts[i + 1];
       }
@@ -1224,10 +1240,7 @@ bool ChapterHtmlSlimParser::parseAndBuildPages() {
   // Process last page if there is still text
   if (currentTextBlock) {
     makePages();
-    if (!pendingAnchorId.empty()) {
-      anchorData.push_back({std::move(pendingAnchorId), static_cast<uint16_t>(completedPageCount)});
-      pendingAnchorId.clear();
-    }
+    commitPendingAnchor();
     completePageFn(std::move(currentPage), xpathParagraphIndex, xpathListItemIndex);
     completedPageCount++;
     currentPage.reset();
