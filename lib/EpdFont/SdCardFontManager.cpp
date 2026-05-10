@@ -73,7 +73,8 @@ bool SdCardFontManager::loadFamily(const SdCardFontFamilyInfo& family, GfxRender
   LOG_DBG("SDMGR", "Loaded %s size=%u id=%d styles=%u (sizeEnum=%u)", selected->path.c_str(), selected->pointSize,
           fontId, font->styleCount(), fontSizeEnum);
 
-  EpdFontFamily fontFamily(font->getEpdFont(0), font->getEpdFont(1), font->getEpdFont(2), font->getEpdFont(3));
+  EpdFontFamily fontFamily(font->getEpdFont(font->fallbackStyle()), font->getEpdFont(1), font->getEpdFont(2),
+                           font->getEpdFont(3));
   renderer.insertFont(fontId, fontFamily);
 
   loadedFamilyName_ = family.name;
