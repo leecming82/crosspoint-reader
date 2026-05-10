@@ -201,6 +201,18 @@ static void renderCharImpl(const GfxRenderer& renderer, GfxRenderer::RenderMode 
   }
 }
 
+template <TextRotation rotation>
+static void renderCharWithSyntheticBold(const GfxRenderer& renderer, GfxRenderer::RenderMode renderMode,
+                                        const EpdFontFamily& fontFamily, const uint32_t cp, const int cursorX,
+                                        const int cursorY, const bool pixelState, const EpdFontFamily::Style style,
+                                        const bool syntheticBold) {
+  renderCharImpl<rotation>(renderer, renderMode, fontFamily, cp, cursorX, cursorY, pixelState, style);
+  if (syntheticBold) {
+    renderCharImpl<rotation>(renderer, renderMode, fontFamily, cp, cursorX + 1, cursorY, pixelState, style);
+    renderCharImpl<rotation>(renderer, renderMode, fontFamily, cp, cursorX + 2, cursorY, pixelState, style);
+  }
+}
+
 // IMPORTANT: This function is in critical rendering path and is called for every pixel. Please keep it as simple and
 // efficient as possible.
 void GfxRenderer::drawPixel(const int x, const int y, const bool state) const {
@@ -270,6 +282,7 @@ void GfxRenderer::drawText(const int fontId, const int x, const int y, const cha
     return;
   }
   const auto& font = fontIt->second;
+  const bool syntheticBold = isSdCardFont(fontId) && font.needsSyntheticBold(style);
 
   uint32_t cp;
   uint32_t prevCp = 0;
@@ -280,7 +293,8 @@ void GfxRenderer::drawText(const int fontId, const int x, const int y, const cha
       const int raiseBy = combiningMark::raiseAboveBase(combiningGlyph->top, combiningGlyph->height, lastBaseTop);
       const int combiningX = combiningMark::centerOver(lastBaseX, lastBaseLeft, lastBaseWidth, combiningGlyph->left,
                                                        combiningGlyph->width);
-      renderCharImpl<TextRotation::None>(*this, renderMode, font, cp, combiningX, yPos - raiseBy, black, style);
+      renderCharWithSyntheticBold<TextRotation::None>(*this, renderMode, font, cp, combiningX, yPos - raiseBy, black,
+                                                      style, syntheticBold);
       continue;
     }
 
@@ -301,7 +315,8 @@ void GfxRenderer::drawText(const int fontId, const int x, const int y, const cha
     lastBaseTop = glyph ? glyph->top : 0;
     prevAdvanceFP = glyph ? glyph->advanceX : 0;  // 12.4 fixed-point
 
-    renderCharImpl<TextRotation::None>(*this, renderMode, font, cp, lastBaseX, yPos, black, style);
+    renderCharWithSyntheticBold<TextRotation::None>(*this, renderMode, font, cp, lastBaseX, yPos, black, style,
+                                                    syntheticBold);
     prevCp = cp;
   }
 }
@@ -1206,6 +1221,7 @@ void GfxRenderer::drawTextRotated90CW(const int fontId, const int x, const int y
   }
 
   const auto& font = fontIt->second;
+  const bool syntheticBold = isSdCardFont(fontId) && font.needsSyntheticBold(style);
 
   int lastBaseY = y;
   int lastBaseLeft = 0;
@@ -1223,7 +1239,8 @@ void GfxRenderer::drawTextRotated90CW(const int fontId, const int x, const int y
       const int combiningX = x - raiseBy;
       const int combiningY = combiningMark::centerOverRotated90CW(lastBaseY, lastBaseLeft, lastBaseWidth,
                                                                   combiningGlyph->left, combiningGlyph->width);
-      renderCharImpl<TextRotation::Rotated90CW>(*this, renderMode, font, cp, combiningX, combiningY, black, style);
+      renderCharWithSyntheticBold<TextRotation::Rotated90CW>(*this, renderMode, font, cp, combiningX, combiningY, black,
+                                                             style, syntheticBold);
       continue;
     }
 
@@ -1243,7 +1260,8 @@ void GfxRenderer::drawTextRotated90CW(const int fontId, const int x, const int y
     lastBaseTop = glyph ? glyph->top : 0;
     prevAdvanceFP = glyph ? glyph->advanceX : 0;  // 12.4 fixed-point
 
-    renderCharImpl<TextRotation::Rotated90CW>(*this, renderMode, font, cp, x, lastBaseY, black, style);
+    renderCharWithSyntheticBold<TextRotation::Rotated90CW>(*this, renderMode, font, cp, x, lastBaseY, black, style,
+                                                           syntheticBold);
     prevCp = cp;
   }
 }

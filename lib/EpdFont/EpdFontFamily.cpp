@@ -35,3 +35,15 @@ int8_t EpdFontFamily::getKerning(const uint32_t leftCp, const uint32_t rightCp, 
 uint32_t EpdFontFamily::applyLigatures(const uint32_t cp, const char*& text, const Style style) const {
   return getFont(style)->applyLigatures(cp, text);
 }
+
+bool EpdFontFamily::needsSyntheticBold(const Style style) const {
+  if ((style & BOLD) == 0) {
+    return false;
+  }
+
+  if ((style & ITALIC) != 0) {
+    return boldItalic == nullptr && bold == nullptr;
+  }
+
+  return bold == nullptr;
+}
