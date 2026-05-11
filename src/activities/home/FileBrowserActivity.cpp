@@ -13,6 +13,7 @@
 #include "MappedInputManager.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "util/StringUtils.h"
 
 namespace {
 constexpr unsigned long GO_HOME_MS = 1000;
@@ -173,7 +174,9 @@ void FileBrowserActivity::loop() {
 
       std::string heading = tr(STR_DELETE) + std::string("? ");
 
-      startActivityForResult(std::make_unique<ConfirmationActivity>(renderer, mappedInput, heading, entry), handler);
+      startActivityForResult(std::make_unique<ConfirmationActivity>(renderer, mappedInput, heading,
+                                                                    StringUtils::uiSafeTextWithMarkers(entry)),
+                             handler);
       return;
     } else {
       // --- SHORT PRESS ACTION: OPEN/NAVIGATE ---
@@ -243,13 +246,14 @@ void FileBrowserActivity::loop() {
 std::string getFileName(std::string filename) {
   if (filename.back() == '/') {
     filename.pop_back();
+    filename = StringUtils::uiSafeTextWithMarkers(filename);
     if (!UITheme::getInstance().getTheme().showsFileIcons()) {
       return "[" + filename + "]";
     }
     return filename;
   }
   const auto pos = filename.rfind('.');
-  return filename.substr(0, pos);
+  return StringUtils::uiSafeTextWithMarkers(filename.substr(0, pos));
 }
 
 std::string getFileExtension(std::string filename) {
@@ -257,7 +261,10 @@ std::string getFileExtension(std::string filename) {
     return "";
   }
   const auto pos = filename.rfind('.');
-  return filename.substr(pos);
+  if (pos == std::string::npos) {
+    return "";
+  }
+  return StringUtils::uiSafeTextWithMarkers(filename.substr(pos));
 }
 
 void FileBrowserActivity::render(RenderLock&&) {
@@ -271,6 +278,7 @@ void FileBrowserActivity::render(RenderLock&&) {
       (mode == Mode::PickFirmware)
           ? std::string(tr(STR_SELECT_FIRMWARE_FILE))
           : ((basepath == "/") ? std::string(tr(STR_SD_CARD)) : basepath.substr(basepath.rfind('/') + 1));
+  folderName = StringUtils::uiSafeTextWithMarkers(folderName);
   GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, folderName.c_str());
 
   const int pathLineHeight = renderer.getLineHeight(SMALL_FONT_ID);
@@ -296,7 +304,8 @@ void FileBrowserActivity::render(RenderLock&&) {
     renderer.drawLine(0, separatorY, pageWidth - 1, separatorY, 3, true);
     const int pathMaxWidth = pageWidth - metrics.contentSidePadding * 2;
     // Left-truncate so the deepest directory is always visible
-    const char* pathStr = basepath.c_str();
+    const std::string safePath = StringUtils::uiSafeTextWithMarkers(basepath);
+    const char* pathStr = safePath.c_str();
     const char* pathDisplay = pathStr;
     char leftTruncBuf[256];
     if (renderer.getTextWidth(SMALL_FONT_ID, pathStr) > pathMaxWidth) {

@@ -12,6 +12,7 @@ namespace StringUtils {
 std::string sanitizeFilename(const std::string& name, size_t maxBytes = 100);
 
 bool hasUnsupportedUiCodepoint(const std::string& text);
+std::string uiSafeTextWithMarkers(const std::string& text);
 std::string basenameWithoutExtension(const std::string& path);
 std::string uiSafeBookTitle(const std::string& title, const std::string& path);
 std::string uiSafeAuthor(const std::string& author);

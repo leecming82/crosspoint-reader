@@ -2,6 +2,9 @@
 
 #include <Utf8.h>
 
+#include <algorithm>
+#include <cstdint>
+
 namespace StringUtils {
 namespace {
 
@@ -27,16 +30,22 @@ std::string trimAsciiSpacesAndDots(std::string text) {
   return text.substr(start, end - start + 1);
 }
 
-std::string asciiOnly(std::string text) {
-  std::string result;
-  result.reserve(text.size());
-  for (char ch : text) {
-    const auto c = static_cast<unsigned char>(ch);
-    if (c >= 32 && c < 127) {
-      result += static_cast<char>(c);
-    }
-  }
-  return trimAsciiSpacesAndDots(result);
+void appendHashMarker(std::string& result, uint32_t hash, uint32_t count, bool hasJapaneseKana) {
+  static constexpr char kHex[] = "0123456789ABCDEF";
+  result += hasJapaneseKana ? "JP[" : "CJK[";
+  result += std::to_string(count);
+  result += ':';
+  result += kHex[(hash >> 12) & 0xF];
+  result += kHex[(hash >> 8) & 0xF];
+  result += kHex[(hash >> 4) & 0xF];
+  result += kHex[hash & 0xF];
+  result += ']';
+}
+
+bool isJapaneseKana(uint32_t cp) {
+  return (cp >= 0x3040 && cp <= 0x30FF) ||  // Hiragana, Katakana
+         (cp >= 0x31F0 && cp <= 0x31FF) ||  // Katakana phonetic extensions
+         (cp >= 0xFF66 && cp <= 0xFF9F);    // Halfwidth katakana
 }
 
 }  // namespace
@@ -91,6 +100,49 @@ bool hasUnsupportedUiCodepoint(const std::string& text) {
   return false;
 }
 
+std::string uiSafeTextWithMarkers(const std::string& text) {
+  std::string result;
+  result.reserve(text.size());
+
+  bool inUnsupportedRun = false;
+  bool hasJapaneseKana = false;
+  uint32_t runHash = 2166136261u;
+  uint32_t runCount = 0;
+
+  auto flushRun = [&]() {
+    if (!inUnsupportedRun) return;
+    appendHashMarker(result, runHash, runCount, hasJapaneseKana);
+    inUnsupportedRun = false;
+    hasJapaneseKana = false;
+    runHash = 2166136261u;
+    runCount = 0;
+  };
+
+  const auto* cursor = reinterpret_cast<const unsigned char*>(text.c_str());
+  while (*cursor != 0) {
+    const auto* cpStart = cursor;
+    const uint32_t cp = utf8NextCodepoint(&cursor);
+    const bool unsupported = isUnsupportedUiCodepoint(cp);
+
+    if (unsupported) {
+      inUnsupportedRun = true;
+      hasJapaneseKana = hasJapaneseKana || isJapaneseKana(cp);
+      runCount++;
+      for (const auto* p = cpStart; p < cursor; ++p) {
+        runHash ^= *p;
+        runHash *= 16777619u;
+      }
+      continue;
+    }
+
+    flushRun();
+    result.append(reinterpret_cast<const char*>(cpStart), cursor - cpStart);
+  }
+
+  flushRun();
+  return result;
+}
+
 std::string basenameWithoutExtension(const std::string& path) {
   const auto slash = path.find_last_of("/\\");
   const size_t start = (slash == std::string::npos) ? 0 : slash + 1;
@@ -113,8 +165,7 @@ std::string uiSafeBookTitle(const std::string& title, const std::string& path) {
     return filename;
   }
 
-  const std::string ascii = asciiOnly(filename);
-  return ascii.empty() ? "Book" : ascii;
+  return uiSafeTextWithMarkers(filename);
 }
 
 std::string uiSafeAuthor(const std::string& author) {
@@ -125,7 +176,7 @@ std::string uiSafeLabelOrFallback(const std::string& label, const std::string& f
   if (!label.empty() && !hasUnsupportedUiCodepoint(label)) {
     return label;
   }
-  return fallback;
+  return uiSafeTextWithMarkers(fallback);
 }
 
 }  // namespace StringUtils
