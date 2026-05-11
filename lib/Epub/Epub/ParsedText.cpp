@@ -79,6 +79,8 @@ bool isCjkCodepoint(const uint32_t cp) {
          (cp >= 0x20000 && cp <= 0x2FA1F);  // CJK extensions B-F + compatibility supplement
 }
 
+bool isParagraphIndentSpace(const uint32_t cp) { return cp == 0x0020 || cp == 0x2003 || cp == 0x3000; }
+
 bool startsWithParagraphIndentSpace(const std::string& word) {
   if (word.empty()) {
     return false;
@@ -86,7 +88,90 @@ bool startsWithParagraphIndentSpace(const std::string& word) {
 
   const auto* ptr = reinterpret_cast<const unsigned char*>(word.c_str());
   const uint32_t cp = utf8NextCodepoint(&ptr);
-  return cp == 0x0020 || cp == 0x2003 || cp == 0x3000;  // space, em space, ideographic space
+  return isParagraphIndentSpace(cp);
+}
+
+bool isCjkOpeningPunctuation(const uint32_t cp) {
+  switch (cp) {
+    case 0x0028:  // (
+    case 0x005B:  // [
+    case 0x007B:  // {
+    case 0x2018:
+    case 0x201C:
+    case 0x3008:
+    case 0x300A:
+    case 0x300C:
+    case 0x300E:
+    case 0x3010:
+    case 0x3014:
+    case 0x3016:
+    case 0x3018:
+    case 0x301A:
+    case 0x301D:
+    case 0xFF08:
+    case 0xFF3B:
+    case 0xFF5B:
+    case 0xFF5F:
+      return true;
+    default:
+      return false;
+  }
+}
+
+bool startsWithCjkOpeningPunctuation(const std::string& word) { return isCjkOpeningPunctuation(firstCodepoint(word)); }
+
+bool startsWithCjkOpeningPunctuationInCjkText(const std::string& word) {
+  const auto* ptr = reinterpret_cast<const unsigned char*>(word.c_str());
+  const uint32_t firstCp = utf8NextCodepoint(&ptr);
+  if (!isCjkOpeningPunctuation(firstCp)) {
+    return false;
+  }
+
+  while (const uint32_t cp = utf8NextCodepoint(&ptr)) {
+    if (cp == 0x00AD || cp <= 0x20 || isParagraphIndentSpace(cp)) {
+      continue;
+    }
+    if (isCjkCodepoint(cp)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool removeLeadingIndentBeforeCjkOpeningPunctuation(std::string& word) {
+  if (word.empty()) {
+    return false;
+  }
+
+  const auto* ptr = reinterpret_cast<const unsigned char*>(word.c_str());
+  const auto* firstStart = ptr;
+  const uint32_t firstCp = utf8NextCodepoint(&ptr);
+  if (!isParagraphIndentSpace(firstCp)) {
+    return false;
+  }
+
+  const auto* secondStart = ptr;
+  const uint32_t secondCp = utf8NextCodepoint(&ptr);
+  if (!isCjkOpeningPunctuation(secondCp)) {
+    return false;
+  }
+
+  bool hasCjkText = false;
+  while (const uint32_t cp = utf8NextCodepoint(&ptr)) {
+    if (cp == 0x00AD || cp <= 0x20 || isParagraphIndentSpace(cp)) {
+      continue;
+    }
+    if (isCjkCodepoint(cp)) {
+      hasCjkText = true;
+      break;
+    }
+  }
+  if (!hasCjkText) {
+    return false;
+  }
+
+  word.erase(0, static_cast<size_t>(secondStart - firstStart));
+  return true;
 }
 
 bool isCjkNoLineStart(const uint32_t cp) {
@@ -160,32 +245,7 @@ bool isCjkNoLineStart(const uint32_t cp) {
   }
 }
 
-bool isCjkNoLineEnd(const uint32_t cp) {
-  switch (cp) {
-    case 0x0028:  // (
-    case 0x005B:  // [
-    case 0x007B:  // {
-    case 0x2018:
-    case 0x201C:
-    case 0x3008:
-    case 0x300A:
-    case 0x300C:
-    case 0x300E:
-    case 0x3010:
-    case 0x3014:
-    case 0x3016:
-    case 0x3018:
-    case 0x301A:
-    case 0x301D:
-    case 0xFF08:
-    case 0xFF3B:
-    case 0xFF5B:
-    case 0xFF5F:
-      return true;
-    default:
-      return false;
-  }
-}
+bool isCjkNoLineEnd(const uint32_t cp) { return isCjkOpeningPunctuation(cp); }
 
 bool isCjkClosingPunctuation(const uint32_t cp) {
   switch (cp) {
@@ -450,10 +510,10 @@ void ParsedText::layoutAndExtractLines(const GfxRenderer& renderer, const int fo
     return;
   }
 
-  // Apply fixed transforms before any per-line layout work.
-  applyParagraphIndent();
-
   const bool useCjkWrapper = shouldUseCjkWrapper();
+
+  // Apply fixed transforms before any per-line layout work.
+  applyParagraphIndent(useCjkWrapper);
 
   // Ensure SD card font glyph metrics are loaded before measuring word widths.
   // For flash-based fonts isSdCardFont() returns false and this block is skipped
@@ -827,13 +887,25 @@ bool ParsedText::layoutAndExtractCjkLines(const GfxRenderer& renderer, const int
     return overflow > 0 && overflow <= maxOverflow;
   };
 
+  auto leadingOpeningHangWidth = [&units, firstLineIndent](const bool isFirstLine, const size_t start) {
+    if (!isFirstLine || start != 0 || firstLineIndent <= 0 || units.empty()) {
+      return 0;
+    }
+    const CjkUnit& unit = units.front();
+    if (!unit.isCjk || !isCjkOpeningPunctuation(unit.firstCp)) {
+      return 0;
+    }
+    return std::min<int>(firstLineIndent, unit.width);
+  };
+
   auto emitLine = [&](const size_t start, const size_t end, const int lineWidth, const bool isFirstLine) {
     if (start >= end) {
       return;
     }
 
-    const int effectivePageWidth = pageWidth - (isFirstLine ? firstLineIndent : 0);
-    int lineOffset = isFirstLine ? firstLineIndent : 0;
+    const int hangingOpeningWidth = leadingOpeningHangWidth(isFirstLine, start);
+    const int effectivePageWidth = pageWidth - (isFirstLine ? firstLineIndent : 0) + hangingOpeningWidth;
+    int lineOffset = (isFirstLine ? firstLineIndent : 0) - hangingOpeningWidth;
     if (blockStyle.alignment == CssTextAlign::Right) {
       lineOffset += effectivePageWidth - lineWidth;
     } else if (blockStyle.alignment == CssTextAlign::Center) {
@@ -911,7 +983,8 @@ bool ParsedText::layoutAndExtractCjkLines(const GfxRenderer& renderer, const int
   size_t lineStart = 0;
   bool isFirstLine = true;
   while (lineStart < units.size()) {
-    const int effectivePageWidth = pageWidth - (isFirstLine ? firstLineIndent : 0);
+    const int hangingOpeningWidth = leadingOpeningHangWidth(isFirstLine, lineStart);
+    const int effectivePageWidth = pageWidth - (isFirstLine ? firstLineIndent : 0) + hangingOpeningWidth;
     int lineWidth = 0;
     size_t bestBreak = lineStart;
     int widthAtBestBreak = 0;
@@ -1107,8 +1180,12 @@ std::vector<size_t> ParsedText::computeLineBreaks(const GfxRenderer& renderer, c
   return lineBreakIndices;
 }
 
-void ParsedText::applyParagraphIndent() {
+void ParsedText::applyParagraphIndent(const bool useCjkWrapper) {
   if (extraParagraphSpacing || words.empty()) {
+    return;
+  }
+
+  if (removeLeadingIndentBeforeCjkOpeningPunctuation(words.front())) {
     return;
   }
 
@@ -1116,8 +1193,10 @@ void ParsedText::applyParagraphIndent() {
     // CSS text-indent is explicitly set (even if 0) - don't use fallback EmSpace
     // The actual indent positioning is handled in extractLine()
   } else if ((blockStyle.alignment == CssTextAlign::Justify || blockStyle.alignment == CssTextAlign::Left) &&
-             !startsWithParagraphIndentSpace(words.front())) {
-    // No CSS text-indent defined - use EmSpace fallback for visual indent
+             !startsWithParagraphIndentSpace(words.front()) &&
+             !startsWithCjkOpeningPunctuationInCjkText(words.front())) {
+    // No CSS text-indent defined - use EmSpace fallback for visual indent.
+    // Leading CJK opening punctuation hangs in this space, so don't insert an extra one.
     words.front().insert(0, "\xe2\x80\x83");
   }
 }

@@ -22,7 +22,7 @@ class ParsedText {
   bool hyphenationEnabled;
   bool focusReadingEnabled;
 
-  void applyParagraphIndent();
+  void applyParagraphIndent(bool useCjkWrapper);
   std::vector<size_t> computeLineBreaks(const GfxRenderer& renderer, int fontId, int pageWidth,
                                         std::vector<uint16_t>& wordWidths, std::vector<bool>& continuesVec);
   std::vector<size_t> computeHyphenatedLineBreaks(const GfxRenderer& renderer, int fontId, int pageWidth,
