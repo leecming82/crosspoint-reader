@@ -79,6 +79,16 @@ bool isCjkCodepoint(const uint32_t cp) {
          (cp >= 0x20000 && cp <= 0x2FA1F);  // CJK extensions B-F + compatibility supplement
 }
 
+bool startsWithParagraphIndentSpace(const std::string& word) {
+  if (word.empty()) {
+    return false;
+  }
+
+  const auto* ptr = reinterpret_cast<const unsigned char*>(word.c_str());
+  const uint32_t cp = utf8NextCodepoint(&ptr);
+  return cp == 0x0020 || cp == 0x2003 || cp == 0x3000;  // space, em space, ideographic space
+}
+
 bool isCjkNoLineStart(const uint32_t cp) {
   switch (cp) {
     case 0x0021:  // !
@@ -443,6 +453,8 @@ void ParsedText::layoutAndExtractLines(const GfxRenderer& renderer, const int fo
   // Apply fixed transforms before any per-line layout work.
   applyParagraphIndent();
 
+  const bool useCjkWrapper = shouldUseCjkWrapper();
+
   // Ensure SD card font glyph metrics are loaded before measuring word widths.
   // For flash-based fonts isSdCardFont() returns false and this block is skipped
   // entirely — no heap allocation. For SD card fonts this reads glyph metadata
@@ -461,6 +473,9 @@ void ParsedText::layoutAndExtractLines(const GfxRenderer& renderer, const int fo
       if (i > 0) allText += ' ';
       allText += words[i];
     }
+    if (useCjkWrapper) {
+      allText += "\xe6\x97\xa5\xe3\x81\x82";  // 日あ
+    }
     if (hyphenationEnabled) allText += '-';
 
     // Style mask: only ask the SD font to load advances for styles actually
@@ -475,7 +490,7 @@ void ParsedText::layoutAndExtractLines(const GfxRenderer& renderer, const int fo
   }
 
   const int pageWidth = viewportWidth;
-  if (shouldUseCjkWrapper()) {
+  if (useCjkWrapper) {
     if (layoutAndExtractCjkLines(renderer, fontId, pageWidth, processLine, includeLastLine)) {
       return;
     }
@@ -1100,7 +1115,8 @@ void ParsedText::applyParagraphIndent() {
   if (blockStyle.textIndentDefined) {
     // CSS text-indent is explicitly set (even if 0) - don't use fallback EmSpace
     // The actual indent positioning is handled in extractLine()
-  } else if (blockStyle.alignment == CssTextAlign::Justify || blockStyle.alignment == CssTextAlign::Left) {
+  } else if ((blockStyle.alignment == CssTextAlign::Justify || blockStyle.alignment == CssTextAlign::Left) &&
+             !startsWithParagraphIndentSpace(words.front())) {
     // No CSS text-indent defined - use EmSpace fallback for visual indent
     words.front().insert(0, "\xe2\x80\x83");
   }
