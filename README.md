@@ -1,6 +1,6 @@
 ## Crosspoint modified to support Japanese language epubs with tategaki
+- Relevant code is in the feature/japanese-support branch (not master) as I'm hoping to continue merging improvements from the original repo
 <img width="250" height="400" alt="test" src="https://github.com/user-attachments/assets/f0be07fc-da5e-4607-8667-daede61e9e3e" />
-
 
 # CrossPoint Reader
 
