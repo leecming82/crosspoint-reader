@@ -11,6 +11,7 @@
 
 #include "DirectPixelWriter.h"
 #include "DitherUtils.h"
+#include "ImageRotationUtils.h"
 #include "PixelCache.h"
 
 namespace {
@@ -151,15 +152,17 @@ int jpegDrawCallback(JPEGDRAW* pDraw) {
   int dstXEnd = (srcXEnd >= ctx->scaledSrcWidth) ? ctx->dstWidth : (int)((int64_t)srcXEnd * fineScaleFPX >> FP_SHIFT);
 
   // Pre-clamp destination ranges to screen bounds (eliminates per-pixel screen checks)
-  int clampYMax = ctx->dstHeight;
-  if (ctx->screenHeight - cfgY < clampYMax) clampYMax = ctx->screenHeight - cfgY;
-  if (dstYStart < -cfgY) dstYStart = -cfgY;
-  if (dstYEnd > clampYMax) dstYEnd = clampYMax;
+  if (!imageIsRotated(*ctx->config)) {
+    int clampYMax = ctx->dstHeight;
+    if (ctx->screenHeight - cfgY < clampYMax) clampYMax = ctx->screenHeight - cfgY;
+    if (dstYStart < -cfgY) dstYStart = -cfgY;
+    if (dstYEnd > clampYMax) dstYEnd = clampYMax;
 
-  int clampXMax = ctx->dstWidth;
-  if (ctx->screenWidth - cfgX < clampXMax) clampXMax = ctx->screenWidth - cfgX;
-  if (dstXStart < -cfgX) dstXStart = -cfgX;
-  if (dstXEnd > clampXMax) dstXEnd = clampXMax;
+    int clampXMax = ctx->dstWidth;
+    if (ctx->screenWidth - cfgX < clampXMax) clampXMax = ctx->screenWidth - cfgX;
+    if (dstXStart < -cfgX) dstXStart = -cfgX;
+    if (dstXEnd > clampXMax) dstXEnd = clampXMax;
+  }
 
   if (dstYStart >= dstYEnd || dstXStart >= dstXEnd) return 1;
 
@@ -180,17 +183,17 @@ int jpegDrawCallback(JPEGDRAW* pDraw) {
       if (caching) cw.beginRow(outY, ctx->config->y);
       const uint8_t* row = &pixels[(dstY - blockY) * stride];
       for (int dstX = dstXStart; dstX < dstXEnd; dstX++) {
-        const int outX = cfgX + dstX;
+        int outX, outYForPixel;
+        mapRotatedImagePixel(*ctx->config, dstX, dstY, outX, outYForPixel);
         uint8_t gray = row[dstX - blockX];
         uint8_t dithered;
         if (useDithering) {
-          dithered = applyBayerDither4Level(gray, outX, outY);
+          dithered = applyBayerDither4Level(gray, outX, outYForPixel);
         } else {
           dithered = gray / 85;
           if (dithered > 3) dithered = 3;
         }
-        pw.writePixel(outX, dithered);
-        if (caching) cw.writePixel(outX, dithered);
+        writeImagePixel(pw, cw, caching, *ctx->config, dstX, dstY, dithered);
       }
     }
     return 1;
@@ -226,7 +229,8 @@ int jpegDrawCallback(JPEGDRAW* pDraw) {
 
       // Left edge (with X boundary clamping)
       for (int dstX = dstXStart; dstX < safeXStart; dstX++) {
-        const int outX = cfgX + dstX;
+        int outX, outYForPixel;
+        mapRotatedImagePixel(*ctx->config, dstX, dstY, outX, outYForPixel);
         const int32_t srcFxFP = dstX * invScaleFPX;
         const int32_t fx = srcFxFP & FP_MASK;
         const int32_t fxInv = FP_ONE - fx;
@@ -243,18 +247,18 @@ int jpegDrawCallback(JPEGDRAW* pDraw) {
 
         uint8_t dithered;
         if (useDithering) {
-          dithered = applyBayerDither4Level(gray, outX, outY);
+          dithered = applyBayerDither4Level(gray, outX, outYForPixel);
         } else {
           dithered = gray / 85;
           if (dithered > 3) dithered = 3;
         }
-        pw.writePixel(outX, dithered);
-        if (caching) cw.writePixel(outX, dithered);
+        writeImagePixel(pw, cw, caching, *ctx->config, dstX, dstY, dithered);
       }
 
       // Interior (no X boundary checks — lx0 and lx0+1 guaranteed in bounds)
       for (int dstX = safeXStart; dstX < safeXEnd; dstX++) {
-        const int outX = cfgX + dstX;
+        int outX, outYForPixel;
+        mapRotatedImagePixel(*ctx->config, dstX, dstY, outX, outYForPixel);
         const int32_t srcFxFP = dstX * invScaleFPX;
         const int32_t fx = srcFxFP & FP_MASK;
         const int32_t fxInv = FP_ONE - fx;
@@ -266,18 +270,18 @@ int jpegDrawCallback(JPEGDRAW* pDraw) {
 
         uint8_t dithered;
         if (useDithering) {
-          dithered = applyBayerDither4Level(gray, outX, outY);
+          dithered = applyBayerDither4Level(gray, outX, outYForPixel);
         } else {
           dithered = gray / 85;
           if (dithered > 3) dithered = 3;
         }
-        pw.writePixel(outX, dithered);
-        if (caching) cw.writePixel(outX, dithered);
+        writeImagePixel(pw, cw, caching, *ctx->config, dstX, dstY, dithered);
       }
 
       // Right edge (with X boundary clamping)
       for (int dstX = safeXEnd; dstX < dstXEnd; dstX++) {
-        const int outX = cfgX + dstX;
+        int outX, outYForPixel;
+        mapRotatedImagePixel(*ctx->config, dstX, dstY, outX, outYForPixel);
         const int32_t srcFxFP = dstX * invScaleFPX;
         const int32_t fx = srcFxFP & FP_MASK;
         const int32_t fxInv = FP_ONE - fx;
@@ -292,13 +296,12 @@ int jpegDrawCallback(JPEGDRAW* pDraw) {
 
         uint8_t dithered;
         if (useDithering) {
-          dithered = applyBayerDither4Level(gray, outX, outY);
+          dithered = applyBayerDither4Level(gray, outX, outYForPixel);
         } else {
           dithered = gray / 85;
           if (dithered > 3) dithered = 3;
         }
-        pw.writePixel(outX, dithered);
-        if (caching) cw.writePixel(outX, dithered);
+        writeImagePixel(pw, cw, caching, *ctx->config, dstX, dstY, dithered);
       }
     }
     return 1;
@@ -316,7 +319,8 @@ int jpegDrawCallback(JPEGDRAW* pDraw) {
     const uint8_t* row = &pixels[ly * stride];
 
     for (int dstX = dstXStart; dstX < dstXEnd; dstX++) {
-      const int outX = cfgX + dstX;
+      int outX, outYForPixel;
+      mapRotatedImagePixel(*ctx->config, dstX, dstY, outX, outYForPixel);
       const int32_t srcFxFP = dstX * invScaleFPX;
       int lx = (srcFxFP >> FP_SHIFT) - blockX;
       if (lx < 0) lx = 0;
@@ -325,13 +329,12 @@ int jpegDrawCallback(JPEGDRAW* pDraw) {
 
       uint8_t dithered;
       if (useDithering) {
-        dithered = applyBayerDither4Level(gray, outX, outY);
+        dithered = applyBayerDither4Level(gray, outX, outYForPixel);
       } else {
         dithered = gray / 85;
         if (dithered > 3) dithered = 3;
       }
-      pw.writePixel(outX, dithered);
-      if (caching) cw.writePixel(outX, dithered);
+      writeImagePixel(pw, cw, caching, *ctx->config, dstX, dstY, dithered);
     }
   }
 
@@ -424,8 +427,13 @@ bool JpegToFramebufferConverter::decodeToFramebuffer(const std::string& imagePat
   int destWidth, destHeight;
 
   if (config.useExactDimensions && config.maxWidth > 0 && config.maxHeight > 0) {
-    destWidth = config.maxWidth;
-    destHeight = config.maxHeight;
+    if (imageIsRotated(config)) {
+      destWidth = config.maxHeight;
+      destHeight = config.maxWidth;
+    } else {
+      destWidth = config.maxWidth;
+      destHeight = config.maxHeight;
+    }
     targetScale = (float)destWidth / srcWidth;
   } else {
     float scaleX = (config.maxWidth > 0 && srcWidth > config.maxWidth) ? (float)config.maxWidth / srcWidth : 1.0f;
@@ -478,7 +486,9 @@ bool JpegToFramebufferConverter::decodeToFramebuffer(const std::string& imagePat
   // Allocate cache buffer using final output dimensions
   ctx.caching = !config.cachePath.empty();
   if (ctx.caching) {
-    if (!ctx.cache.allocate(destWidth, destHeight, config.x, config.y)) {
+    const int cacheWidth = imageIsRotated(config) ? config.maxWidth : destWidth;
+    const int cacheHeight = imageIsRotated(config) ? config.maxHeight : destHeight;
+    if (!ctx.cache.allocate(cacheWidth, cacheHeight, config.x, config.y)) {
       LOG_ERR("JPG", "Failed to allocate cache buffer, continuing without caching");
       ctx.caching = false;
     }

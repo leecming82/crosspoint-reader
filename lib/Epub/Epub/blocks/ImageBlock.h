@@ -4,11 +4,12 @@
 #include <memory>
 #include <string>
 
+#include "../converters/ImageToFramebufferDecoder.h"
 #include "Block.h"
 
 class ImageBlock final : public Block {
  public:
-  ImageBlock(const std::string& imagePath, int16_t width, int16_t height);
+  ImageBlock(const std::string& imagePath, int16_t width, int16_t height, ImageRotation rotation = ImageRotation::None);
   ~ImageBlock() override = default;
 
   const std::string& getImagePath() const { return imagePath; }
@@ -28,4 +29,5 @@ class ImageBlock final : public Block {
   std::string imagePath;
   int16_t width;
   int16_t height;
+  ImageRotation rotation;
 };

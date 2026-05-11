@@ -1,10 +1,17 @@
 #pragma once
 #include <HalStorage.h>
 
+#include <cstdint>
 #include <memory>
 #include <string>
 
 class GfxRenderer;
+
+enum class ImageRotation : uint8_t {
+  None = 0,
+  Clockwise = 1,
+  CounterClockwise = 2,
+};
 
 struct ImageDimensions {
   int16_t width;
@@ -19,6 +26,7 @@ struct RenderConfig {
   bool performanceMode = false;
   bool useExactDimensions = false;  // If true, use maxWidth/maxHeight as exact output size (no recalculation)
   std::string cachePath;            // If non-empty, decoder will write pixel cache to this path
+  ImageRotation rotation = ImageRotation::None;
 };
 
 class ImageToFramebufferDecoder {

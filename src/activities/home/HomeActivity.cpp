@@ -57,6 +57,11 @@ void HomeActivity::loadRecentCovers(int coverHeight) {
   bool showingLoading = false;
   Rect popupRect;
 
+  if (coverBufferStored || coverBuffer) {
+    freeCoverBuffer();
+    coverRendered = false;
+  }
+
   int progress = 0;
   for (RecentBook& book : recentBooks) {
     if (!book.coverBmpPath.empty()) {
@@ -74,11 +79,7 @@ void HomeActivity::loadRecentCovers(int coverHeight) {
             popupRect = GUI.drawPopup(renderer, tr(STR_LOADING_POPUP));
           }
           GUI.fillPopupProgress(renderer, popupRect, 10 + progress * (90 / recentBooks.size()));
-          bool success = epub.generateThumbBmp(coverHeight);
-          if (!success) {
-            RECENT_BOOKS.updateBook(book.path, book.title, book.author, "");
-            book.coverBmpPath = "";
-          }
+          epub.generateThumbBmp(coverHeight);
           coverRendered = false;
           requestUpdate();
         } else if (FsHelpers::hasXtcExtension(book.path)) {

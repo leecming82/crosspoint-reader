@@ -12,20 +12,27 @@
 // - uint16_t height
 // - uint8_t pixels[...] - 2 bits per pixel, packed (4 pixels per byte), row-major order
 
-ImageBlock::ImageBlock(const std::string& imagePath, int16_t width, int16_t height)
-    : imagePath(imagePath), width(width), height(height) {}
+ImageBlock::ImageBlock(const std::string& imagePath, int16_t width, int16_t height, ImageRotation rotation)
+    : imagePath(imagePath), width(width), height(height), rotation(rotation) {}
 
 bool ImageBlock::imageExists() const { return Storage.exists(imagePath.c_str()); }
 
 namespace {
 
-std::string getCachePath(const std::string& imagePath) {
+std::string getCachePath(const std::string& imagePath, ImageRotation rotation) {
   // Replace extension with .pxc (pixel cache)
+  const char* suffix = ".pxc";
+  if (rotation == ImageRotation::Clockwise) {
+    suffix = ".cw.pxc";
+  } else if (rotation == ImageRotation::CounterClockwise) {
+    suffix = ".ccw.pxc";
+  }
+
   size_t dotPos = imagePath.rfind('.');
   if (dotPos != std::string::npos) {
-    return imagePath.substr(0, dotPos) + ".pxc";
+    return imagePath.substr(0, dotPos) + suffix;
   }
-  return imagePath + ".pxc";
+  return imagePath + suffix;
 }
 
 bool renderFromCache(GfxRenderer& renderer, const std::string& cachePath, int x, int y, int expectedWidth,
@@ -105,7 +112,7 @@ void ImageBlock::render(GfxRenderer& renderer, const int x, const int y) {
   }
 
   // Try to render from cache first
-  std::string cachePath = getCachePath(imagePath);
+  std::string cachePath = getCachePath(imagePath, rotation);
   if (renderFromCache(renderer, cachePath, x, y, width, height)) {
     return;  // Successfully rendered from cache
   }
@@ -137,6 +144,7 @@ void ImageBlock::render(GfxRenderer& renderer, const int x, const int y) {
   config.performanceMode = false;
   config.useExactDimensions = true;  // Use pre-calculated dimensions to avoid rounding mismatches
   config.cachePath = cachePath;      // Enable caching during decode
+  config.rotation = rotation;
 
   ImageToFramebufferDecoder* decoder = ImageDecoderFactory::getDecoder(imagePath);
   if (!decoder) {
@@ -159,6 +167,7 @@ bool ImageBlock::serialize(FsFile& file) {
   serialization::writeString(file, imagePath);
   serialization::writePod(file, width);
   serialization::writePod(file, height);
+  serialization::writePod(file, static_cast<uint8_t>(rotation));
   return true;
 }
 
@@ -168,5 +177,13 @@ std::unique_ptr<ImageBlock> ImageBlock::deserialize(FsFile& file) {
   int16_t w, h;
   serialization::readPod(file, w);
   serialization::readPod(file, h);
-  return std::unique_ptr<ImageBlock>(new ImageBlock(path, w, h));
+  uint8_t serializedRotation = 0;
+  serialization::readPod(file, serializedRotation);
+  ImageRotation rotation = ImageRotation::None;
+  if (serializedRotation == static_cast<uint8_t>(ImageRotation::Clockwise)) {
+    rotation = ImageRotation::Clockwise;
+  } else if (serializedRotation == static_cast<uint8_t>(ImageRotation::CounterClockwise)) {
+    rotation = ImageRotation::CounterClockwise;
+  }
+  return std::unique_ptr<ImageBlock>(new ImageBlock(path, w, h, rotation));
 }

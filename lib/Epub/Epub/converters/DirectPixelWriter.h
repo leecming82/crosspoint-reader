@@ -129,6 +129,42 @@ struct DirectPixelWriter {
       fb[byteIndex] |= bitMask;  // Set bit (draw white)
     }
   }
+
+  inline void writePixelAt(int logicalX, int logicalY, uint8_t pixelValue) const {
+    // Determine whether to draw based on render mode
+    bool draw;
+    bool state;
+    switch (mode) {
+      case GfxRenderer::BW:
+        draw = (pixelValue < 3);
+        state = true;
+        break;
+      case GfxRenderer::GRAYSCALE_MSB:
+        draw = (pixelValue == 1 || pixelValue == 2);
+        state = false;
+        break;
+      case GfxRenderer::GRAYSCALE_LSB:
+        draw = (pixelValue == 1);
+        state = false;
+        break;
+      default:
+        return;
+    }
+
+    if (!draw) return;
+
+    const int phyX = phyXBase + logicalX * phyXStepX + logicalY * phyXStepY;
+    const int phyY = phyYBase + logicalX * phyYStepX + logicalY * phyYStepY;
+
+    const uint16_t byteIndex = phyY * displayWidthBytes + (phyX >> 3);
+    const uint8_t bitMask = 1 << (7 - (phyX & 7));
+
+    if (state) {
+      fb[byteIndex] &= ~bitMask;  // Clear bit (draw black)
+    } else {
+      fb[byteIndex] |= bitMask;  // Set bit (draw white)
+    }
+  }
 };
 
 // Direct cache writer that eliminates per-pixel overhead from PixelCache::setPixel().

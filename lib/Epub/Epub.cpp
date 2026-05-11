@@ -646,9 +646,14 @@ bool Epub::generateThumbBmp(int height) const {
     if (!Storage.openFileForWrite("EBP", coverJpgTempPath, coverJpg)) {
       return false;
     }
-    readItemContentsToStream(coverImageHref, coverJpg, 1024);
+    const bool extractSuccess = readItemContentsToStream(coverImageHref, coverJpg, 1024);
+    const size_t extractedSize = coverJpg.size();
     // Explicitly close() file before reopening for reading
     coverJpg.close();
+    if (!extractSuccess || extractedSize == 0) {
+      Storage.remove(coverJpgTempPath.c_str());
+      return false;
+    }
 
     if (!Storage.openFileForRead("EBP", coverJpgTempPath, coverJpg)) {
       return false;
@@ -656,6 +661,8 @@ bool Epub::generateThumbBmp(int height) const {
 
     FsFile thumbBmp;
     if (!Storage.openFileForWrite("EBP", getThumbBmpPath(height), thumbBmp)) {
+      coverJpg.close();
+      Storage.remove(coverJpgTempPath.c_str());
       return false;
     }
     // Use smaller target size for Continue Reading card (half of screen: 240x400)
@@ -683,9 +690,14 @@ bool Epub::generateThumbBmp(int height) const {
     if (!Storage.openFileForWrite("EBP", coverPngTempPath, coverPng)) {
       return false;
     }
-    readItemContentsToStream(coverImageHref, coverPng, 1024);
+    const bool extractSuccess = readItemContentsToStream(coverImageHref, coverPng, 1024);
+    const size_t extractedSize = coverPng.size();
     // Explicitly close() file before reopening for reading
     coverPng.close();
+    if (!extractSuccess || extractedSize == 0) {
+      Storage.remove(coverPngTempPath.c_str());
+      return false;
+    }
 
     if (!Storage.openFileForRead("EBP", coverPngTempPath, coverPng)) {
       return false;
@@ -693,6 +705,8 @@ bool Epub::generateThumbBmp(int height) const {
 
     FsFile thumbBmp;
     if (!Storage.openFileForWrite("EBP", getThumbBmpPath(height), thumbBmp)) {
+      coverPng.close();
+      Storage.remove(coverPngTempPath.c_str());
       return false;
     }
     int THUMB_TARGET_WIDTH = height * 0.6;

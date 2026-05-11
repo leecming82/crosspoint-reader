@@ -11,6 +11,7 @@
 
 #include "DirectPixelWriter.h"
 #include "DitherUtils.h"
+#include "ImageRotationUtils.h"
 #include "PixelCache.h"
 
 namespace {
@@ -181,7 +182,7 @@ int pngDrawCallback(PNGDRAW* pDraw) {
   if (dstY >= ctx->dstHeight) return 1;
 
   int outY = ctx->config->y + dstY;
-  if (outY >= ctx->screenHeight) return 1;
+  if (!imageIsRotated(*ctx->config) && outY >= ctx->screenHeight) return 1;
 
   // Convert entire source line to grayscale (improves cache locality)
   convertLineToGray(pDraw->pPixels, ctx->grayLineBuffer, srcWidth, pDraw->iPixelType, pDraw->pPalette,
@@ -189,7 +190,6 @@ int pngDrawCallback(PNGDRAW* pDraw) {
 
   // Render scaled row using Bresenham-style integer stepping (no floating-point division)
   int dstWidth = ctx->dstWidth;
-  int outXBase = ctx->config->x;
   int screenWidth = ctx->screenWidth;
   bool useDithering = ctx->config->useDithering;
   bool caching = ctx->caching;
@@ -209,19 +209,19 @@ int pngDrawCallback(PNGDRAW* pDraw) {
   int error = 0;
 
   for (int dstX = 0; dstX < dstWidth; dstX++) {
-    int outX = outXBase + dstX;
-    if (outX < screenWidth) {
+    int outX, outYForPixel;
+    mapRotatedImagePixel(*ctx->config, dstX, dstY, outX, outYForPixel);
+    if (imageIsRotated(*ctx->config) || outX < screenWidth) {
       uint8_t gray = ctx->grayLineBuffer[srcX];
 
       uint8_t ditheredGray;
       if (useDithering) {
-        ditheredGray = applyBayerDither4Level(gray, outX, outY);
+        ditheredGray = applyBayerDither4Level(gray, outX, outYForPixel);
       } else {
         ditheredGray = gray / 85;
         if (ditheredGray > 3) ditheredGray = 3;
       }
-      pw.writePixel(outX, ditheredGray);
-      if (caching) cw.writePixel(outX, ditheredGray);
+      writeImagePixel(pw, cw, caching, *ctx->config, dstX, dstY, ditheredGray);
     }
 
     // Bresenham-style stepping: advance srcX based on ratio srcWidth/dstWidth
@@ -310,8 +310,13 @@ bool PngToFramebufferConverter::decodeToFramebuffer(const std::string& imagePath
 
   if (config.useExactDimensions && config.maxWidth > 0 && config.maxHeight > 0) {
     // Use exact dimensions as specified (avoids rounding mismatches with pre-calculated sizes)
-    ctx.dstWidth = config.maxWidth;
-    ctx.dstHeight = config.maxHeight;
+    if (imageIsRotated(config)) {
+      ctx.dstWidth = config.maxHeight;
+      ctx.dstHeight = config.maxWidth;
+    } else {
+      ctx.dstWidth = config.maxWidth;
+      ctx.dstHeight = config.maxHeight;
+    }
     ctx.scale = (float)ctx.dstWidth / ctx.srcWidth;
   } else {
     // Calculate scale factor to fit within maxWidth/maxHeight
@@ -361,11 +366,13 @@ bool PngToFramebufferConverter::decodeToFramebuffer(const std::string& imagePath
   static constexpr size_t PNG_MAX_CACHE_BYTES = 48000;
   ctx.caching = !config.cachePath.empty();
   if (ctx.caching) {
-    size_t cacheSize = (size_t)((ctx.dstWidth + 3) / 4) * ctx.dstHeight;
+    const int cacheWidth = imageIsRotated(config) ? config.maxWidth : ctx.dstWidth;
+    const int cacheHeight = imageIsRotated(config) ? config.maxHeight : ctx.dstHeight;
+    size_t cacheSize = (size_t)((cacheWidth + 3) / 4) * cacheHeight;
     if (cacheSize > PNG_MAX_CACHE_BYTES) {
       LOG_DBG("PNG", "Skipping cache: %zu bytes exceeds PNG limit (%zu)", cacheSize, PNG_MAX_CACHE_BYTES);
       ctx.caching = false;
-    } else if (!ctx.cache.allocate(ctx.dstWidth, ctx.dstHeight, config.x, config.y)) {
+    } else if (!ctx.cache.allocate(cacheWidth, cacheHeight, config.x, config.y)) {
       LOG_ERR("PNG", "Failed to allocate cache buffer, continuing without caching");
       ctx.caching = false;
     }
