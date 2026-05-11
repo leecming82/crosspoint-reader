@@ -638,6 +638,9 @@ void EpubReaderActivity::render(RenderLock&& lock) {
         showPendingSyncSaveError();
         return;
       }
+      if (auto* fcm = renderer.getFontCacheManager()) {
+        fcm->clearPersistentCache();
+      }
     } else {
       LOG_DBG("ERS", "Cache found, skipping build...");
     }
@@ -822,13 +825,16 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
   }
   const auto tDisplay = millis();
 
-  // Save bw buffer to reset buffer state after grayscale data sync
-  renderer.storeBwBuffer();
+  // Save BW buffer to reset buffer/display state after grayscale data sync.
+  // If indexing fragmented heap enough that this fails, skip AA for this page;
+  // otherwise X3 grayscale can leave RED RAM unsynced and force a slow full sync
+  // on the next page turn.
+  const bool bwBufferStored = SETTINGS.textAntiAliasing && renderer.storeBwBuffer();
   const auto tBwStore = millis();
 
   // grayscale rendering
   // TODO: Only do this if font supports it
-  if (SETTINGS.textAntiAliasing) {
+  if (SETTINGS.textAntiAliasing && bwBufferStored) {
     renderer.clearScreen(0x00);
     renderer.setRenderMode(GfxRenderer::GRAYSCALE_LSB);
     page->render(renderer, SETTINGS.getReaderFontId(), orientedMarginLeft, orientedMarginTop);
@@ -857,8 +863,10 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
             tPrewarm - t0, tBwRender - tPrewarm, tDisplay - tBwRender, tBwStore - tDisplay, tGrayLsb - tBwStore,
             tGrayMsb - tGrayLsb, tGrayDisplay - tGrayMsb, tBwRestore - tGrayDisplay, tEnd - t0);
   } else {
-    // restore the bw data
-    renderer.restoreBwBuffer();
+    if (SETTINGS.textAntiAliasing) {
+      LOG_ERR("ERS", "Skipping text AA: failed to store BW buffer (free=%u max=%u)",
+              static_cast<unsigned>(ESP.getFreeHeap()), static_cast<unsigned>(ESP.getMaxAllocHeap()));
+    }
     const auto tBwRestore = millis();
 
     const auto tEnd = millis();
