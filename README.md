@@ -1,3 +1,7 @@
+## Crosspoint modified to support Japanese language epubs with tategaki
+<img width="250" height="400" alt="test" src="https://github.com/user-attachments/assets/f0be07fc-da5e-4607-8667-daede61e9e3e" />
+
+
 # CrossPoint Reader
 
 Firmware for the **Xteink X4** e-paper display reader (unaffiliated with Xteink).
