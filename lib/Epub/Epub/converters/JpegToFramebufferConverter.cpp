@@ -6,6 +6,7 @@
 #include <JPEGDEC.h>
 #include <Logging.h>
 
+#include <cstdio>
 #include <cstdlib>
 #include <new>
 
@@ -43,7 +44,7 @@ struct JpegContext {
   int32_t fineScaleFPY{1 << 16};  // Y: src -> dst row mapping
   int32_t invScaleFPY{1 << 16};   // Y: dst -> src row mapping
 
-  PixelCache cache;
+  StreamingPixelCache cache;
   bool caching{false};
 };
 
@@ -170,17 +171,13 @@ int jpegDrawCallback(JPEGDRAW* pDraw) {
   DirectPixelWriter pw;
   pw.init(renderer);
 
-  DirectCacheWriter cw;
-  if (caching) {
-    cw.init(ctx->cache.buffer, ctx->cache.bytesPerRow, ctx->cache.originX);
-  }
+  StreamingPixelCache& cw = ctx->cache;
 
   // === 1:1 fast path: no scaling math ===
   if (fineScaleFPX == FP_ONE && fineScaleFPY == FP_ONE) {
     for (int dstY = dstYStart; dstY < dstYEnd; dstY++) {
       const int outY = cfgY + dstY;
       pw.beginRow(outY);
-      if (caching) cw.beginRow(outY, ctx->config->y);
       const uint8_t* row = &pixels[(dstY - blockY) * stride];
       for (int dstX = dstXStart; dstX < dstXEnd; dstX++) {
         int outX, outYForPixel;
@@ -193,7 +190,7 @@ int jpegDrawCallback(JPEGDRAW* pDraw) {
           dithered = gray / 85;
           if (dithered > 3) dithered = 3;
         }
-        writeImagePixel(pw, cw, caching, *ctx->config, dstX, dstY, dithered);
+        writeImagePixelAndCacheSource(pw, cw, caching, *ctx->config, dstX, dstY, dithered);
       }
     }
     return 1;
@@ -214,7 +211,6 @@ int jpegDrawCallback(JPEGDRAW* pDraw) {
     for (int dstY = dstYStart; dstY < dstYEnd; dstY++) {
       const int outY = cfgY + dstY;
       pw.beginRow(outY);
-      if (caching) cw.beginRow(outY, ctx->config->y);
       const int32_t srcFyFP = dstY * invScaleFPY;
       const int32_t fy = srcFyFP & FP_MASK;
       const int32_t fyInv = FP_ONE - fy;
@@ -252,7 +248,7 @@ int jpegDrawCallback(JPEGDRAW* pDraw) {
           dithered = gray / 85;
           if (dithered > 3) dithered = 3;
         }
-        writeImagePixel(pw, cw, caching, *ctx->config, dstX, dstY, dithered);
+        writeImagePixelAndCacheSource(pw, cw, caching, *ctx->config, dstX, dstY, dithered);
       }
 
       // Interior (no X boundary checks — lx0 and lx0+1 guaranteed in bounds)
@@ -275,7 +271,7 @@ int jpegDrawCallback(JPEGDRAW* pDraw) {
           dithered = gray / 85;
           if (dithered > 3) dithered = 3;
         }
-        writeImagePixel(pw, cw, caching, *ctx->config, dstX, dstY, dithered);
+        writeImagePixelAndCacheSource(pw, cw, caching, *ctx->config, dstX, dstY, dithered);
       }
 
       // Right edge (with X boundary clamping)
@@ -301,7 +297,7 @@ int jpegDrawCallback(JPEGDRAW* pDraw) {
           dithered = gray / 85;
           if (dithered > 3) dithered = 3;
         }
-        writeImagePixel(pw, cw, caching, *ctx->config, dstX, dstY, dithered);
+        writeImagePixelAndCacheSource(pw, cw, caching, *ctx->config, dstX, dstY, dithered);
       }
     }
     return 1;
@@ -311,7 +307,6 @@ int jpegDrawCallback(JPEGDRAW* pDraw) {
   for (int dstY = dstYStart; dstY < dstYEnd; dstY++) {
     const int outY = cfgY + dstY;
     pw.beginRow(outY);
-    if (caching) cw.beginRow(outY, ctx->config->y);
     const int32_t srcFyFP = dstY * invScaleFPY;
     int ly = (srcFyFP >> FP_SHIFT) - blockY;
     if (ly < 0) ly = 0;
@@ -334,7 +329,7 @@ int jpegDrawCallback(JPEGDRAW* pDraw) {
         dithered = gray / 85;
         if (dithered > 3) dithered = 3;
       }
-      writeImagePixel(pw, cw, caching, *ctx->config, dstX, dstY, dithered);
+      writeImagePixelAndCacheSource(pw, cw, caching, *ctx->config, dstX, dstY, dithered);
     }
   }
 
@@ -486,11 +481,17 @@ bool JpegToFramebufferConverter::decodeToFramebuffer(const std::string& imagePat
   // Allocate cache buffer using final output dimensions
   ctx.caching = !config.cachePath.empty();
   if (ctx.caching) {
-    const int cacheWidth = imageIsRotated(config) ? config.maxWidth : destWidth;
-    const int cacheHeight = imageIsRotated(config) ? config.maxHeight : destHeight;
-    if (!ctx.cache.allocate(cacheWidth, cacheHeight, config.x, config.y)) {
-      LOG_ERR("JPG", "Failed to allocate cache buffer, continuing without caching");
+    const int cacheWidth = destWidth;
+    const int cacheHeight = destHeight;
+    const size_t cacheBytes = (size_t)((cacheWidth + 3) / 4) * cacheHeight;
+    char cacheExtra[96];
+    snprintf(cacheExtra, sizeof(cacheExtra), "bytes=%u,heap=%u", static_cast<unsigned int>(cacheBytes),
+             static_cast<unsigned int>(ESP.getFreeHeap()));
+    if (!ctx.cache.begin(config.cachePath, cacheWidth, cacheHeight)) {
+      LOG_ERR("JPG", "Failed to allocate stream cache (%s), continuing without caching", cacheExtra);
       ctx.caching = false;
+    } else {
+      LOG_DBG("JPG", "Streaming cache enabled: %s", cacheExtra);
     }
   }
 
@@ -511,7 +512,7 @@ bool JpegToFramebufferConverter::decodeToFramebuffer(const std::string& imagePat
 
   // Write cache file if caching was enabled
   if (ctx.caching) {
-    ctx.cache.writeToFile(config.cachePath);
+    ctx.cache.finish();
   }
 
   return true;

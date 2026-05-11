@@ -33,3 +33,19 @@ inline void writeImagePixel(DirectPixelWriter& pw, DirectCacheWriter& cw, bool c
     if (caching) cw.writePixel(outX, value);
   }
 }
+
+template <typename CacheWriter>
+inline void writeImagePixelAndCacheSource(DirectPixelWriter& pw, CacheWriter& cw, bool caching,
+                                          const RenderConfig& config, int dstX, int dstY, uint8_t value) {
+  int outX, outY;
+  mapRotatedImagePixel(config, dstX, dstY, outX, outY);
+  if (imageIsRotated(config)) {
+    pw.writePixelAt(outX, outY, value);
+  } else {
+    pw.writePixel(outX, value);
+  }
+
+  if (caching && cw.beginRow(dstY)) {
+    cw.writePixel(dstX, value);
+  }
+}

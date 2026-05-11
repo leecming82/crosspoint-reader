@@ -1,11 +1,13 @@
 #include "ImageBlock.h"
 
+#include <FontCacheManager.h>
 #include <GfxRenderer.h>
 #include <Logging.h>
 #include <Serialization.h>
 
 #include "../converters/DirectPixelWriter.h"
 #include "../converters/ImageDecoderFactory.h"
+#include "../converters/ImageRotationUtils.h"
 
 // Cache file format:
 // - uint16_t width
@@ -35,8 +37,8 @@ std::string getCachePath(const std::string& imagePath, ImageRotation rotation) {
   return imagePath + suffix;
 }
 
-bool renderFromCache(GfxRenderer& renderer, const std::string& cachePath, int x, int y, int expectedWidth,
-                     int expectedHeight) {
+bool renderFromCache(GfxRenderer& renderer, const std::string& cachePath, ImageRotation rotation, int x, int y,
+                     int expectedWidth, int expectedHeight) {
   FsFile cacheFile;
   if (!Storage.openFileForRead("IMG", cachePath, cacheFile)) {
     return false;
@@ -47,18 +49,16 @@ bool renderFromCache(GfxRenderer& renderer, const std::string& cachePath, int x,
     return false;
   }
 
+  const bool directCache = abs(cachedWidth - expectedWidth) <= 1 && abs(cachedHeight - expectedHeight) <= 1;
+  const bool rotatedSourceCache = rotation != ImageRotation::None && abs(cachedWidth - expectedHeight) <= 1 &&
+                                  abs(cachedHeight - expectedWidth) <= 1;
+
   // Verify dimensions are close (allow 1 pixel tolerance for rounding differences)
-  int widthDiff = abs(cachedWidth - expectedWidth);
-  int heightDiff = abs(cachedHeight - expectedHeight);
-  if (widthDiff > 1 || heightDiff > 1) {
+  if (!directCache && !rotatedSourceCache) {
     LOG_ERR("IMG", "Cache dimension mismatch: %dx%d vs %dx%d", cachedWidth, cachedHeight, expectedWidth,
             expectedHeight);
     return false;
   }
-
-  // Use cached dimensions for rendering (they're the actual decoded size)
-  expectedWidth = cachedWidth;
-  expectedHeight = cachedHeight;
 
   LOG_DBG("IMG", "Loading from cache: %s (%dx%d)", cachePath.c_str(), cachedWidth, cachedHeight);
 
@@ -73,6 +73,15 @@ bool renderFromCache(GfxRenderer& renderer, const std::string& cachePath, int x,
   DirectPixelWriter pw;
   pw.init(renderer);
 
+  RenderConfig rotatedConfig;
+  if (rotatedSourceCache) {
+    rotatedConfig.x = x;
+    rotatedConfig.y = y;
+    rotatedConfig.maxWidth = expectedWidth;
+    rotatedConfig.maxHeight = expectedHeight;
+    rotatedConfig.rotation = rotation;
+  }
+
   for (int row = 0; row < cachedHeight; row++) {
     if (cacheFile.read(rowBuffer, bytesPerRow) != bytesPerRow) {
       LOG_ERR("IMG", "Cache read error at row %d", row);
@@ -81,13 +90,21 @@ bool renderFromCache(GfxRenderer& renderer, const std::string& cachePath, int x,
     }
 
     const int destY = y + row;
-    pw.beginRow(destY);
+    if (directCache) {
+      pw.beginRow(destY);
+    }
     for (int col = 0; col < cachedWidth; col++) {
       const int byteIdx = col >> 2;            // col / 4
       const int bitShift = 6 - (col & 3) * 2;  // MSB first within byte
       uint8_t pixelValue = (rowBuffer[byteIdx] >> bitShift) & 0x03;
 
-      pw.writePixel(x + col, pixelValue);
+      if (directCache) {
+        pw.writePixel(x + col, pixelValue);
+      } else {
+        int outX, outY;
+        mapRotatedImagePixel(rotatedConfig, col, row, outX, outY);
+        pw.writePixelAt(outX, outY, pixelValue);
+      }
     }
   }
 
@@ -99,6 +116,10 @@ bool renderFromCache(GfxRenderer& renderer, const std::string& cachePath, int x,
 }  // namespace
 
 void ImageBlock::render(GfxRenderer& renderer, const int x, const int y) {
+  if (auto* fcm = renderer.getFontCacheManager(); fcm && fcm->isScanning()) {
+    return;
+  }
+
   LOG_DBG("IMG", "Rendering image at %d,%d: %s (%dx%d)", x, y, imagePath.c_str(), width, height);
 
   const int screenWidth = renderer.getScreenWidth();
@@ -113,7 +134,7 @@ void ImageBlock::render(GfxRenderer& renderer, const int x, const int y) {
 
   // Try to render from cache first
   std::string cachePath = getCachePath(imagePath, rotation);
-  if (renderFromCache(renderer, cachePath, x, y, width, height)) {
+  if (renderFromCache(renderer, cachePath, rotation, x, y, width, height)) {
     return;  // Successfully rendered from cache
   }
 

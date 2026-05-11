@@ -6,6 +6,7 @@
 #include <Logging.h>
 #include <PNGdec.h>
 
+#include <cstdio>
 #include <cstdlib>
 #include <new>
 
@@ -33,7 +34,7 @@ struct PngContext {
   int dstHeight{0};
   int lastDstY{-1};  // Track last rendered destination Y to avoid duplicates
 
-  PixelCache cache;
+  StreamingPixelCache cache;
   bool caching{false};
 
   uint8_t* grayLineBuffer{nullptr};
@@ -199,11 +200,7 @@ int pngDrawCallback(PNGDRAW* pDraw) {
   pw.init(*ctx->renderer);
   pw.beginRow(outY);
 
-  DirectCacheWriter cw;
-  if (caching) {
-    cw.init(ctx->cache.buffer, ctx->cache.bytesPerRow, ctx->cache.originX);
-    cw.beginRow(outY, ctx->config->y);
-  }
+  StreamingPixelCache& cw = ctx->cache;
 
   int srcX = 0;
   int error = 0;
@@ -221,7 +218,7 @@ int pngDrawCallback(PNGDRAW* pDraw) {
         ditheredGray = gray / 85;
         if (ditheredGray > 3) ditheredGray = 3;
       }
-      writeImagePixel(pw, cw, caching, *ctx->config, dstX, dstY, ditheredGray);
+      writeImagePixelAndCacheSource(pw, cw, caching, *ctx->config, dstX, dstY, ditheredGray);
     }
 
     // Bresenham-style stepping: advance srcX based on ratio srcWidth/dstWidth
@@ -359,22 +356,20 @@ bool PngToFramebufferConverter::decodeToFramebuffer(const std::string& imagePath
     return false;
   }
 
-  // Allocate cache buffer using SCALED dimensions.
-  // PNG decode is fast enough (~135ms for 400x600) that caching provides minimal benefit
-  // for larger images, while the cache buffer competes with the 44KB PNG decoder for heap.
-  // Skip caching when the buffer would exceed the framebuffer size (48KB).
-  static constexpr size_t PNG_MAX_CACHE_BYTES = 48000;
+  // Stream cache rows directly to SD so large images do not need a full-size RAM cache.
   ctx.caching = !config.cachePath.empty();
   if (ctx.caching) {
-    const int cacheWidth = imageIsRotated(config) ? config.maxWidth : ctx.dstWidth;
-    const int cacheHeight = imageIsRotated(config) ? config.maxHeight : ctx.dstHeight;
+    const int cacheWidth = ctx.dstWidth;
+    const int cacheHeight = ctx.dstHeight;
     size_t cacheSize = (size_t)((cacheWidth + 3) / 4) * cacheHeight;
-    if (cacheSize > PNG_MAX_CACHE_BYTES) {
-      LOG_DBG("PNG", "Skipping cache: %zu bytes exceeds PNG limit (%zu)", cacheSize, PNG_MAX_CACHE_BYTES);
+    char cacheExtra[96];
+    snprintf(cacheExtra, sizeof(cacheExtra), "bytes=%u,heap=%u", static_cast<unsigned int>(cacheSize),
+             static_cast<unsigned int>(ESP.getFreeHeap()));
+    if (!ctx.cache.begin(config.cachePath, cacheWidth, cacheHeight)) {
+      LOG_ERR("PNG", "Failed to allocate stream cache (%s), continuing without caching", cacheExtra);
       ctx.caching = false;
-    } else if (!ctx.cache.allocate(cacheWidth, cacheHeight, config.x, config.y)) {
-      LOG_ERR("PNG", "Failed to allocate cache buffer, continuing without caching");
-      ctx.caching = false;
+    } else {
+      LOG_DBG("PNG", "Streaming cache enabled: %s", cacheExtra);
     }
   }
 
@@ -398,7 +393,7 @@ bool PngToFramebufferConverter::decodeToFramebuffer(const std::string& imagePath
 
   // Write cache file if caching was enabled and buffer was allocated
   if (ctx.caching) {
-    ctx.cache.writeToFile(config.cachePath);
+    ctx.cache.finish();
   }
 
   return true;
