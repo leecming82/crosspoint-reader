@@ -1197,12 +1197,10 @@ EpdFont* SdCardFont::getEpdFont(uint8_t style) {
 bool SdCardFont::hasStyle(uint8_t style) const { return styles_[style & (MAX_STYLES - 1)].present; }
 
 uint8_t SdCardFont::resolveStyle(uint8_t style) const {
-  // Keep this fallback order aligned with EpdFontFamily::getFont() and the
-  // renderer's SD advance-table fast path.
   static const uint8_t kFallbacks[MAX_STYLES][MAX_STYLES] = {
       {EpdFontFamily::REGULAR, EpdFontFamily::BOLD, EpdFontFamily::ITALIC, EpdFontFamily::BOLD_ITALIC},
-      {EpdFontFamily::BOLD, EpdFontFamily::BOLD_ITALIC, EpdFontFamily::REGULAR, EpdFontFamily::ITALIC},
-      {EpdFontFamily::ITALIC, EpdFontFamily::REGULAR, EpdFontFamily::BOLD, EpdFontFamily::BOLD_ITALIC},
+      {EpdFontFamily::BOLD, EpdFontFamily::REGULAR, EpdFontFamily::BOLD_ITALIC, EpdFontFamily::ITALIC},
+      {EpdFontFamily::ITALIC, EpdFontFamily::REGULAR, EpdFontFamily::BOLD_ITALIC, EpdFontFamily::BOLD},
       {EpdFontFamily::BOLD_ITALIC, EpdFontFamily::BOLD, EpdFontFamily::ITALIC, EpdFontFamily::REGULAR},
   };
 
