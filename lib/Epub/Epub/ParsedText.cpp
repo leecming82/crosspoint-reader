@@ -20,8 +20,8 @@ namespace {
 constexpr char SOFT_HYPHEN_UTF8[] = "\xC2\xAD";
 constexpr size_t SOFT_HYPHEN_BYTES = 2;
 constexpr size_t MIN_FREE_HEAP_FOR_CJK_LAYOUT = 48 * 1024;
-constexpr size_t MIN_CJK_LAYOUT_ALLOC_MARGIN = 8 * 1024;
 constexpr size_t MAX_CJK_LAYOUT_UNITS = 1024;
+constexpr size_t CJK_LAYOUT_CHUNK_TARGET_UNITS = 768;
 
 struct CjkUnit {
   size_t wordIndex;
@@ -218,6 +218,25 @@ bool isCjkClosingPunctuation(const uint32_t cp) {
 }
 
 bool isCjkSentenceEndingPeriod(const uint32_t cp) { return cp == 0x002E || cp == 0x3002 || cp == 0xFF0E; }
+
+bool isCjkChunkBoundary(const uint32_t cp) {
+  return cp == 0x0021 || cp == 0x002E || cp == 0x003F ||  // ! . ?
+         cp == 0x3002 || cp == 0xFF01 || cp == 0xFF0E || cp == 0xFF1F;
+}
+
+bool endsWithHangableClosingPunctuation(const CjkUnit& unit) {
+  return unit.isCjk && isCjkClosingPunctuation(unit.lastCp);
+}
+
+bool shouldAttachNoLineStartToPreviousCjkUnit(const std::vector<CjkUnit>& units, const size_t wordIndex,
+                                              const size_t offset, const EpdFontFamily::Style style,
+                                              const uint32_t cp) {
+  if (units.empty() || !isCjkNoLineStart(cp)) {
+    return false;
+  }
+  const CjkUnit& previous = units.back();
+  return previous.isCjk && previous.wordIndex == wordIndex && previous.endByte == offset && previous.style == style;
+}
 
 // Returns the advance width for a word while ignoring soft hyphen glyphs and optionally appending a visible hyphen.
 // Uses advance width (sum of glyph advances + kerning) rather than bounding box width so that italic glyph overhangs
@@ -456,8 +475,8 @@ void ParsedText::layoutAndExtractLines(const GfxRenderer& renderer, const int fo
   }
 
   const int pageWidth = viewportWidth;
-  if (includeLastLine && shouldUseCjkWrapper()) {
-    if (layoutAndExtractCjkLines(renderer, fontId, pageWidth, processLine)) {
+  if (shouldUseCjkWrapper()) {
+    if (layoutAndExtractCjkLines(renderer, fontId, pageWidth, processLine, includeLastLine)) {
       return;
     }
   }
@@ -508,8 +527,151 @@ bool ParsedText::shouldUseCjkWrapper() const {
   return cjkCount >= 8 && cjkCount >= otherLetterCount;
 }
 
+bool ParsedText::layoutAndExtractChunkedCjkLines(const GfxRenderer& renderer, const int fontId, const int pageWidth,
+                                                 const std::function<void(std::shared_ptr<TextBlock>)>& processLine,
+                                                 const bool includeLastLine) {
+  struct Chunk {
+    std::vector<std::string> words;
+    std::vector<EpdFontFamily::Style> styles;
+    std::vector<bool> continues;
+    size_t units = 0;
+  };
+
+  auto chunkByteCount = [](const Chunk& chunk) {
+    size_t byteCount = 0;
+    for (const auto& word : chunk.words) {
+      byteCount += word.size();
+    }
+    return byteCount;
+  };
+
+  auto estimatedChunkBytes = [&chunkByteCount](const Chunk& chunk) {
+    return (chunkByteCount(chunk) / 3 + chunk.words.size()) * sizeof(CjkUnit);
+  };
+
+  std::vector<Chunk> chunks;
+  Chunk current;
+
+  auto addSegment = [&](const std::string& word, const size_t start, const size_t end, const EpdFontFamily::Style style,
+                        const bool attachToPrevious, const size_t unitCount) {
+    if (start >= end) {
+      return;
+    }
+    current.words.emplace_back(word.substr(start, end - start));
+    current.styles.push_back(style);
+    current.continues.push_back(!current.words.empty() && current.words.size() > 1 && attachToPrevious);
+    current.units += unitCount;
+  };
+
+  auto finishChunk = [&]() {
+    if (current.words.empty()) {
+      return;
+    }
+    chunks.push_back(std::move(current));
+    current = Chunk();
+  };
+
+  for (size_t wordIndex = 0; wordIndex < words.size(); ++wordIndex) {
+    const std::string& word = words[wordIndex];
+    size_t segmentStart = 0;
+    size_t segmentUnits = 0;
+
+    for (size_t offset = 0; offset < word.size();) {
+      const auto* ptr = reinterpret_cast<const unsigned char*>(word.c_str() + offset);
+      const uint32_t cp = utf8NextCodepoint(&ptr);
+      if (cp == 0) {
+        break;
+      }
+      const size_t nextOffset = static_cast<size_t>(reinterpret_cast<const char*>(ptr) - word.c_str());
+      ++segmentUnits;
+
+      const size_t prospectiveUnits = current.units + segmentUnits;
+      const bool preferredBoundary = isCjkChunkBoundary(cp) && prospectiveUnits >= CJK_LAYOUT_CHUNK_TARGET_UNITS;
+      const bool forcedBoundary = prospectiveUnits >= MAX_CJK_LAYOUT_UNITS;
+      if (preferredBoundary || forcedBoundary) {
+        const bool attach = segmentStart > 0 || wordContinues[wordIndex];
+        addSegment(word, segmentStart, nextOffset, wordStyles[wordIndex], attach, segmentUnits);
+        finishChunk();
+        segmentStart = nextOffset;
+        segmentUnits = 0;
+      }
+
+      offset = nextOffset;
+    }
+
+    const bool attach = segmentStart > 0 || wordContinues[wordIndex];
+    addSegment(word, segmentStart, word.size(), wordStyles[wordIndex], attach, segmentUnits);
+  }
+  finishChunk();
+
+  if (chunks.empty()) {
+    return false;
+  }
+
+  for (const auto& chunk : chunks) {
+    if (chunk.units > MAX_CJK_LAYOUT_UNITS || ESP.getMaxAllocHeap() < estimatedChunkBytes(chunk) ||
+        ESP.getFreeHeap() < MIN_FREE_HEAP_FOR_CJK_LAYOUT) {
+      return false;
+    }
+  }
+
+  std::vector<std::string> remainingWords;
+  std::vector<EpdFontFamily::Style> remainingStyles;
+  std::vector<bool> remainingContinues;
+  std::vector<bool> remainingFocusSuffixes;
+
+  for (size_t i = 0; i < chunks.size(); ++i) {
+    if (!remainingWords.empty()) {
+      if (!chunks[i].continues.empty()) {
+        chunks[i].continues.front() = true;
+      }
+      chunks[i].units +=
+          chunkByteCount({remainingWords, remainingStyles, remainingContinues, 0}) / 3 + remainingWords.size();
+      chunks[i].words.insert(chunks[i].words.begin(), std::make_move_iterator(remainingWords.begin()),
+                             std::make_move_iterator(remainingWords.end()));
+      chunks[i].styles.insert(chunks[i].styles.begin(), std::make_move_iterator(remainingStyles.begin()),
+                              std::make_move_iterator(remainingStyles.end()));
+      chunks[i].continues.insert(chunks[i].continues.begin(), std::make_move_iterator(remainingContinues.begin()),
+                                 std::make_move_iterator(remainingContinues.end()));
+      remainingWords.clear();
+      remainingStyles.clear();
+      remainingContinues.clear();
+      remainingFocusSuffixes.clear();
+    }
+
+    BlockStyle chunkStyle = blockStyle;
+    if (i > 0) {
+      chunkStyle.textIndent = 0;
+      chunkStyle.textIndentDefined = true;
+    }
+
+    ParsedText chunkText(extraParagraphSpacing, hyphenationEnabled, focusReadingEnabled, chunkStyle);
+    chunkText.words = std::move(chunks[i].words);
+    chunkText.wordStyles = std::move(chunks[i].styles);
+    chunkText.wordContinues = std::move(chunks[i].continues);
+    chunkText.wordIsFocusSuffix.assign(chunkText.words.size(), false);
+    const bool chunkIncludeLastLine = includeLastLine && i + 1 == chunks.size();
+    if (!chunkText.layoutAndExtractCjkLines(renderer, fontId, pageWidth, processLine, chunkIncludeLastLine)) {
+      return false;
+    }
+    if (!chunkIncludeLastLine) {
+      remainingWords = std::move(chunkText.words);
+      remainingStyles = std::move(chunkText.wordStyles);
+      remainingContinues = std::move(chunkText.wordContinues);
+      remainingFocusSuffixes = std::move(chunkText.wordIsFocusSuffix);
+    }
+  }
+
+  words = std::move(remainingWords);
+  wordStyles = std::move(remainingStyles);
+  wordContinues = std::move(remainingContinues);
+  wordIsFocusSuffix = std::move(remainingFocusSuffixes);
+  return true;
+}
+
 bool ParsedText::layoutAndExtractCjkLines(const GfxRenderer& renderer, const int fontId, const int pageWidth,
-                                          const std::function<void(std::shared_ptr<TextBlock>)>& processLine) {
+                                          const std::function<void(std::shared_ptr<TextBlock>)>& processLine,
+                                          const bool includeLastLine) {
   std::vector<CjkUnit> units;
   size_t byteCount = 0;
   for (const auto& word : words) {
@@ -518,7 +680,11 @@ bool ParsedText::layoutAndExtractCjkLines(const GfxRenderer& renderer, const int
   const size_t estimatedUnits = byteCount / 3 + words.size();
   const size_t estimatedBytes = estimatedUnits * sizeof(CjkUnit);
   if (estimatedUnits > MAX_CJK_LAYOUT_UNITS || ESP.getFreeHeap() < MIN_FREE_HEAP_FOR_CJK_LAYOUT ||
-      ESP.getMaxAllocHeap() < estimatedBytes + MIN_CJK_LAYOUT_ALLOC_MARGIN) {
+      ESP.getMaxAllocHeap() < estimatedBytes) {
+    if (estimatedUnits > MAX_CJK_LAYOUT_UNITS &&
+        layoutAndExtractChunkedCjkLines(renderer, fontId, pageWidth, processLine, includeLastLine)) {
+      return true;
+    }
     return false;
   }
   units.reserve(estimatedUnits);
@@ -549,7 +715,7 @@ bool ParsedText::layoutAndExtractCjkLines(const GfxRenderer& renderer, const int
       const bool cpIsCjk = isCjkCodepoint(cp);
       const bool noGapBefore = !units.empty() && (!firstUnitInWord || (firstUnitInWord && wordContinues[wordIndex]) ||
                                                   (previousUnitWasCjk && cpIsCjk));
-      const bool noBreakBefore = !units.empty() && firstUnitInWord && wordContinues[wordIndex];
+      const bool noBreakBefore = !units.empty() && firstUnitInWord && wordContinues[wordIndex] && !cpIsCjk;
 
       if (!cpIsCjk) {
         size_t runEnd = nextOffset;
@@ -582,6 +748,17 @@ bool ParsedText::layoutAndExtractCjkLines(const GfxRenderer& renderer, const int
       const int unitWidth = isCjkClosingPunctuation(cp) && measuredAdvance > 0
                                 ? measuredAdvance
                                 : std::max(cjkCellAdvance, measuredAdvance);
+      if (shouldAttachNoLineStartToPreviousCjkUnit(units, wordIndex, offset, wordStyles[wordIndex], cp)) {
+        CjkUnit& previous = units.back();
+        previous.endByte = nextOffset;
+        previous.lastCp = cp;
+        previous.width = static_cast<uint16_t>(
+            std::min<int>(std::numeric_limits<uint16_t>::max(), previous.width + std::max(1, unitWidth)));
+        previousUnitWasCjk = true;
+        offset = nextOffset;
+        firstUnitInWord = false;
+        continue;
+      }
       units.push_back({wordIndex, offset, nextOffset, cp, cp, static_cast<uint16_t>(std::max(1, unitWidth)),
                        noGapBefore, noBreakBefore, true, wordStyles[wordIndex]});
       previousUnitWasCjk = true;
@@ -626,12 +803,12 @@ bool ParsedText::layoutAndExtractCjkLines(const GfxRenderer& renderer, const int
 
   auto canHangClosingPunctuation = [cjkCellAdvance](const CjkUnit& unit, const int currentLineWidth,
                                                     const int candidateWidth, const int effectivePageWidth) {
-    if (!unit.isCjk || !isCjkClosingPunctuation(unit.firstCp) || currentLineWidth > effectivePageWidth) {
+    if (!endsWithHangableClosingPunctuation(unit) || currentLineWidth > effectivePageWidth) {
       return false;
     }
     const int overflow = candidateWidth - effectivePageWidth;
     const int maxOverflow =
-        isCjkSentenceEndingPeriod(unit.firstCp) ? std::max(1, cjkCellAdvance) : std::max(1, cjkCellAdvance / 2);
+        isCjkSentenceEndingPeriod(unit.lastCp) ? std::max(1, cjkCellAdvance) : std::max(1, cjkCellAdvance / 2);
     return overflow > 0 && overflow <= maxOverflow;
   };
 
@@ -681,6 +858,41 @@ bool ParsedText::layoutAndExtractCjkLines(const GfxRenderer& renderer, const int
                                             std::vector<uint8_t>{}, std::vector<uint16_t>{}, blockStyle));
   };
 
+  auto retainFromUnit = [&](const size_t unitIndex) {
+    if (unitIndex >= units.size()) {
+      words.clear();
+      wordStyles.clear();
+      wordContinues.clear();
+      wordIsFocusSuffix.clear();
+      return;
+    }
+
+    const CjkUnit& firstRemaining = units[unitIndex];
+    const size_t wordIndex = firstRemaining.wordIndex;
+    const size_t byteOffset = firstRemaining.startByte;
+    words.erase(words.begin(), words.begin() + wordIndex);
+    wordStyles.erase(wordStyles.begin(), wordStyles.begin() + wordIndex);
+    wordContinues.erase(wordContinues.begin(), wordContinues.begin() + wordIndex);
+    wordIsFocusSuffix.erase(wordIsFocusSuffix.begin(), wordIsFocusSuffix.begin() + wordIndex);
+    if (byteOffset > 0 && !words.empty()) {
+      words[0].erase(0, byteOffset);
+    }
+    if (!wordContinues.empty()) {
+      wordContinues[0] = false;
+    }
+    if (!wordIsFocusSuffix.empty()) {
+      wordIsFocusSuffix[0] = false;
+    }
+  };
+
+  struct CjkLineRange {
+    size_t start;
+    size_t end;
+    int width;
+    bool isFirstLine;
+  };
+  std::vector<CjkLineRange> lineRanges;
+
   size_t lineStart = 0;
   bool isFirstLine = true;
   while (lineStart < units.size()) {
@@ -717,7 +929,7 @@ bool ParsedText::layoutAndExtractCjkLines(const GfxRenderer& renderer, const int
     }
 
     if (i >= units.size()) {
-      emitLine(lineStart, units.size(), lineWidth, isFirstLine);
+      lineRanges.push_back({lineStart, units.size(), lineWidth, isFirstLine});
       break;
     }
 
@@ -728,15 +940,24 @@ bool ParsedText::layoutAndExtractCjkLines(const GfxRenderer& renderer, const int
       emittedWidth = units[lineStart].width;
     }
 
-    emitLine(lineStart, lineEnd, emittedWidth, isFirstLine);
+    lineRanges.push_back({lineStart, lineEnd, emittedWidth, isFirstLine});
     lineStart = lineEnd;
     isFirstLine = false;
   }
 
-  words.clear();
-  wordStyles.clear();
-  wordContinues.clear();
-  wordIsFocusSuffix.clear();
+  const size_t lineCount = includeLastLine ? lineRanges.size() : lineRanges.size() - 1;
+  for (size_t i = 0; i < lineCount; ++i) {
+    emitLine(lineRanges[i].start, lineRanges[i].end, lineRanges[i].width, lineRanges[i].isFirstLine);
+  }
+
+  if (includeLastLine) {
+    words.clear();
+    wordStyles.clear();
+    wordContinues.clear();
+    wordIsFocusSuffix.clear();
+  } else if (lineCount > 0) {
+    retainFromUnit(lineRanges[lineCount].start);
+  }
   return true;
 }
 
