@@ -300,13 +300,6 @@ void EpubReaderActivity::loop() {
     }
     // Popup mode: Back dismisses it, Left/Right cycle through ranked dictionary matches.
     if (kanjiPopupActive) {
-      if (mappedInput.isPressed(MappedInputManager::Button::Back) &&
-          mappedInput.getHeldTime() >= ReaderUtils::GO_HOME_MS) {
-        kanjiPopupActive = false;
-        exitKanjiCursorMode();
-        activityManager.goToFileBrowser(epub ? epub->getPath() : "");
-        return;
-      }
       if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
         hideKanjiPopup();
         return;
@@ -321,16 +314,9 @@ void EpubReaderActivity::loop() {
       }
       return;  // Swallow all other input while popup is active.
     }
-    // Long Back still navigates away; clean up cursor state first.
-    if (mappedInput.isPressed(MappedInputManager::Button::Back) &&
-        mappedInput.getHeldTime() >= ReaderUtils::GO_HOME_MS) {
-      exitKanjiCursorMode();
-      activityManager.goToFileBrowser(epub ? epub->getPath() : "");
-      return;
-    }
-    // Short Back exits cursor mode without leaving the reader.
-    if (mappedInput.wasReleased(MappedInputManager::Button::Back) &&
-        mappedInput.getHeldTime() < ReaderUtils::GO_HOME_MS) {
+    // Back exits cursor mode without leaving the reader. Long Back is disabled here
+    // so slow popup/cursor redraws cannot accidentally navigate away.
+    if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
       exitKanjiCursorMode();
       return;
     }
