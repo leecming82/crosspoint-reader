@@ -1,9 +1,12 @@
 #pragma once
 #include <Epub.h>
 #include <Epub/FootnoteEntry.h>
+#include <Epub/Page.h>
 #include <Epub/Section.h>
 
 #include <optional>
+#include <string>
+#include <vector>
 
 #include "EpubReaderMenuActivity.h"
 #include "activities/Activity.h"
@@ -29,8 +32,32 @@ class EpubReaderActivity final : public Activity {
   float pendingSpineProgress = 0.0f;
   bool pendingScreenshot = false;
   bool pendingSyncSaveError = false;
-  bool skipNextButtonCheck = false;  // Skip button processing for one frame after subactivity exit
   bool automaticPageTurnActive = false;
+
+  // Kanji cursor overlay (tategaki dictionary lookup, Phase 1)
+  struct KanjiEntry {
+    int16_t elementIdx;
+    int16_t wordIdx;
+    uint16_t byteOffset;
+  };
+  bool kanjiCursorActive = false;
+  bool kanjiPopupActive = false;
+  std::unique_ptr<Page> kanjiCursorPage;
+  std::vector<KanjiEntry> kanjiIndex;
+  int kanjiIndexPos = 0;
+  int kanjiMarginLeft = 0;
+  int kanjiMarginTop = 0;
+
+  static constexpr unsigned long CURSOR_ENTER_MS = 600;
+
+  void enterKanjiCursorMode();
+  void exitKanjiCursorMode();
+  void moveKanjiCursor(int direction);
+  void moveKanjiCursorToLine(int direction);
+  void drawKanjiCursor();
+  std::string extractKanjiLookupText(size_t maxChars) const;
+  void showKanjiPopup();
+  void hideKanjiPopup();
 
   // Footnote support
   std::vector<FootnoteEntry> currentPageFootnotes;

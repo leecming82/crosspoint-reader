@@ -1,6 +1,7 @@
 #include "EpubReaderActivity.h"
 
 #include <Epub/Page.h>
+#include <Epub/ParsedText.h>
 #include <Epub/blocks/TextBlock.h>
 #include <FontCacheManager.h>
 #include <FsHelpers.h>
@@ -8,6 +9,7 @@
 #include <HalStorage.h>
 #include <I18n.h>
 #include <Logging.h>
+#include <Utf8.h>
 #include <esp_system.h>
 
 #include <iterator>
@@ -35,6 +37,8 @@ namespace {
 // pagesPerRefresh now comes from SETTINGS.getRefreshFrequency()
 // pages per minute, first item is 1 to prevent division by zero if accessed
 constexpr int PAGE_TURN_RATES[] = {1, 1, 3, 6, 12};
+constexpr size_t KANJI_LOOKUP_CONTEXT_CHARS = 24;
+constexpr size_t KANJI_LOOKUP_DISPLAY_CHARS = 12;
 
 int clampPercent(int percent) {
   if (percent < 0) {
@@ -44,6 +48,32 @@ int clampPercent(int percent) {
     return 100;
   }
   return percent;
+}
+
+std::string utf8CodepointAtByteOffset(const std::string& text, const size_t byteOffset, uint32_t* outCp = nullptr) {
+  if (byteOffset >= text.size()) {
+    if (outCp) *outCp = 0;
+    return "";
+  }
+
+  const auto* start = reinterpret_cast<const unsigned char*>(text.c_str() + byteOffset);
+  const auto* cursor = start;
+  const uint32_t cp = utf8NextCodepoint(&cursor);
+  if (outCp) *outCp = cp;
+  return std::string(reinterpret_cast<const char*>(start), cursor - start);
+}
+
+std::string utf8PrefixChars(const std::string& text, const size_t maxChars) {
+  std::string result;
+  size_t charCount = 0;
+  const auto* p = reinterpret_cast<const unsigned char*>(text.c_str());
+  while (*p != '\0' && charCount < maxChars) {
+    const auto* cpStart = p;
+    utf8NextCodepoint(&p);
+    result.append(reinterpret_cast<const char*>(cpStart), p - cpStart);
+    ++charCount;
+  }
+  return result;
 }
 
 }  // namespace
@@ -147,6 +177,69 @@ void EpubReaderActivity::loop() {
       pageTurn(true);
       return;
     }
+  }
+
+  // Kanji cursor mode: active only in tategaki (LandscapeCounterClockwise) orientation.
+  if (kanjiCursorActive) {
+    // Popup mode: only Back dismisses it.
+    if (kanjiPopupActive) {
+      if (mappedInput.isPressed(MappedInputManager::Button::Back) &&
+          mappedInput.getHeldTime() >= ReaderUtils::GO_HOME_MS) {
+        kanjiPopupActive = false;
+        exitKanjiCursorMode();
+        activityManager.goToFileBrowser(epub ? epub->getPath() : "");
+        return;
+      }
+      if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
+        hideKanjiPopup();
+        return;
+      }
+      return;  // Swallow all other input while popup is active.
+    }
+    // Long Back still navigates away; clean up cursor state first.
+    if (mappedInput.isPressed(MappedInputManager::Button::Back) &&
+        mappedInput.getHeldTime() >= ReaderUtils::GO_HOME_MS) {
+      exitKanjiCursorMode();
+      activityManager.goToFileBrowser(epub ? epub->getPath() : "");
+      return;
+    }
+    // Short Back exits cursor mode without leaving the reader.
+    if (mappedInput.wasReleased(MappedInputManager::Button::Back) &&
+        mappedInput.getHeldTime() < ReaderUtils::GO_HOME_MS) {
+      exitKanjiCursorMode();
+      return;
+    }
+    // Confirm opens the lookup popup for the selected kanji.
+    if (mappedInput.wasPressed(MappedInputManager::Button::Confirm)) {
+      showKanjiPopup();
+      return;
+    }
+    // Left/Right buttons move within the current tategaki column; side buttons jump columns.
+    // Use wasPressed only (leading edge) to avoid double-fires across render windows.
+    if (mappedInput.wasPressed(MappedInputManager::Button::Left)) {
+      moveKanjiCursor(-1);
+      return;
+    }
+    if (mappedInput.wasPressed(MappedInputManager::Button::Right)) {
+      moveKanjiCursor(+1);
+      return;
+    }
+    if (mappedInput.wasPressed(MappedInputManager::Button::PageBack)) {
+      moveKanjiCursorToLine(-1);
+      return;
+    }
+    if (mappedInput.wasPressed(MappedInputManager::Button::PageForward)) {
+      moveKanjiCursorToLine(+1);
+      return;
+    }
+    return;  // Swallow all other input while cursor is active.
+  }
+
+  // Long-press Confirm (600ms) in tategaki orientation enters cursor mode.
+  if (SETTINGS.orientation == CrossPointSettings::LANDSCAPE_CCW && section &&
+      mappedInput.isPressed(MappedInputManager::Button::Confirm) && mappedInput.getHeldTime() >= CURSOR_ENTER_MS) {
+    enterKanjiCursorMode();
+    return;
   }
 
   // Enter reader menu activity.
@@ -522,6 +615,14 @@ void EpubReaderActivity::toggleAutoPageTurn(const uint8_t selectedPageTurnOption
 }
 
 void EpubReaderActivity::pageTurn(bool isForwardTurn) {
+  // Clear cursor state without triggering a redundant requestUpdate — pageTurn does its own.
+  if (kanjiCursorActive) {
+    kanjiCursorActive = false;
+    kanjiPopupActive = false;
+    kanjiIndex.clear();
+    kanjiIndex.shrink_to_fit();
+    kanjiCursorPage.reset();
+  }
   if (isForwardTurn) {
     if (section->currentPage < section->pageCount - 1) {
       section->currentPage++;
@@ -972,6 +1073,239 @@ void EpubReaderActivity::restoreSavedPosition() {
   }
   requestUpdate();
 }
+
+// --- Kanji cursor overlay (Phase 1: tategaki dictionary lookup) ---
+
+void EpubReaderActivity::enterKanjiCursorMode() {
+  if (!section) return;
+
+  // Compute the same margins used by renderContents so cursor coords align.
+  int dummy1, dummy2;
+  renderer.getOrientedViewableTRBL(&kanjiMarginTop, &dummy1, &dummy2, &kanjiMarginLeft);
+  kanjiMarginTop += SETTINGS.screenMargin;
+  kanjiMarginLeft += SETTINGS.screenMargin;
+
+  kanjiCursorPage = section->loadPageFromSectionFile();
+  if (!kanjiCursorPage) {
+    LOG_ERR("CURSOR", "Failed to load page for cursor mode");
+    return;
+  }
+
+  // Build a flat list of text positions for every kanji on the page.
+  kanjiIndex.clear();
+  kanjiIndex.reserve(64);
+  const auto& elements = kanjiCursorPage->elements;
+  for (int16_t ei = 0; ei < static_cast<int16_t>(elements.size()); ++ei) {
+    if (elements[ei]->getTag() != TAG_PageLine) continue;
+    const auto& block = *static_cast<const PageLine&>(*elements[ei]).getBlock();
+    const auto& words = block.getWords();
+    for (int16_t wi = 0; wi < static_cast<int16_t>(words.size()); ++wi) {
+      if (words[wi].empty()) continue;
+      const auto* wordStart = reinterpret_cast<const unsigned char*>(words[wi].c_str());
+      const auto* p = wordStart;
+      while (*p != '\0') {
+        const auto* cpStart = p;
+        if (isKanjiCodepoint(utf8NextCodepoint(&p))) {
+          kanjiIndex.push_back({ei, wi, static_cast<uint16_t>(cpStart - wordStart)});
+        }
+      }
+    }
+  }
+
+  if (kanjiIndex.empty()) {
+    LOG_DBG("CURSOR", "No kanji found on page");
+    kanjiCursorPage.reset();
+    return;
+  }
+
+  kanjiIndexPos = 0;
+  kanjiCursorActive = true;
+
+  drawKanjiCursor();
+}
+
+void EpubReaderActivity::exitKanjiCursorMode() {
+  kanjiCursorActive = false;
+  kanjiPopupActive = false;
+  kanjiIndex.clear();
+  kanjiIndex.shrink_to_fit();
+  kanjiCursorPage.reset();
+  requestUpdate();
+}
+
+void EpubReaderActivity::moveKanjiCursor(const int direction) {
+  if (!kanjiCursorActive || kanjiIndex.empty()) return;
+  const int next = kanjiIndexPos + direction;
+  if (next < 0 || next >= static_cast<int>(kanjiIndex.size())) return;
+  kanjiIndexPos = next;
+  drawKanjiCursor();
+}
+
+void EpubReaderActivity::moveKanjiCursorToLine(const int direction) {
+  if (!kanjiCursorActive || kanjiIndex.empty() || !kanjiCursorPage) return;
+  const auto& elements = kanjiCursorPage->elements;
+
+  const auto& cur = kanjiIndex[kanjiIndexPos];
+  if (cur.elementIdx >= static_cast<int16_t>(elements.size())) return;
+  if (elements[cur.elementIdx]->getTag() != TAG_PageLine) return;
+  const int curYPos = static_cast<const PageLine&>(*elements[cur.elementIdx]).yPos;
+
+  // Scan in direction for the first kanji whose PageLine has a different yPos (= different column).
+  int pos = kanjiIndexPos + direction;
+  while (pos >= 0 && pos < static_cast<int>(kanjiIndex.size())) {
+    const auto& e = kanjiIndex[pos];
+    if (e.elementIdx < static_cast<int16_t>(elements.size()) && elements[e.elementIdx]->getTag() == TAG_PageLine) {
+      const int yPos = static_cast<const PageLine&>(*elements[e.elementIdx]).yPos;
+      if (yPos != curYPos) {
+        kanjiIndexPos = pos;
+        drawKanjiCursor();
+        return;
+      }
+    }
+    pos += direction;
+  }
+}
+
+void EpubReaderActivity::drawKanjiCursor() {
+  if (!kanjiCursorActive || !kanjiCursorPage || kanjiIndex.empty()) return;
+
+  const auto& entry = kanjiIndex[kanjiIndexPos];
+  const auto& elements = kanjiCursorPage->elements;
+  if (entry.elementIdx >= static_cast<int16_t>(elements.size())) return;
+  if (elements[entry.elementIdx]->getTag() != TAG_PageLine) return;
+
+  const auto& pl = static_cast<const PageLine&>(*elements[entry.elementIdx]);
+  const auto& tb = *pl.getBlock();
+  const auto& xposVec = tb.getWordXpos();
+  const auto& words = tb.getWords();
+  const auto& styles = tb.getWordStyles();
+  if (entry.wordIdx >= static_cast<int16_t>(xposVec.size())) return;
+  if (entry.wordIdx >= static_cast<int16_t>(words.size()) || entry.wordIdx >= static_cast<int16_t>(styles.size()))
+    return;
+
+  int intraWordX = 0;
+  if (entry.byteOffset > 0 && entry.byteOffset <= words[entry.wordIdx].size()) {
+    const std::string prefix = words[entry.wordIdx].substr(0, entry.byteOffset);
+    intraWordX = renderer.getTextAdvanceX(SETTINGS.getReaderFontId(), prefix.c_str(), styles[entry.wordIdx]);
+  }
+
+  const int cx = kanjiMarginLeft + pl.xPos + xposVec[entry.wordIdx] + intraWordX;
+  const int cy = kanjiMarginTop + pl.yPos;
+  const int cellSize = renderer.getLineHeight(SETTINGS.getReaderFontId());
+
+  renderer.clearScreen();
+
+  // Keep scope alive through the real render — the destructor calls clearCache(),
+  // so if scope dies before the second render the mini cache is wiped and the
+  // real render hits the cold SD overflow path for every glyph (~3.4s total).
+  if (auto* fcm = renderer.getFontCacheManager()) {
+    auto scope = fcm->createPrewarmScope();
+    kanjiCursorPage->render(renderer, SETTINGS.getReaderFontId(), kanjiMarginLeft, kanjiMarginTop);
+    scope.endScanAndPrewarm();
+    kanjiCursorPage->render(renderer, SETTINGS.getReaderFontId(), kanjiMarginLeft, kanjiMarginTop);
+    // scope destructor runs here — safe to clear cache after render
+  } else {
+    kanjiCursorPage->render(renderer, SETTINGS.getReaderFontId(), kanjiMarginLeft, kanjiMarginTop);
+  }
+
+  renderer.drawRect(cx, cy, cellSize, cellSize, 2, true);
+  renderer.displayBuffer(HalDisplay::FAST_REFRESH);
+}
+
+std::string EpubReaderActivity::extractKanjiLookupText(const size_t maxChars) const {
+  if (!kanjiCursorPage || kanjiIndex.empty() || kanjiIndexPos < 0 ||
+      kanjiIndexPos >= static_cast<int>(kanjiIndex.size()) || maxChars == 0) {
+    return "";
+  }
+
+  const auto& selected = kanjiIndex[kanjiIndexPos];
+  std::string result;
+  size_t charCount = 0;
+  bool started = false;
+
+  const auto& elements = kanjiCursorPage->elements;
+  for (int16_t ei = 0; ei < static_cast<int16_t>(elements.size()) && charCount < maxChars; ++ei) {
+    if (elements[ei]->getTag() != TAG_PageLine) continue;
+    if (!started && ei < selected.elementIdx) continue;
+
+    const auto& block = *static_cast<const PageLine&>(*elements[ei]).getBlock();
+    const auto& words = block.getWords();
+    for (int16_t wi = 0; wi < static_cast<int16_t>(words.size()) && charCount < maxChars; ++wi) {
+      if (!started) {
+        if (ei != selected.elementIdx || wi != selected.wordIdx) continue;
+        started = true;
+      }
+
+      const size_t startOffset = (ei == selected.elementIdx && wi == selected.wordIdx) ? selected.byteOffset : 0;
+      if (startOffset >= words[wi].size()) continue;
+
+      const auto* wordStart = reinterpret_cast<const unsigned char*>(words[wi].c_str());
+      const auto* p = wordStart + startOffset;
+      while (*p != '\0' && charCount < maxChars) {
+        const auto* cpStart = p;
+        utf8NextCodepoint(&p);
+        result.append(reinterpret_cast<const char*>(cpStart), p - cpStart);
+        ++charCount;
+      }
+    }
+  }
+
+  return result;
+}
+
+void EpubReaderActivity::showKanjiPopup() {
+  if (!kanjiCursorActive || kanjiIndex.empty()) return;
+  kanjiPopupActive = true;
+
+  // Extract the selected kanji and the forward context that dictionary lookup will receive.
+  const auto& entry = kanjiIndex[kanjiIndexPos];
+  const auto& block = *static_cast<const PageLine&>(*kanjiCursorPage->elements[entry.elementIdx]).getBlock();
+  const std::string& word = block.getWords()[entry.wordIdx];
+  uint32_t cp = 0;
+  const std::string selectedGlyph = utf8CodepointAtByteOffset(word, entry.byteOffset, &cp);
+  const std::string lookupText = extractKanjiLookupText(KANJI_LOOKUP_CONTEXT_CHARS);
+  const std::string lookupDisplayText = utf8PrefixChars(lookupText, KANJI_LOOKUP_DISPLAY_CHARS);
+
+  // In landscape CCW orientation the device is held in portrait.
+  // Renderer X-axis = user's top-to-bottom; renderer Y-axis = user's right-to-left.
+  // A box that is wide in renderer-X and narrow in renderer-Y becomes a portrait
+  // box after the display's CCW rotation.
+  // Text drawn with drawTextRotated90CW rotates 90° CW in renderer space; the
+  // display's CCW transform cancels it, so text appears upright to the user.
+  const int sw = renderer.getScreenWidth();   // 800 in landscape CCW
+  const int sh = renderer.getScreenHeight();  // 480 in landscape CCW
+  const int pad = 12;
+
+  // Box: rdx = user portrait height (renderer X extent), rdy = user portrait width (renderer Y extent).
+  const int rdx = sw * 2 / 5;     // 320px — user height of popup
+  const int rdy = sh * 3 / 5;     // 288px — user width of popup
+  const int rx = (sw - rdx) / 2;  // center in renderer X
+  const int ry = (sh - rdy) / 2;  // center in renderer Y
+
+  renderer.fillRect(rx, ry, rdx, rdy, false);    // white background
+  renderer.drawRect(rx, ry, rdx, rdy, 2, true);  // black border
+
+  // All text lines start from the user's left edge (= high renderer Y) and run right.
+  const int textY = ry + rdy - pad;
+
+  char buf[32];
+  snprintf(buf, sizeof(buf), "U+%04X", cp);
+  renderer.drawTextRotated90CW(UI_10_FONT_ID, rx + pad, textY, "char", true);
+  renderer.drawTextRotated90CW(SETTINGS.getReaderFontId(), rx + pad + 20, textY, selectedGlyph.c_str(), true);
+  renderer.drawTextRotated90CW(UI_10_FONT_ID, rx + pad + 58, textY, buf, true);
+  renderer.drawTextRotated90CW(UI_10_FONT_ID, rx + pad + 96, textY, "ctx", true);
+  renderer.drawTextRotated90CW(SETTINGS.getReaderFontId(), rx + pad + 116, textY, lookupDisplayText.c_str(), true);
+  renderer.drawTextRotated90CW(UI_10_FONT_ID, rx + rdx - pad - 18, textY, "Back: return to cursor", true);
+
+  renderer.displayBuffer(HalDisplay::FAST_REFRESH);
+}
+
+void EpubReaderActivity::hideKanjiPopup() {
+  kanjiPopupActive = false;
+  drawKanjiCursor();  // re-render cursor page cleanly
+}
+
+// --- End kanji cursor overlay ---
 
 ScreenshotInfo EpubReaderActivity::getScreenshotInfo() const {
   ScreenshotInfo info;

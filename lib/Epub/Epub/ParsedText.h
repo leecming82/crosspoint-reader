@@ -60,3 +60,11 @@ class ParsedText {
                              const std::function<void(std::shared_ptr<TextBlock>)>& processLine,
                              bool includeLastLine = true);
 };
+
+// Returns true for CJK unified ideographs (kanji) only.
+// Excludes hiragana, katakana, punctuation, and fullwidth forms.
+inline bool isKanjiCodepoint(const uint32_t cp) {
+  return (cp >= 0x3400 && cp <= 0x4DBF) ||  // CJK Extension A
+         (cp >= 0x4E00 && cp <= 0x9FFF) ||  // CJK Unified Ideographs (core)
+         (cp >= 0x20000 && cp <= 0x2FA1F);  // CJK Extensions B-F + compat supp
+}
