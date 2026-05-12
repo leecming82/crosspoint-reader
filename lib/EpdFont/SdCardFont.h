@@ -73,7 +73,14 @@ class SdCardFont {
 
   // Style used when a requested face is absent. Prefers regular, then the first
   // available face so single-style non-regular fonts remain usable.
-  uint8_t fallbackStyle() const { return fallbackStyle_; }
+  uint8_t fallbackStyle() const { return resolveStyle(0); }
+
+  // Resolve requested style bits to the closest present style.
+  uint8_t resolveStyle(uint8_t style) const;
+
+  // Resolve every requested style bit through fallback and return the actual
+  // styles that need cache/advance preparation.
+  uint8_t resolveStyleMask(uint8_t styleMask) const;
 
   // Number of styles present in this font file.
   uint8_t styleCount() const { return styleCount_; }
@@ -221,7 +228,6 @@ class SdCardFont {
 
   Stats stats_;
   uint32_t contentHash_ = 0;
-  uint8_t fallbackStyle_ = 0;
   bool loaded_ = false;
 
   // Per-style helpers
@@ -233,7 +239,6 @@ class SdCardFont {
   bool buildMiniKernMatrix(PerStyle& s, const uint32_t* codepoints, uint32_t cpCount);
   void applyKernLigaturePointers(PerStyle& s, EpdFontData& data) const;
   void applyGlyphMissCallback(uint8_t styleIdx);
-  uint8_t resolveStyleIndex(uint8_t style) const;
   int32_t findGlobalGlyphIndex(const PerStyle& s, uint32_t codepoint) const;
   int prewarmStyle(uint8_t styleIdx, const uint32_t* codepoints, uint32_t cpCount, bool metadataOnly);
 

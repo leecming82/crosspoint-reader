@@ -9,6 +9,8 @@
 #include <cstring>
 #include <memory>
 
+#include "EpdFontFamily.h"
+
 static_assert(sizeof(EpdGlyph) == 16, "EpdGlyph must be 16 bytes to match .cpfont file layout");
 static_assert(sizeof(EpdUnicodeInterval) == 12, "EpdUnicodeInterval must be 12 bytes to match .cpfont file layout");
 static_assert(sizeof(EpdKernClassEntry) == 3, "EpdKernClassEntry must be 3 bytes to match .cpfont file layout");
@@ -97,7 +99,6 @@ void SdCardFont::freeAll() {
   }
   styleCount_ = 0;
   contentHash_ = 0;
-  fallbackStyle_ = 0;
   loaded_ = false;
 }
 
@@ -370,26 +371,6 @@ void SdCardFont::applyGlyphMissCallback(uint8_t styleIdx) {
   s.stubData.glyphMissCtx = &overflowCtx_[styleIdx];
 }
 
-uint8_t SdCardFont::resolveStyleIndex(uint8_t style) const {
-  style &= (MAX_STYLES - 1);
-  const bool wantsBold = (style & 0x01) != 0;
-  const bool wantsItalic = (style & 0x02) != 0;
-
-  if (wantsBold && wantsItalic) {
-    if (styles_[3].present) return 3;
-    if (styles_[1].present) return 1;
-    if (styles_[2].present) return 2;
-  } else if (wantsBold && styles_[1].present) {
-    return 1;
-  } else if (wantsItalic && styles_[2].present) {
-    return 2;
-  } else if (styles_[style].present) {
-    return style;
-  }
-
-  return fallbackStyle_;
-}
-
 // --- Compute per-style file offsets from a base data offset ---
 
 void SdCardFont::computeStyleFileOffsets(PerStyle& s, uint32_t baseOffset) {
@@ -504,15 +485,6 @@ bool SdCardFont::load(const char* path) {
 
   styleCount_ = styleCount;
   contentHash_ = hash;
-  fallbackStyle_ = 0;
-  if (!styles_[0].present) {
-    for (uint8_t i = 1; i < MAX_STYLES; i++) {
-      if (styles_[i].present) {
-        fallbackStyle_ = i;
-        break;
-      }
-    }
-  }
 
   // Load full intervals into RAM for each present style
   for (uint8_t i = 0; i < MAX_STYLES; i++) {
@@ -617,17 +589,8 @@ int32_t SdCardFont::findGlobalGlyphIndex(const PerStyle& s, uint32_t codepoint) 
 
 int SdCardFont::prewarm(const char* utf8Text, uint8_t styleMask, bool metadataOnly) {
   if (!loaded_) return -1;
-
-  // Match EpdFontFamily's rendering fallback: if a requested face is absent,
-  // rendering uses a fallback face. Prewarm that resolved face too, otherwise
-  // pages styled entirely as a missing face thrash through the overflow ring.
-  uint8_t resolvedStyleMask = 0;
-  for (uint8_t si = 0; si < MAX_STYLES; si++) {
-    if (styleMask & (1 << si)) {
-      resolvedStyleMask |= 1 << resolveStyleIndex(si);
-    }
-  }
-  styleMask = resolvedStyleMask;
+  styleMask = resolveStyleMask(styleMask);
+  if (styleMask == 0) return 0;
 
   unsigned long startMs = millis();
 
@@ -1036,7 +999,7 @@ bool SdCardFont::hasAdvanceTable() const {
 }
 
 uint16_t SdCardFont::getAdvance(uint32_t codepoint, uint8_t style) const {
-  style = resolveStyleIndex(style);
+  style = resolveStyle(style);
   if (!advanceTable_[style]) return 0;
   const AdvanceEntry* table = advanceTable_[style];
   const uint32_t size = advanceTableSize_[style];
@@ -1058,16 +1021,8 @@ uint16_t SdCardFont::getAdvance(uint32_t codepoint, uint8_t style) const {
 
 int SdCardFont::buildAdvanceTable(const char* utf8Text, uint8_t styleMask) {
   if (!loaded_) return -1;
-
-  // Match EpdFontFamily's rendering fallback so layout measures the same face
-  // that rendering will use when a requested face is absent.
-  uint8_t resolvedStyleMask = 0;
-  for (uint8_t si = 0; si < MAX_STYLES; si++) {
-    if (styleMask & (1 << si)) {
-      resolvedStyleMask |= 1 << resolveStyleIndex(si);
-    }
-  }
-  styleMask = resolvedStyleMask;
+  styleMask = resolveStyleMask(styleMask);
+  if (styleMask == 0) return 0;
 
   // Note: advance table is preserved across calls. We only fetch codepoints
   // not already present, then merge them in. Use clearPersistentCache() to
@@ -1148,13 +1103,17 @@ int SdCardFont::buildAdvanceTable(const char* utf8Text, uint8_t styleMask) {
 
     uint32_t needCount = 0;
     uint32_t missedThisStyle = 0;
+    const int32_t replacementIdx = findGlobalGlyphIndex(s, REPLACEMENT_GLYPH);
     for (uint32_t i = 0; i < cpCount; i++) {
       const uint32_t cp = codepoints[i];
       if (advanceTableLookup(si, cp, nullptr)) continue;  // already cached
       int32_t idx = findGlobalGlyphIndex(s, cp);
       if (idx < 0) {
-        missedThisStyle++;
-        continue;
+        if (replacementIdx < 0) {
+          missedThisStyle++;
+          continue;
+        }
+        idx = replacementIdx;
       }
       mappings[needCount].codepoint = cp;
       mappings[needCount].glyphIndex = idx;
@@ -1240,6 +1199,35 @@ EpdFont* SdCardFont::getEpdFont(uint8_t style) {
 }
 
 bool SdCardFont::hasStyle(uint8_t style) const { return styles_[style & (MAX_STYLES - 1)].present; }
+
+uint8_t SdCardFont::resolveStyle(uint8_t style) const {
+  static const uint8_t kFallbacks[MAX_STYLES][MAX_STYLES] = {
+      // REGULAR: REGULAR -> BOLD -> ITALIC -> BOLD_ITALIC
+      {EpdFontFamily::REGULAR, EpdFontFamily::BOLD, EpdFontFamily::ITALIC, EpdFontFamily::BOLD_ITALIC},
+      // BOLD: BOLD -> REGULAR -> BOLD_ITALIC -> ITALIC
+      {EpdFontFamily::BOLD, EpdFontFamily::REGULAR, EpdFontFamily::BOLD_ITALIC, EpdFontFamily::ITALIC},
+      // ITALIC: ITALIC -> REGULAR -> BOLD_ITALIC -> BOLD
+      {EpdFontFamily::ITALIC, EpdFontFamily::REGULAR, EpdFontFamily::BOLD_ITALIC, EpdFontFamily::BOLD},
+      // BOLD_ITALIC: BOLD_ITALIC -> BOLD -> ITALIC -> REGULAR
+      {EpdFontFamily::BOLD_ITALIC, EpdFontFamily::BOLD, EpdFontFamily::ITALIC, EpdFontFamily::REGULAR},
+  };
+
+  const uint8_t styleBits = style & (MAX_STYLES - 1);
+  for (uint8_t candidate : kFallbacks[styleBits]) {
+    if (styles_[candidate].present) return candidate;
+  }
+  return EpdFontFamily::REGULAR;
+}
+
+uint8_t SdCardFont::resolveStyleMask(uint8_t styleMask) const {
+  uint8_t resolvedMask = 0;
+  for (uint8_t si = 0; si < MAX_STYLES; si++) {
+    if (styleMask & (1 << si)) {
+      resolvedMask |= static_cast<uint8_t>(1u << resolveStyle(si));
+    }
+  }
+  return resolvedMask;
+}
 
 // --- On-demand glyph loading (overflow buffer) ---
 
