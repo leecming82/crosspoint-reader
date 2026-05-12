@@ -42,6 +42,8 @@ def text_content(node, out):
         return
 
     data = node.get("data")
+    if isinstance(data, dict) and data.get("class") == "tag":
+        return
     content_kind = data.get("content") if isinstance(data, dict) else None
     if content_kind in ("attribution", "forms"):
         return
@@ -62,7 +64,36 @@ def tag_codes(node, out):
             tag_codes(value, out)
 
 
+def tag_label(code, content):
+    if code == "vs" or content == "suru":
+        return "suru verb"
+    if code == "vt":
+        return "transitive"
+    if code == "vi":
+        return "intransitive"
+    if code == "uk":
+        return "usually kana"
+    return content.strip() if isinstance(content, str) else ""
+
+
+def tag_labels(node, out):
+    if isinstance(node, dict):
+        data = node.get("data")
+        if isinstance(data, dict) and data.get("class") == "tag":
+            label = tag_label(data.get("code"), node.get("content"))
+            if label and label not in out:
+                out.append(label)
+            return
+        for value in node.values():
+            tag_labels(value, out)
+    elif isinstance(node, list):
+        for value in node:
+            tag_labels(value, out)
+
+
 def flatten_glossary(glossary, include_examples=False):
+    tags = []
+    tag_labels(glossary, tags)
     pieces = []
     for item in glossary:
         if isinstance(item, dict):
@@ -73,7 +104,7 @@ def flatten_glossary(glossary, include_examples=False):
         else:
             text_content(item, pieces)
     compact = []
-    for piece in pieces:
+    for piece in tags + pieces:
         if not compact or compact[-1] != piece:
             compact.append(piece)
     return "; ".join(compact)
@@ -92,6 +123,8 @@ def text_content_without_examples(node, out):
         return
     if isinstance(node, dict):
         data = node.get("data")
+        if isinstance(data, dict) and data.get("class") == "tag":
+            return
         content_kind = data.get("content") if isinstance(data, dict) else None
         if content_kind in ("example-sentence", "example-sentence-a", "example-sentence-b", "example-keyword"):
             return

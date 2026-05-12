@@ -3,6 +3,7 @@
 #include <Epub/FootnoteEntry.h>
 #include <Epub/Page.h>
 #include <Epub/Section.h>
+#include <JapaneseDictionary.h>
 
 #include <optional>
 #include <string>
@@ -42,6 +43,7 @@ class EpubReaderActivity final : public Activity {
   };
   bool kanjiCursorActive = false;
   bool kanjiPopupActive = false;
+  JapaneseDictionary kanjiDictionary;
   std::unique_ptr<Page> kanjiCursorPage;
   std::vector<KanjiEntry> kanjiIndex;
   int kanjiIndexPos = 0;

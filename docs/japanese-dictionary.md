@@ -87,22 +87,6 @@ bounded.
 ```sh
 python3 scripts/build_japanese_dict.py convert test/jitendex-yomitan test/jitendex-cpdict-ranked
 python3 scripts/build_japanese_dict.py lookup test/jitendex-cpdict-ranked 日本語
-python3 scripts/build_japanese_dict.py bench test/jitendex-cpdict-ranked --samples 2000
-```
-
-Current host benchmark:
-
-- p50: about 62 us
-- p95: about 166 us
-- max: about 347 us
-
-These are not SD-card timings. The next useful firmware step is a read-only
-`CpDict` loader plus a debug benchmark that writes rows like this to
-`/.crosspoint/dict_bench.csv`:
-
-```csv
-query,bucket_us,search_us,string_us,total_us,matches
-日本語,120,2400,900,3420,9
 ```
 
 ## Firmware Probe
@@ -118,12 +102,4 @@ query,bucket_us,search_us,string_us,total_us,matches
 
 Copy the generated `buckets.bin`, `records.bin`, and `strings.bin` together
 under one of those directories. The kanji cursor popup performs a basic
-longest-prefix exact lookup and appends telemetry to:
-
-```text
-/.crosspoint/dict_bench.csv
-```
-
-The first firmware probe opens the files on each popup lookup. That makes
-`open_us` visible and intentionally exposes the worst case; if timings look
-acceptable with this, caching open files later should only help.
+longest-prefix exact lookup.

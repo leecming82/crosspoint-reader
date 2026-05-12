@@ -39,7 +39,6 @@ namespace {
 // pages per minute, first item is 1 to prevent division by zero if accessed
 constexpr int PAGE_TURN_RATES[] = {1, 1, 3, 6, 12};
 constexpr size_t KANJI_LOOKUP_CONTEXT_CHARS = 12;
-constexpr size_t KANJI_LOOKUP_DISPLAY_CHARS = 8;
 
 int clampPercent(int percent) {
   if (percent < 0) {
@@ -51,43 +50,144 @@ int clampPercent(int percent) {
   return percent;
 }
 
-std::string utf8CodepointAtByteOffset(const std::string& text, const size_t byteOffset, uint32_t* outCp = nullptr) {
-  if (byteOffset >= text.size()) {
-    if (outCp) *outCp = 0;
-    return "";
-  }
-
-  const auto* start = reinterpret_cast<const unsigned char*>(text.c_str() + byteOffset);
-  const auto* cursor = start;
-  const uint32_t cp = utf8NextCodepoint(&cursor);
-  if (outCp) *outCp = cp;
-  return std::string(reinterpret_cast<const char*>(start), cursor - start);
+std::string popupPronunciationLine(const JapaneseDictionaryMatch& match) {
+  if (match.reading.empty() || match.reading == match.term) return "";
+  return match.reading;
 }
 
-std::string utf8PrefixChars(const std::string& text, const size_t maxChars) {
-  std::string result;
-  size_t charCount = 0;
-  const auto* p = reinterpret_cast<const unsigned char*>(text.c_str());
-  while (*p != '\0' && charCount < maxChars) {
-    const auto* cpStart = p;
-    utf8NextCodepoint(&p);
-    result.append(reinterpret_cast<const char*>(cpStart), p - cpStart);
-    ++charCount;
-  }
-  return result;
-}
-
-void drawJapanesePopupRow(const GfxRenderer& renderer, const int fontId, const int x, const int rightY,
-                          const std::string& text) {
-  int y = rightY;
+bool hasVisibleDefinitionText(const std::string& text) {
   const auto* p = reinterpret_cast<const unsigned char*>(text.c_str());
   while (*p != '\0') {
+    const uint32_t cp = utf8NextCodepoint(&p);
+    if (cp != ' ' && cp != '-' && cp != '(' && cp != ')' && cp != '[' && cp != ']' && cp != '/' && cp != '\\' &&
+        cp != ',' && cp != ';' && cp != ':' && cp != 0x2022 && cp != 0x3000 && cp != 0xFF08 && cp != 0xFF09 &&
+        cp != 0x3014 && cp != 0x3015 && cp != 0x3010 && cp != 0x3011 && cp != 0x3008 && cp != 0x3009 && cp != 0x300C &&
+        cp != 0x300D && cp != 0x300E && cp != 0x300F && cp != 0xFF3B && cp != 0xFF3D) {
+      return true;
+    }
+  }
+  return false;
+}
+
+std::string definitionAttributeLabel(const std::string& item) {
+  static constexpr const char* attrs[] = {
+      "1-dan",     "5-dan",     "adj-i",    "adj-na",    "adj-no",     "adjective",    "adv",         "adverb",
+      "archaism",  "aux-adj",   "aux-v",    "auxiliary", "colloquial", "counter",      "exp",         "expression",
+      "godan",     "honorific", "humble",   "i-adj",     "ichidan",    "intransitive", "irregular",   "kana",
+      "na-adj",    "no-adj",    "noun",     "numeric",   "obsolete",   "particle",     "prefix",      "pronoun",
+      "rare",      "sensitive", "suffix",   "suru verb", "transitive", "usually kana", "vulgar",      "Wikipedia",
+      "astronomy", "Buddhism",  "business", "computing", "food",       "linguistics",  "mathematics", "medicine",
+      "military",  "music",     "physics",  "sports",
+  };
+  for (const char* attr : attrs) {
+    if (item == attr) return item;
+  }
+  return "";
+}
+
+bool isDefinitionAttribute(const std::string& item) { return !definitionAttributeLabel(item).empty(); }
+
+void appendDefinitionAttribute(std::string& attributes, const std::string& item) {
+  const std::string label = definitionAttributeLabel(item);
+  if (label.empty()) return;
+  size_t start = 0;
+  while (start < attributes.size()) {
+    const size_t end = attributes.find(", ", start);
+    const std::string existing = attributes.substr(start, end == std::string::npos ? std::string::npos : end - start);
+    if (existing == label) return;
+    if (end == std::string::npos) break;
+    start = end + 2;
+  }
+  if (!attributes.empty()) attributes += ", ";
+  attributes += label;
+}
+
+bool isNoiseDefinitionItem(const std::string& item) {
+  return item.empty() || !hasVisibleDefinitionText(item) || item == "[" || item == "]" || item == "〔" ||
+         item == "〕" || item == "()" || item == "[]" || item == "（）";
+}
+
+void drawRotatedLine(const GfxRenderer& renderer, const int fontId, const int x, const int y, const std::string& text,
+                     const int maxWidth, const EpdFontFamily::Style style = EpdFontFamily::REGULAR) {
+  if (!hasVisibleDefinitionText(text)) return;
+  const std::string fitted = renderer.truncatedText(fontId, text.c_str(), maxWidth, style);
+  if (!hasVisibleDefinitionText(fitted)) return;
+  renderer.drawTextRotated90CW(fontId, x, y, fitted.c_str(), true, style);
+}
+
+int drawRotatedWrappedLines(const GfxRenderer& renderer, const int fontId, const int x, const int y,
+                            const std::string& text, const int maxWidth, const int maxLines, const int lineStep) {
+  const auto lines = renderer.wrappedText(fontId, text.c_str(), maxWidth, maxLines);
+  int drawX = x;
+  for (const auto& line : lines) {
+    if (!hasVisibleDefinitionText(line)) continue;
+    renderer.drawTextRotated90CW(fontId, drawX, y, line.c_str(), true);
+    drawX += lineStep;
+  }
+  return drawX;
+}
+
+void drawJapanesePopupLine(const GfxRenderer& renderer, const int fontId, const int x, const int y,
+                           const std::string& text, const int maxWidth) {
+  if (!hasVisibleDefinitionText(text)) return;
+  constexpr int physicalLeftPadding = 36;
+  constexpr int glyphGap = 2;
+  const int effectiveMaxWidth = maxWidth - physicalLeftPadding;
+  if (effectiveMaxWidth <= 0) return;
+  const std::string fitted = renderer.truncatedText(fontId, text.c_str(), effectiveMaxWidth);
+  if (!hasVisibleDefinitionText(fitted)) return;
+
+  int drawY = y - physicalLeftPadding;
+  const int minY = y - maxWidth;
+  const auto* p = reinterpret_cast<const unsigned char*>(fitted.c_str());
+  while (*p != '\0' && drawY > minY) {
     const auto* cpStart = p;
     utf8NextCodepoint(&p);
     const std::string glyph(reinterpret_cast<const char*>(cpStart), p - cpStart);
-    renderer.drawText(fontId, x, y, glyph.c_str(), true);
-    y -= renderer.getTextAdvanceX(fontId, glyph.c_str(), EpdFontFamily::REGULAR);
+    renderer.drawText(fontId, x, drawY, glyph.c_str(), true);
+    drawY -= renderer.getTextAdvanceX(fontId, glyph.c_str(), EpdFontFamily::REGULAR) + glyphGap;
   }
+}
+
+struct PopupDefinition {
+  std::string attributes;
+  std::vector<std::string> glosses;
+};
+
+PopupDefinition popupDefinitionItems(const std::string& definition, const size_t maxGlosses) {
+  PopupDefinition parsed;
+  std::vector<std::string> items;
+  size_t start = 0;
+  while (start < definition.size()) {
+    const size_t end = definition.find("; ", start);
+    std::string item = definition.substr(start, end == std::string::npos ? std::string::npos : end - start);
+    while (!item.empty() && item.front() == ' ') item.erase(item.begin());
+    while (!item.empty() && item.back() == ' ') item.pop_back();
+    if (!isNoiseDefinitionItem(item)) items.push_back(item);
+    if (end == std::string::npos) break;
+    start = end + 2;
+  }
+
+  size_t pos = 0;
+  while (pos < items.size() && isDefinitionAttribute(items[pos])) {
+    appendDefinitionAttribute(parsed.attributes, items[pos++]);
+  }
+  for (; pos < items.size() && parsed.glosses.size() < maxGlosses; ++pos) {
+    if (isDefinitionAttribute(items[pos])) {
+      appendDefinitionAttribute(parsed.attributes, items[pos]);
+      continue;
+    }
+    parsed.glosses.push_back("• " + items[pos]);
+  }
+  return parsed;
+}
+
+bool isOpenRubyParen(const uint32_t cp) {
+  return cp == '(' || cp == 0xFF08 || cp == 0x3014 || cp == 0x3010 || cp == 0x3008;
+}
+
+bool isCloseRubyParen(const uint32_t cp) {
+  return cp == ')' || cp == 0xFF09 || cp == 0x3015 || cp == 0x3011 || cp == 0x3009;
 }
 
 }  // namespace
@@ -1178,6 +1278,9 @@ void EpubReaderActivity::moveKanjiCursorToLine(const int direction) {
     }
     pos += direction;
   }
+
+  kanjiIndexPos = direction > 0 ? 0 : static_cast<int>(kanjiIndex.size()) - 1;
+  drawKanjiCursor();
 }
 
 void EpubReaderActivity::drawKanjiCursor() {
@@ -1236,6 +1339,7 @@ std::string EpubReaderActivity::extractKanjiLookupText(const size_t maxChars) co
   std::string result;
   size_t charCount = 0;
   bool started = false;
+  int parenDepth = 0;
 
   const auto& elements = kanjiCursorPage->elements;
   for (int16_t ei = 0; ei < static_cast<int16_t>(elements.size()) && charCount < maxChars; ++ei) {
@@ -1257,7 +1361,16 @@ std::string EpubReaderActivity::extractKanjiLookupText(const size_t maxChars) co
       const auto* p = wordStart + startOffset;
       while (*p != '\0' && charCount < maxChars) {
         const auto* cpStart = p;
-        utf8NextCodepoint(&p);
+        const uint32_t cp = utf8NextCodepoint(&p);
+        if (isOpenRubyParen(cp)) {
+          ++parenDepth;
+          continue;
+        }
+        if (isCloseRubyParen(cp)) {
+          if (parenDepth > 0) --parenDepth;
+          continue;
+        }
+        if (parenDepth > 0) continue;
         result.append(reinterpret_cast<const char*>(cpStart), p - cpStart);
         ++charCount;
       }
@@ -1272,18 +1385,9 @@ void EpubReaderActivity::showKanjiPopup() {
   kanjiPopupActive = true;
 
   // Extract the selected kanji and the forward context that dictionary lookup will receive.
-  const auto& entry = kanjiIndex[kanjiIndexPos];
-  const auto& block = *static_cast<const PageLine&>(*kanjiCursorPage->elements[entry.elementIdx]).getBlock();
-  const std::string& word = block.getWords()[entry.wordIdx];
-  uint32_t cp = 0;
-  const std::string selectedGlyph = utf8CodepointAtByteOffset(word, entry.byteOffset, &cp);
   const std::string lookupText = extractKanjiLookupText(KANJI_LOOKUP_CONTEXT_CHARS);
-  const std::string lookupDisplayText = utf8PrefixChars(lookupText, KANJI_LOOKUP_DISPLAY_CHARS);
-  JapaneseDictionary dictionary;
-  JapaneseDictionaryTelemetry telemetry;
   std::vector<JapaneseDictionaryMatch> matches;
-  dictionary.lookupContext(lookupText, matches, &telemetry, 5, KANJI_LOOKUP_CONTEXT_CHARS);
-  JapaneseDictionary::appendTelemetryCsv(lookupText, dictionary.getBasePath(), telemetry);
+  kanjiDictionary.lookupContext(lookupText, matches, 5, KANJI_LOOKUP_CONTEXT_CHARS);
   const bool hasMatch = !matches.empty();
 
   // In landscape CCW orientation the device is held in portrait.
@@ -1306,29 +1410,39 @@ void EpubReaderActivity::showKanjiPopup() {
   renderer.drawRect(rx, ry, rdx, rdy, 2, true);  // black border
 
   // All text lines start from the user's left edge (= high renderer Y) and run right.
-  const int labelY = ry + rdy - pad;
-  const int japaneseY = ry + rdy - pad - 92;
-  const int definitionY = ry + rdy - pad - 188;
-  const int lineStep = 34;
+  const int textY = ry + rdy - pad;
+  const int maxTextWidth = rdy - pad * 2;
+  const int termLineStep = renderer.getLineHeight(SETTINGS.getReaderFontId()) + 12;
+  const int uiLineStep = renderer.getLineHeight(UI_10_FONT_ID) + 8;
 
-  char buf[32];
-  snprintf(buf, sizeof(buf), "U+%04X", cp);
-  renderer.drawTextRotated90CW(UI_10_FONT_ID, rx + pad, labelY, "char", true);
-  drawJapanesePopupRow(renderer, SETTINGS.getReaderFontId(), rx + pad + 20, japaneseY, selectedGlyph);
-  renderer.drawTextRotated90CW(UI_10_FONT_ID, rx + pad + lineStep, labelY, buf, true);
-  renderer.drawTextRotated90CW(UI_10_FONT_ID, rx + pad + lineStep * 2, labelY, "ctx", true);
-  drawJapanesePopupRow(renderer, SETTINGS.getReaderFontId(), rx + pad + lineStep * 2 + 20, japaneseY,
-                       lookupDisplayText);
-  renderer.drawTextRotated90CW(UI_10_FONT_ID, rx + pad + lineStep * 4, labelY, hasMatch ? "hit" : "no dict/hit", true);
+  int lineX = rx + pad;
   if (hasMatch) {
-    drawJapanesePopupRow(renderer, SETTINGS.getReaderFontId(), rx + pad + lineStep * 4 + 20, japaneseY,
-                         matches[0].term);
-    drawJapanesePopupRow(renderer, SETTINGS.getReaderFontId(), rx + pad + lineStep * 5 + 20, japaneseY,
-                         matches[0].reading);
-    renderer.drawTextRotated90CW(UI_10_FONT_ID, rx + pad + lineStep * 6, definitionY, matches[0].definition.c_str(),
-                                 true);
+    const auto& match = matches[0];
+    drawJapanesePopupLine(renderer, SETTINGS.getReaderFontId(), lineX, textY, match.term, maxTextWidth);
+    lineX += termLineStep;
+    const std::string pronunciation = popupPronunciationLine(match);
+    if (!pronunciation.empty()) {
+      drawJapanesePopupLine(renderer, SETTINGS.getReaderFontId(), lineX, textY, pronunciation, maxTextWidth);
+      lineX += termLineStep;
+    }
+    if (match.sourceText != match.term) {
+      drawRotatedLine(renderer, UI_10_FONT_ID, lineX, textY, "from " + match.sourceText, maxTextWidth);
+      lineX += uiLineStep;
+    }
+    const PopupDefinition definition = popupDefinitionItems(match.definition, 6);
+    if (hasVisibleDefinitionText(definition.attributes)) {
+      drawRotatedLine(renderer, UI_10_FONT_ID, lineX, textY, "(" + definition.attributes + ")", maxTextWidth,
+                      EpdFontFamily::BOLD);
+      lineX += uiLineStep;
+    }
+    for (const auto& item : definition.glosses) {
+      if (lineX >= rx + rdx - pad - uiLineStep * 3) break;
+      lineX = drawRotatedWrappedLines(renderer, UI_10_FONT_ID, lineX, textY, item, maxTextWidth, 2, uiLineStep);
+    }
+  } else {
+    drawRotatedLine(renderer, UI_10_FONT_ID, lineX, textY, "No dictionary match", maxTextWidth);
   }
-  renderer.drawTextRotated90CW(UI_10_FONT_ID, rx + rdx - pad - 18, labelY, "Back: return to cursor", true);
+  renderer.drawTextRotated90CW(UI_10_FONT_ID, rx + rdx - pad - 18, textY, "Back: return to cursor", true);
 
   renderer.displayBuffer(HalDisplay::FAST_REFRESH);
 }

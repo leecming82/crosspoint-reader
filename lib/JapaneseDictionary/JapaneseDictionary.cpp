@@ -1,7 +1,5 @@
 #include "JapaneseDictionary.h"
 
-#include <Arduino.h>
-#include <Logging.h>
 #include <Utf8.h>
 
 #include <algorithm>
@@ -12,7 +10,6 @@ constexpr size_t KEY_BYTES = 96;
 constexpr size_t RECORD_BYTES = 124;
 constexpr size_t BUCKET_BYTES = 8;
 constexpr uint32_t UNICODE_BUCKETS = 0x110000;
-constexpr const char* TELEMETRY_PATH = "/.crosspoint/dict_bench.csv";
 
 uint16_t readLe16(const uint8_t* p) { return static_cast<uint16_t>(p[0]) | (static_cast<uint16_t>(p[1]) << 8); }
 
@@ -37,18 +34,216 @@ std::vector<std::string> contextPrefixes(const std::string& context, const size_
   return prefixes;
 }
 
-std::string csvSafePrefix(const std::string& value, const size_t maxBytes) {
-  std::string out;
-  out.reserve(std::min(value.size(), maxBytes));
-  for (const char ch : value) {
-    if (out.size() >= maxBytes) break;
-    if (ch == ',' || ch == '\n' || ch == '\r') {
-      out.push_back(' ');
-    } else {
-      out.push_back(ch);
-    }
+bool endsWith(const std::string& word, const char* suffix) {
+  const size_t suffixLen = strlen(suffix);
+  return word.size() >= suffixLen && word.compare(word.size() - suffixLen, suffixLen, suffix) == 0;
+}
+
+std::string replaceSuffix(const std::string& word, const char* suffix, const char* replacement) {
+  return word.substr(0, word.size() - strlen(suffix)) + replacement;
+}
+
+std::string utf8LastChar(const std::string& text) {
+  if (text.empty()) return "";
+  size_t pos = text.size() - 1;
+  while (pos > 0 && (static_cast<unsigned char>(text[pos]) & 0xC0) == 0x80) --pos;
+  return text.substr(pos);
+}
+
+bool containsString(const std::vector<std::string>& values, const std::string& value) {
+  return std::find(values.begin(), values.end(), value) != values.end();
+}
+
+void addUnique(std::vector<std::string>& values, const std::string& value) {
+  if (!value.empty() && !containsString(values, value)) values.push_back(value);
+}
+
+void addSuffixCandidate(std::vector<std::string>& out, const std::string& word, const char* suffix,
+                        const char* replacement) {
+  if (endsWith(word, suffix)) addUnique(out, replaceSuffix(word, suffix, replacement));
+}
+
+void addTrimmedAuxiliaryTailCandidates(std::vector<std::string>& out, const std::string& word) {
+  static constexpr const char* suffixes[] = {
+      "だけだった",   "だけでした",   "だけだ",   "だけです",   "だけ",
+      "ばかりだった", "ばかりでした", "ばかりだ", "ばかりです", "ばかり",
+  };
+  for (const char* suffix : suffixes) {
+    if (endsWith(word, suffix)) addUnique(out, word.substr(0, word.size() - strlen(suffix)));
   }
-  return out;
+}
+
+bool isGodanARow(const std::string& ch) {
+  static constexpr const char* values[] = {"わ", "か", "が", "さ", "ざ", "た", "だ",
+                                           "な", "は", "ば", "ぱ", "ま", "ら"};
+  for (const char* value : values) {
+    if (ch == value) return true;
+  }
+  return false;
+}
+
+const char* godanFromARow(const std::string& ch) {
+  struct Pair {
+    const char* from;
+    const char* to;
+  };
+  static constexpr Pair pairs[] = {{"わ", "う"}, {"か", "く"}, {"が", "ぐ"}, {"さ", "す"}, {"ざ", "ず"},
+                                   {"た", "つ"}, {"だ", "づ"}, {"な", "ぬ"}, {"は", "ふ"}, {"ば", "ぶ"},
+                                   {"ぱ", "ぷ"}, {"ま", "む"}, {"ら", "る"}};
+  for (const auto& pair : pairs) {
+    if (ch == pair.from) return pair.to;
+  }
+  return nullptr;
+}
+
+const char* godanFromMasuStem(const std::string& ch) {
+  struct Pair {
+    const char* from;
+    const char* to;
+  };
+  static constexpr Pair pairs[] = {{"い", "う"}, {"き", "く"}, {"ぎ", "ぐ"}, {"し", "す"}, {"じ", "ず"},
+                                   {"ち", "つ"}, {"ぢ", "づ"}, {"に", "ぬ"}, {"ひ", "ふ"}, {"び", "ぶ"},
+                                   {"ぴ", "ぷ"}, {"み", "む"}, {"り", "る"}};
+  for (const auto& pair : pairs) {
+    if (ch == pair.from) return pair.to;
+  }
+  return nullptr;
+}
+
+void addTeTaCandidates(std::vector<std::string>& out, const std::string& word) {
+  static constexpr const char* uTsuru[] = {"う", "つ", "る"};
+  for (const char* repl : uTsuru) {
+    addSuffixCandidate(out, word, "って", repl);
+    addSuffixCandidate(out, word, "った", repl);
+  }
+  static constexpr const char* bumnu[] = {"ぶ", "む", "ぬ"};
+  for (const char* repl : bumnu) {
+    addSuffixCandidate(out, word, "んで", repl);
+    addSuffixCandidate(out, word, "んだ", repl);
+  }
+  addSuffixCandidate(out, word, "いて", "く");
+  addSuffixCandidate(out, word, "いた", "く");
+  addSuffixCandidate(out, word, "いで", "ぐ");
+  addSuffixCandidate(out, word, "いだ", "ぐ");
+  addSuffixCandidate(out, word, "して", "す");
+  addSuffixCandidate(out, word, "した", "す");
+  addSuffixCandidate(out, word, "して", "する");
+  addSuffixCandidate(out, word, "した", "する");
+  addSuffixCandidate(out, word, "行って", "行く");
+  addSuffixCandidate(out, word, "行った", "行く");
+  addSuffixCandidate(out, word, "来て", "来る");
+  addSuffixCandidate(out, word, "来た", "来る");
+  addSuffixCandidate(out, word, "來て", "來る");
+  addSuffixCandidate(out, word, "來た", "來る");
+
+  if (endsWith(word, "て") || endsWith(word, "た")) {
+    const std::string stem = word.substr(0, word.size() - strlen(endsWith(word, "て") ? "て" : "た"));
+    const std::string last = utf8LastChar(stem);
+    if (last != "っ" && last != "ん" && last != "い") addUnique(out, stem + "る");
+  }
+}
+
+void addPoliteStemCandidates(std::vector<std::string>& out, const std::string& stem) {
+  if (stem.empty()) return;
+  addUnique(out, stem);
+  const std::string last = utf8LastChar(stem);
+  if (const char* repl = godanFromMasuStem(last)) {
+    addUnique(out, stem.substr(0, stem.size() - last.size()) + repl);
+  }
+  addSuffixCandidate(out, stem, "し", "する");
+  addSuffixCandidate(out, stem, "こ", "くる");
+  addSuffixCandidate(out, stem, "来", "来る");
+  addSuffixCandidate(out, stem, "來", "來る");
+  if (!isGodanARow(last)) addUnique(out, stem + "る");
+}
+
+void addNegativeCandidates(std::vector<std::string>& out, const std::string& word) {
+  if (endsWith(word, "なかった")) addUnique(out, replaceSuffix(word, "なかった", "ない"));
+  if (endsWith(word, "ませんでした")) addUnique(out, replaceSuffix(word, "ませんでした", "ません"));
+  if (!endsWith(word, "ない")) return;
+  const std::string stem = word.substr(0, word.size() - strlen("ない"));
+  if (stem.empty()) return;
+  const std::string last = utf8LastChar(stem);
+  if (const char* repl = godanFromARow(last)) {
+    addUnique(out, stem.substr(0, stem.size() - last.size()) + repl);
+  }
+  addSuffixCandidate(out, stem, "し", "する");
+  addSuffixCandidate(out, stem, "こ", "くる");
+  addSuffixCandidate(out, stem, "来", "来る");
+  addSuffixCandidate(out, stem, "來", "來る");
+  if (!isGodanARow(last)) addUnique(out, stem + "る");
+}
+
+void addInflectionStep(std::vector<std::string>& out, const std::string& word) {
+  addTrimmedAuxiliaryTailCandidates(out, word);
+  addTeTaCandidates(out, word);
+  addNegativeCandidates(out, word);
+
+  static constexpr const char* politeSuffixes[] = {"ませんでした", "ました", "ません", "ましょう", "ます"};
+  for (const char* suffix : politeSuffixes) {
+    if (endsWith(word, suffix)) addPoliteStemCandidates(out, word.substr(0, word.size() - strlen(suffix)));
+  }
+
+  addSuffixCandidate(out, word, "ちゃう", "て");
+  addSuffixCandidate(out, word, "じゃう", "で");
+  addSuffixCandidate(out, word, "ちゃった", "て");
+  addSuffixCandidate(out, word, "じゃった", "で");
+  addSuffixCandidate(out, word, "ちゃって", "て");
+  addSuffixCandidate(out, word, "じゃって", "で");
+  addSuffixCandidate(out, word, "ている", "て");
+  addSuffixCandidate(out, word, "でいる", "で");
+  addSuffixCandidate(out, word, "ていた", "て");
+  addSuffixCandidate(out, word, "でいた", "で");
+
+  struct Rule {
+    const char* suffix;
+    const char* replacement;
+  };
+  static constexpr Rule rules[] = {
+      {"えば", "う"},       {"けば", "く"},       {"げば", "ぐ"},       {"せば", "す"},      {"てば", "つ"},
+      {"ねば", "ぬ"},       {"べば", "ぶ"},       {"めば", "む"},       {"れば", "る"},      {"ければ", "い"},
+      {"おう", "う"},       {"こう", "く"},       {"ごう", "ぐ"},       {"そう", "す"},      {"とう", "つ"},
+      {"のう", "ぬ"},       {"ぼう", "ぶ"},       {"もう", "む"},       {"ろう", "る"},      {"よう", "る"},
+      {"われる", "う"},     {"かれる", "く"},     {"がれる", "ぐ"},     {"される", "す"},    {"たれる", "つ"},
+      {"なれる", "ぬ"},     {"ばれる", "ぶ"},     {"まれる", "む"},     {"られる", "る"},    {"わせる", "う"},
+      {"かせる", "く"},     {"がせる", "ぐ"},     {"させる", "す"},     {"たせる", "つ"},    {"なせる", "ぬ"},
+      {"ばせる", "ぶ"},     {"ませる", "む"},     {"らせる", "る"},     {"ける", "く"},      {"げる", "ぐ"},
+      {"せる", "す"},       {"てる", "つ"},       {"ねる", "ぬ"},       {"べる", "ぶ"},      {"める", "む"},
+      {"れる", "る"},       {"しよう", "する"},   {"こよう", "くる"},   {"来よう", "来る"},  {"される", "する"},
+      {"こられる", "くる"}, {"来られる", "来る"}, {"こさせる", "くる"}, {"来させる", "来る"}};
+  for (const auto& rule : rules) addSuffixCandidate(out, word, rule.suffix, rule.replacement);
+}
+
+struct DeinflectionCandidate {
+  std::string term;
+  uint8_t depth = 0;
+};
+
+bool containsCandidateTerm(const std::vector<DeinflectionCandidate>& values, const std::string& term) {
+  return std::find_if(values.begin(), values.end(), [&term](const auto& value) { return value.term == term; }) !=
+         values.end();
+}
+
+std::vector<DeinflectionCandidate> expandDeinflections(const std::string& input) {
+  std::vector<DeinflectionCandidate> ordered;
+  if (!input.empty()) ordered.push_back({input, 0});
+  size_t levelStart = 0;
+  size_t levelEnd = ordered.size();
+  static constexpr uint8_t MAX_DEPTH = 3;
+  for (uint8_t depth = 0; depth < MAX_DEPTH && levelStart < levelEnd; ++depth) {
+    const size_t before = ordered.size();
+    for (size_t i = levelStart; i < levelEnd; ++i) {
+      std::vector<std::string> next;
+      addInflectionStep(next, ordered[i].term);
+      for (const auto& term : next) {
+        if (!containsCandidateTerm(ordered, term)) ordered.push_back({term, static_cast<uint8_t>(depth + 1)});
+      }
+    }
+    levelStart = levelEnd;
+    levelEnd = ordered.size();
+    if (before == levelEnd) break;
+  }
+  return ordered;
 }
 
 }  // namespace
@@ -65,6 +260,8 @@ struct JapaneseDictionary::Record {
 };
 
 bool JapaneseDictionary::openDefault() {
+  if (!basePath.empty() && bucketsFile.isOpen() && recordsFile.isOpen() && stringsFile.isOpen()) return true;
+
   static constexpr const char* paths[] = {
       "/.crosspoint/dicts/jitendex-cpdict-ranked",
       "/.crosspoint/dicts/jitendex-cpdict-modern",
@@ -93,7 +290,7 @@ bool JapaneseDictionary::openAt(const char* path) {
   bucketsFile = std::move(buckets);
   recordsFile = std::move(records);
   stringsFile = std::move(strings);
-  LOG_INF("JPD", "Opened Japanese dictionary at %s", basePath.c_str());
+  cachedBucketValid = false;
   return true;
 }
 
@@ -104,6 +301,20 @@ bool JapaneseDictionary::readBucket(const uint32_t cp, uint32_t& start, uint32_t
   if (bucketsFile.read(buf, sizeof(buf)) != static_cast<int>(sizeof(buf))) return false;
   start = readLe32(buf);
   count = readLe32(buf + 4);
+  return true;
+}
+
+bool JapaneseDictionary::readBucketCached(const uint32_t cp, uint32_t& start, uint32_t& count) {
+  if (cachedBucketValid && cp == cachedBucketCp) {
+    start = cachedBucketStart;
+    count = cachedBucketCount;
+    return true;
+  }
+  if (!readBucket(cp, start, count)) return false;
+  cachedBucketCp = cp;
+  cachedBucketStart = start;
+  cachedBucketCount = count;
+  cachedBucketValid = true;
   return true;
 }
 
@@ -133,24 +344,20 @@ std::string JapaneseDictionary::readString(const uint32_t offset, const uint32_t
   return result;
 }
 
-bool JapaneseDictionary::findExact(const std::string& term, std::vector<JapaneseDictionaryMatch>& outMatches,
-                                   const size_t maxMatches, uint32_t* bucketUs, uint32_t* searchUs,
-                                   uint32_t* stringUs) {
+bool JapaneseDictionary::findExact(const std::string& term, const std::string& sourceText,
+                                   const uint8_t deinflectionDepth, std::vector<JapaneseDictionaryMatch>& outMatches,
+                                   const size_t maxMatches) {
   if (term.empty() || outMatches.size() >= maxMatches) return true;
 
   const auto* p = reinterpret_cast<const unsigned char*>(term.c_str());
   const uint32_t firstCp = utf8NextCodepoint(&p);
   uint32_t start = 0;
   uint32_t count = 0;
-  const uint32_t tBucket = micros();
-  const bool bucketOk = readBucket(firstCp, start, count);
-  if (bucketUs) *bucketUs += micros() - tBucket;
-  if (!bucketOk || count == 0) return true;
+  if (!readBucketCached(firstCp, start, count) || count == 0) return true;
 
   uint32_t lo = start;
   uint32_t hi = start + count;
   Record rec;
-  const uint32_t tSearch = micros();
   while (lo < hi) {
     const uint32_t mid = lo + (hi - lo) / 2;
     if (!readRecord(mid, rec)) return false;
@@ -160,23 +367,20 @@ bool JapaneseDictionary::findExact(const std::string& term, std::vector<Japanese
       hi = mid;
     }
   }
-  if (searchUs) *searchUs += micros() - tSearch;
 
   for (uint32_t pos = lo; pos < start + count && outMatches.size() < maxMatches; ++pos) {
-    const uint32_t tRecord = micros();
     if (!readRecord(pos, rec)) return false;
-    if (searchUs) *searchUs += micros() - tRecord;
     if (rec.key != term) break;
     JapaneseDictionaryMatch match;
     match.term = rec.key;
-    const uint32_t tString = micros();
+    match.sourceText = sourceText;
     match.reading = readString(rec.readingOffset, rec.readingLength);
     match.definition =
         readString(rec.definitionOffset, static_cast<uint16_t>(std::min<uint32_t>(rec.definitionLength, 512)));
-    if (stringUs) *stringUs += micros() - tString;
     match.score = rec.score;
     match.sequence = rec.sequence;
     match.tier = rec.tier;
+    match.deinflectionDepth = deinflectionDepth;
     outMatches.push_back(std::move(match));
   }
 
@@ -184,64 +388,33 @@ bool JapaneseDictionary::findExact(const std::string& term, std::vector<Japanese
 }
 
 bool JapaneseDictionary::lookupContext(const std::string& context, std::vector<JapaneseDictionaryMatch>& outMatches,
-                                       JapaneseDictionaryTelemetry* telemetry, const size_t maxMatches,
-                                       const size_t maxPrefixChars) {
-  if (telemetry) *telemetry = JapaneseDictionaryTelemetry();
-  const uint32_t tTotal = micros();
-  const uint32_t tOpen = micros();
-  const bool opened = openDefault();
-  if (telemetry) {
-    telemetry->openUs = micros() - tOpen;
-    telemetry->opened = opened;
-  }
-  if (!opened) {
-    if (telemetry) telemetry->totalUs = micros() - tTotal;
-    return false;
-  }
+                                       const size_t maxMatches, const size_t maxPrefixChars) {
+  if (!openDefault()) return false;
 
   outMatches.clear();
   const auto prefixes = contextPrefixes(context, maxPrefixChars);
-  uint32_t bucketUs = 0;
-  uint32_t searchUs = 0;
-  uint32_t stringUs = 0;
+  std::vector<std::string> searchedTerms;
+  searchedTerms.reserve(32);
 
-  for (auto it = prefixes.rbegin(); it != prefixes.rend() && outMatches.size() < maxMatches; ++it) {
-    const size_t before = outMatches.size();
-    findExact(*it, outMatches, maxMatches, &bucketUs, &searchUs, &stringUs);
-    (void)before;
+  const size_t collectionLimit = std::max<size_t>(maxMatches * 4, maxMatches + 8);
+  for (auto it = prefixes.rbegin(); it != prefixes.rend() && outMatches.size() < collectionLimit; ++it) {
+    const auto candidates = expandDeinflections(*it);
+    for (const auto& candidate : candidates) {
+      if (outMatches.size() >= collectionLimit) break;
+      if (containsString(searchedTerms, candidate.term)) continue;
+      searchedTerms.push_back(candidate.term);
+      findExact(candidate.term, *it, candidate.depth, outMatches, collectionLimit);
+    }
   }
 
-  if (telemetry) {
-    telemetry->bucketUs = bucketUs;
-    telemetry->searchUs = searchUs;
-    telemetry->stringUs = stringUs;
-    telemetry->totalUs = micros() - tTotal;
-    telemetry->matches = static_cast<uint16_t>(outMatches.size());
-  }
+  std::stable_sort(outMatches.begin(), outMatches.end(), [](const auto& a, const auto& b) {
+    if (a.sourceText.size() != b.sourceText.size()) return a.sourceText.size() > b.sourceText.size();
+    if (a.deinflectionDepth != b.deinflectionDepth) return a.deinflectionDepth < b.deinflectionDepth;
+    if (a.tier != b.tier) return a.tier < b.tier;
+    if (a.score != b.score) return a.score > b.score;
+    return a.term < b.term;
+  });
+  if (outMatches.size() > maxMatches) outMatches.resize(maxMatches);
+
   return true;
-}
-
-void JapaneseDictionary::appendTelemetryCsv(const std::string& query, const std::string& dictPath,
-                                            const JapaneseDictionaryTelemetry& telemetry) {
-  Storage.ensureDirectoryExists("/.crosspoint");
-  const bool exists = Storage.exists(TELEMETRY_PATH);
-  FsFile file = Storage.open(TELEMETRY_PATH, O_WRITE | O_CREAT | O_APPEND);
-  if (!file) return;
-
-  if (!exists) {
-    static constexpr const char* header =
-        "query,dict_path,opened,open_us,bucket_us,search_us,string_us,total_us,matches\n";
-    file.write(header, strlen(header));
-  }
-
-  char line[256];
-  const std::string safeQuery = csvSafePrefix(query, 48);
-  const std::string safePath = csvSafePrefix(dictPath, 64);
-  snprintf(line, sizeof(line), "%s,%s,%u,%lu,%lu,%lu,%lu,%lu,%u\n", safeQuery.c_str(), safePath.c_str(),
-           telemetry.opened ? 1 : 0, static_cast<unsigned long>(telemetry.openUs),
-           static_cast<unsigned long>(telemetry.bucketUs), static_cast<unsigned long>(telemetry.searchUs),
-           static_cast<unsigned long>(telemetry.stringUs), static_cast<unsigned long>(telemetry.totalUs),
-           telemetry.matches);
-  file.write(line, strlen(line));
-  file.close();
 }
