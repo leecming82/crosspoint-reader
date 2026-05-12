@@ -295,6 +295,9 @@ void EpubReaderActivity::loop() {
 
   // Kanji cursor mode: active only in tategaki (LandscapeCounterClockwise) orientation.
   if (kanjiCursorActive) {
+    if (RenderLock::peek()) {
+      return;
+    }
     // Popup mode: Back dismisses it, Left/Right cycle through ranked dictionary matches.
     if (kanjiPopupActive) {
       if (mappedInput.isPressed(MappedInputManager::Button::Back) &&
@@ -360,6 +363,9 @@ void EpubReaderActivity::loop() {
   // Long-press Confirm (600ms) in tategaki orientation enters cursor mode.
   if (SETTINGS.orientation == CrossPointSettings::LANDSCAPE_CCW && section &&
       mappedInput.isPressed(MappedInputManager::Button::Confirm) && mappedInput.getHeldTime() >= CURSOR_ENTER_MS) {
+    if (RenderLock::peek()) {
+      return;
+    }
     enterKanjiCursorMode();
     return;
   }
@@ -1207,6 +1213,7 @@ void EpubReaderActivity::restoreSavedPosition() {
 
 void EpubReaderActivity::enterKanjiCursorMode() {
   if (!section) return;
+  LOG_DBG("DICT", "Enter cursor requested spine=%d page=%d", currentSpineIndex, section->currentPage);
 
   // Compute the same margins used by renderContents so cursor coords align.
   int dummy1, dummy2;
@@ -1242,18 +1249,40 @@ void EpubReaderActivity::enterKanjiCursorMode() {
   }
 
   if (kanjiIndex.empty()) {
-    LOG_DBG("CURSOR", "No Japanese dictionary start characters found on page");
+    LOG_DBG("DICT", "No Japanese dictionary start chars spine=%d page=%d", currentSpineIndex, section->currentPage);
     kanjiCursorPage.reset();
     return;
   }
 
-  kanjiIndexPos = 0;
+  const bool resumed = kanjiResumeValid && kanjiResumeSpineIndex == currentSpineIndex &&
+                       kanjiResumePageNumber == section->currentPage && kanjiResumeIndexPos >= 0 &&
+                       kanjiResumeIndexPos < static_cast<int>(kanjiIndex.size());
+  if (kanjiResumeValid && kanjiResumeSpineIndex == currentSpineIndex && kanjiResumePageNumber == section->currentPage &&
+      kanjiResumeIndexPos >= 0 && kanjiResumeIndexPos < static_cast<int>(kanjiIndex.size())) {
+    kanjiIndexPos = kanjiResumeIndexPos;
+  } else {
+    kanjiIndexPos = 0;
+  }
   kanjiCursorActive = true;
+  LOG_DBG("DICT", "Enter cursor ok entries=%d pos=%d resumed=%d", static_cast<int>(kanjiIndex.size()), kanjiIndexPos,
+          resumed ? 1 : 0);
 
   drawKanjiCursor();
 }
 
 void EpubReaderActivity::exitKanjiCursorMode() {
+  if (section && kanjiCursorActive && !kanjiIndex.empty() && kanjiIndexPos >= 0 &&
+      kanjiIndexPos < static_cast<int>(kanjiIndex.size())) {
+    kanjiResumeValid = true;
+    kanjiResumeSpineIndex = currentSpineIndex;
+    kanjiResumePageNumber = section->currentPage;
+    kanjiResumeIndexPos = kanjiIndexPos;
+    LOG_DBG("DICT", "Exit cursor saved spine=%d page=%d pos=%d entries=%d", kanjiResumeSpineIndex,
+            kanjiResumePageNumber, kanjiResumeIndexPos, static_cast<int>(kanjiIndex.size()));
+  } else {
+    LOG_DBG("DICT", "Exit cursor no-save active=%d entries=%d", kanjiCursorActive ? 1 : 0,
+            static_cast<int>(kanjiIndex.size()));
+  }
   kanjiCursorActive = false;
   kanjiPopupActive = false;
   kanjiPopupMatches.clear();
@@ -1264,9 +1293,6 @@ void EpubReaderActivity::exitKanjiCursorMode() {
   kanjiIndex.shrink_to_fit();
   kanjiCursorPage.reset();
   kanjiDictionary.close();
-  if (auto* fcm = renderer.getFontCacheManager()) {
-    fcm->clearCache();
-  }
   requestUpdate();
 }
 
@@ -1275,6 +1301,7 @@ void EpubReaderActivity::moveKanjiCursor(const int direction) {
   const int next = kanjiIndexPos + direction;
   if (next < 0 || next >= static_cast<int>(kanjiIndex.size())) return;
   kanjiIndexPos = next;
+  LOG_DBG("DICT", "Move cursor dir=%d pos=%d/%d", direction, kanjiIndexPos + 1, static_cast<int>(kanjiIndex.size()));
   drawKanjiCursor();
 }
 
@@ -1295,6 +1322,8 @@ void EpubReaderActivity::moveKanjiCursorToLine(const int direction) {
       const int yPos = static_cast<const PageLine&>(*elements[e.elementIdx]).yPos;
       if (yPos != curYPos) {
         kanjiIndexPos = pos;
+        LOG_DBG("DICT", "Jump cursor dir=%d pos=%d/%d", direction, kanjiIndexPos + 1,
+                static_cast<int>(kanjiIndex.size()));
         drawKanjiCursor();
         return;
       }
@@ -1303,6 +1332,7 @@ void EpubReaderActivity::moveKanjiCursorToLine(const int direction) {
   }
 
   kanjiIndexPos = direction > 0 ? 0 : static_cast<int>(kanjiIndex.size()) - 1;
+  LOG_DBG("DICT", "Wrap cursor dir=%d pos=%d/%d", direction, kanjiIndexPos + 1, static_cast<int>(kanjiIndex.size()));
   drawKanjiCursor();
 }
 
@@ -1403,9 +1433,13 @@ void EpubReaderActivity::showKanjiPopup() {
 
   // Extract the selected kanji and the forward context that dictionary lookup will receive.
   const std::string lookupText = extractKanjiLookupText(KANJI_LOOKUP_CONTEXT_CHARS);
+  LOG_DBG("DICT", "Lookup pos=%d/%d text=%s", kanjiIndexPos + 1, static_cast<int>(kanjiIndex.size()),
+          lookupText.c_str());
   kanjiPopupMatches.clear();
   kanjiPopupMatchIndex = 0;
   kanjiDictionary.lookupContext(lookupText, kanjiPopupMatches, 8, KANJI_LOOKUP_CONTEXT_CHARS);
+  LOG_DBG("DICT", "Lookup result matches=%d dict=%s", static_cast<int>(kanjiPopupMatches.size()),
+          kanjiDictionary.getBasePath().c_str());
 
   drawKanjiPopup();
 }
@@ -1490,10 +1524,12 @@ void EpubReaderActivity::moveKanjiPopupMatch(const int direction) {
     next = 0;
   }
   kanjiPopupMatchIndex = static_cast<size_t>(next);
+  LOG_DBG("DICT", "Popup match pos=%d/%d", next + 1, count);
   drawKanjiPopup();
 }
 
 void EpubReaderActivity::hideKanjiPopup() {
+  LOG_DBG("DICT", "Hide popup matches=%d", static_cast<int>(kanjiPopupMatches.size()));
   kanjiPopupActive = false;
   kanjiPopupMatches.clear();
   kanjiPopupMatchIndex = 0;
