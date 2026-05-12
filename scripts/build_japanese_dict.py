@@ -15,6 +15,17 @@ TIER_COMMON = 0
 TIER_MODERN = 1
 TIER_RARE = 2
 TIER_ARCHAIC = 3
+SKIP_CONTENT_KINDS = {
+    "attribution",
+    "forms",
+    "xref",
+    "xref-content",
+    "xref-glossary",
+    "antonym",
+    "antonym-content",
+    "antonym-glossary",
+    "reference-label",
+}
 
 
 def safe_prefix_bytes(text, limit):
@@ -45,7 +56,7 @@ def text_content(node, out):
     if isinstance(data, dict) and data.get("class") == "tag":
         return
     content_kind = data.get("content") if isinstance(data, dict) else None
-    if content_kind in ("attribution", "forms"):
+    if content_kind in SKIP_CONTENT_KINDS:
         return
     text_content(node.get("content"), out)
 
@@ -110,6 +121,93 @@ def flatten_glossary(glossary, include_examples=False):
     return "; ".join(compact)
 
 
+def redirect_target(glossary):
+    for item in glossary or []:
+        if not isinstance(item, list) or not item:
+            continue
+        if not isinstance(item[0], str) or len(item) < 2:
+            continue
+        notes = item[1]
+        if isinstance(notes, list) and any(isinstance(note, str) and note.startswith("redirected from ") for note in notes):
+            return item[0]
+    return ""
+
+
+def load_yomitan_entries(src_dir, include_examples=False):
+    raw_entries = []
+    paths = sorted(
+        glob.glob(os.path.join(src_dir, "term_bank_*.json")),
+        key=lambda p: int(os.path.basename(p).split("_")[-1].split(".")[0]),
+    )
+    for path in paths:
+        with open(path, "r", encoding="utf-8") as f:
+            for entry in json.load(f):
+                term = entry[0] or ""
+                if not term:
+                    continue
+                glossary = entry[5] or []
+                tags = set()
+                tag_codes(glossary, tags)
+                score = int(entry[4] or 0)
+                sequence = int(entry[6] or 0)
+                raw_entries.append(
+                    {
+                        "term": term,
+                        "reading": entry[1] or "",
+                        "score": score,
+                        "definition": flatten_glossary(glossary, include_examples=include_examples),
+                        "sequence": sequence,
+                        "tags": tags,
+                        "tier": classify_tier(score, sequence, tags),
+                        "redirect_target": redirect_target(glossary),
+                    }
+                )
+    return raw_entries
+
+
+def resolve_redirects(entries):
+    by_term = {}
+    by_sequence = {}
+    for entry in entries:
+        if entry["redirect_target"]:
+            continue
+        current = by_term.get(entry["term"])
+        if current is None or (entry["tier"], -entry["score"], entry["reading"]) < (
+            current["tier"],
+            -current["score"],
+            current["reading"],
+        ):
+            by_term[entry["term"]] = entry
+        if entry["sequence"] > 0:
+            current = by_sequence.get(entry["sequence"])
+            if current is None or (entry["tier"], -entry["score"], entry["term"]) < (
+                current["tier"],
+                -current["score"],
+                current["term"],
+            ):
+                by_sequence[entry["sequence"]] = entry
+
+    resolved_count = 0
+    unresolved_count = 0
+    for entry in entries:
+        target = entry["redirect_target"]
+        if not target:
+            continue
+        canonical = by_term.get(target)
+        if canonical is None and entry["sequence"] < 0:
+            canonical = by_sequence.get(-entry["sequence"])
+        if canonical is None:
+            unresolved_count += 1
+            continue
+
+        entry["reading"] = entry["reading"] or canonical["reading"]
+        entry["definition"] = canonical["definition"]
+        entry["tags"] = set(entry["tags"]) | set(canonical["tags"])
+        resolved_count += 1
+
+    return resolved_count, unresolved_count
+
+
 def text_content_without_examples(node, out):
     if node is None:
         return
@@ -128,35 +226,16 @@ def text_content_without_examples(node, out):
         content_kind = data.get("content") if isinstance(data, dict) else None
         if content_kind in ("example-sentence", "example-sentence-a", "example-sentence-b", "example-keyword"):
             return
-        if content_kind in ("attribution", "forms"):
+        if content_kind in SKIP_CONTENT_KINDS:
             return
         text_content_without_examples(node.get("content"), out)
 
 
 def iter_yomitan_entries(src_dir, include_examples=False):
-    paths = sorted(
-        glob.glob(os.path.join(src_dir, "term_bank_*.json")),
-        key=lambda p: int(os.path.basename(p).split("_")[-1].split(".")[0]),
-    )
-    for path in paths:
-        with open(path, "r", encoding="utf-8") as f:
-            for entry in json.load(f):
-                term = entry[0] or ""
-                if not term:
-                    continue
-                tags = set()
-                tag_codes(entry[5] or [], tags)
-                score = int(entry[4] or 0)
-                sequence = int(entry[6] or 0)
-                yield {
-                    "term": term,
-                    "reading": entry[1] or "",
-                    "score": score,
-                    "definition": flatten_glossary(entry[5] or [], include_examples=include_examples),
-                    "sequence": sequence,
-                    "tags": tags,
-                    "tier": classify_tier(score, sequence, tags),
-                }
+    entries = load_yomitan_entries(src_dir, include_examples=include_examples)
+    resolve_redirects(entries)
+    for entry in entries:
+        yield entry
 
 
 def classify_tier(score, sequence, tags):
@@ -174,7 +253,9 @@ def convert(args):
     drop_tags = {tag.strip() for tag in args.drop_tags.split(",") if tag.strip()}
     entries = []
     skipped = {"min_score": 0, "tags": 0, "negative_sequence": 0}
-    for entry in iter_yomitan_entries(args.src_dir, include_examples=args.include_examples):
+    raw_entries = load_yomitan_entries(args.src_dir, include_examples=args.include_examples)
+    resolved_redirects, unresolved_redirects = resolve_redirects(raw_entries)
+    for entry in raw_entries:
         if args.min_score is not None and entry["score"] < args.min_score:
             skipped["min_score"] += 1
             continue
@@ -247,6 +328,10 @@ def convert(args):
             "drop_negative_sequence": args.drop_negative_sequence,
             "include_examples": args.include_examples,
             "skipped": skipped,
+            "redirects": {
+                "resolved": resolved_redirects,
+                "unresolved": unresolved_redirects,
+            },
         },
     }
     with open(os.path.join(args.out_dir, "manifest.json"), "w", encoding="utf-8") as f:
