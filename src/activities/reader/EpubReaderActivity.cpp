@@ -8,6 +8,7 @@
 #include <GfxRenderer.h>
 #include <HalStorage.h>
 #include <I18n.h>
+#include <JapaneseDictionary.h>
 #include <Logging.h>
 #include <Utf8.h>
 #include <esp_system.h>
@@ -37,8 +38,8 @@ namespace {
 // pagesPerRefresh now comes from SETTINGS.getRefreshFrequency()
 // pages per minute, first item is 1 to prevent division by zero if accessed
 constexpr int PAGE_TURN_RATES[] = {1, 1, 3, 6, 12};
-constexpr size_t KANJI_LOOKUP_CONTEXT_CHARS = 24;
-constexpr size_t KANJI_LOOKUP_DISPLAY_CHARS = 12;
+constexpr size_t KANJI_LOOKUP_CONTEXT_CHARS = 12;
+constexpr size_t KANJI_LOOKUP_DISPLAY_CHARS = 8;
 
 int clampPercent(int percent) {
   if (percent < 0) {
@@ -74,6 +75,19 @@ std::string utf8PrefixChars(const std::string& text, const size_t maxChars) {
     ++charCount;
   }
   return result;
+}
+
+void drawJapanesePopupRow(const GfxRenderer& renderer, const int fontId, const int x, const int rightY,
+                          const std::string& text) {
+  int y = rightY;
+  const auto* p = reinterpret_cast<const unsigned char*>(text.c_str());
+  while (*p != '\0') {
+    const auto* cpStart = p;
+    utf8NextCodepoint(&p);
+    const std::string glyph(reinterpret_cast<const char*>(cpStart), p - cpStart);
+    renderer.drawText(fontId, x, y, glyph.c_str(), true);
+    y -= renderer.getTextAdvanceX(fontId, glyph.c_str(), EpdFontFamily::REGULAR);
+  }
 }
 
 }  // namespace
@@ -1265,6 +1279,12 @@ void EpubReaderActivity::showKanjiPopup() {
   const std::string selectedGlyph = utf8CodepointAtByteOffset(word, entry.byteOffset, &cp);
   const std::string lookupText = extractKanjiLookupText(KANJI_LOOKUP_CONTEXT_CHARS);
   const std::string lookupDisplayText = utf8PrefixChars(lookupText, KANJI_LOOKUP_DISPLAY_CHARS);
+  JapaneseDictionary dictionary;
+  JapaneseDictionaryTelemetry telemetry;
+  std::vector<JapaneseDictionaryMatch> matches;
+  dictionary.lookupContext(lookupText, matches, &telemetry, 5, KANJI_LOOKUP_CONTEXT_CHARS);
+  JapaneseDictionary::appendTelemetryCsv(lookupText, dictionary.getBasePath(), telemetry);
+  const bool hasMatch = !matches.empty();
 
   // In landscape CCW orientation the device is held in portrait.
   // Renderer X-axis = user's top-to-bottom; renderer Y-axis = user's right-to-left.
@@ -1274,11 +1294,11 @@ void EpubReaderActivity::showKanjiPopup() {
   // display's CCW transform cancels it, so text appears upright to the user.
   const int sw = renderer.getScreenWidth();   // 800 in landscape CCW
   const int sh = renderer.getScreenHeight();  // 480 in landscape CCW
-  const int pad = 12;
+  const int pad = 18;
 
   // Box: rdx = user portrait height (renderer X extent), rdy = user portrait width (renderer Y extent).
-  const int rdx = sw * 2 / 5;     // 320px — user height of popup
-  const int rdy = sh * 3 / 5;     // 288px — user width of popup
+  const int rdx = sw * 17 / 20;   // 85% of screen height after CCW display rotation
+  const int rdy = sh * 17 / 20;   // 85% of screen width after CCW display rotation
   const int rx = (sw - rdx) / 2;  // center in renderer X
   const int ry = (sh - rdy) / 2;  // center in renderer Y
 
@@ -1286,16 +1306,29 @@ void EpubReaderActivity::showKanjiPopup() {
   renderer.drawRect(rx, ry, rdx, rdy, 2, true);  // black border
 
   // All text lines start from the user's left edge (= high renderer Y) and run right.
-  const int textY = ry + rdy - pad;
+  const int labelY = ry + rdy - pad;
+  const int japaneseY = ry + rdy - pad - 92;
+  const int definitionY = ry + rdy - pad - 188;
+  const int lineStep = 34;
 
   char buf[32];
   snprintf(buf, sizeof(buf), "U+%04X", cp);
-  renderer.drawTextRotated90CW(UI_10_FONT_ID, rx + pad, textY, "char", true);
-  renderer.drawTextRotated90CW(SETTINGS.getReaderFontId(), rx + pad + 20, textY, selectedGlyph.c_str(), true);
-  renderer.drawTextRotated90CW(UI_10_FONT_ID, rx + pad + 58, textY, buf, true);
-  renderer.drawTextRotated90CW(UI_10_FONT_ID, rx + pad + 96, textY, "ctx", true);
-  renderer.drawTextRotated90CW(SETTINGS.getReaderFontId(), rx + pad + 116, textY, lookupDisplayText.c_str(), true);
-  renderer.drawTextRotated90CW(UI_10_FONT_ID, rx + rdx - pad - 18, textY, "Back: return to cursor", true);
+  renderer.drawTextRotated90CW(UI_10_FONT_ID, rx + pad, labelY, "char", true);
+  drawJapanesePopupRow(renderer, SETTINGS.getReaderFontId(), rx + pad + 20, japaneseY, selectedGlyph);
+  renderer.drawTextRotated90CW(UI_10_FONT_ID, rx + pad + lineStep, labelY, buf, true);
+  renderer.drawTextRotated90CW(UI_10_FONT_ID, rx + pad + lineStep * 2, labelY, "ctx", true);
+  drawJapanesePopupRow(renderer, SETTINGS.getReaderFontId(), rx + pad + lineStep * 2 + 20, japaneseY,
+                       lookupDisplayText);
+  renderer.drawTextRotated90CW(UI_10_FONT_ID, rx + pad + lineStep * 4, labelY, hasMatch ? "hit" : "no dict/hit", true);
+  if (hasMatch) {
+    drawJapanesePopupRow(renderer, SETTINGS.getReaderFontId(), rx + pad + lineStep * 4 + 20, japaneseY,
+                         matches[0].term);
+    drawJapanesePopupRow(renderer, SETTINGS.getReaderFontId(), rx + pad + lineStep * 5 + 20, japaneseY,
+                         matches[0].reading);
+    renderer.drawTextRotated90CW(UI_10_FONT_ID, rx + pad + lineStep * 6, definitionY, matches[0].definition.c_str(),
+                                 true);
+  }
+  renderer.drawTextRotated90CW(UI_10_FONT_ID, rx + rdx - pad - 18, labelY, "Back: return to cursor", true);
 
   renderer.displayBuffer(HalDisplay::FAST_REFRESH);
 }
