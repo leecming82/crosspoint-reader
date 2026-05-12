@@ -277,6 +277,20 @@ bool JapaneseDictionary::openDefault() {
   return false;
 }
 
+void JapaneseDictionary::close() {
+  if (bucketsFile.isOpen()) bucketsFile.close();
+  if (recordsFile.isOpen()) recordsFile.close();
+  if (stringsFile.isOpen()) stringsFile.close();
+  bucketsFile = FsFile();
+  recordsFile = FsFile();
+  stringsFile = FsFile();
+  basePath.clear();
+  cachedBucketValid = false;
+  cachedBucketCp = UINT32_MAX;
+  cachedBucketStart = 0;
+  cachedBucketCount = 0;
+}
+
 bool JapaneseDictionary::openAt(const char* path) {
   FsFile buckets;
   FsFile records;

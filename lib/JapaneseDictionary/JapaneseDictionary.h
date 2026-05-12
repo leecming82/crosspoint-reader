@@ -20,6 +20,7 @@ struct JapaneseDictionaryMatch {
 class JapaneseDictionary {
  public:
   bool openDefault();
+  void close();
   bool lookupContext(const std::string& context, std::vector<JapaneseDictionaryMatch>& outMatches,
                      size_t maxMatches = 5, size_t maxPrefixChars = 24);
   const std::string& getBasePath() const { return basePath; }

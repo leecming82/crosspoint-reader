@@ -49,6 +49,10 @@ class EpubReaderActivity final : public Activity {
   int kanjiIndexPos = 0;
   int kanjiMarginLeft = 0;
   int kanjiMarginTop = 0;
+  bool kanjiCursorRectValid = false;
+  int kanjiCursorRectX = 0;
+  int kanjiCursorRectY = 0;
+  int kanjiCursorRectSize = 0;
 
   static constexpr unsigned long CURSOR_ENTER_MS = 600;
 

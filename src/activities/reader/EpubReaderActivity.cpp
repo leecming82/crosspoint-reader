@@ -951,6 +951,10 @@ void EpubReaderActivity::render(RenderLock&& lock) {
     renderContents(std::move(p), orientedMarginTop, orientedMarginRight, orientedMarginBottom, orientedMarginLeft);
     LOG_DBG("ERS", "Rendered page in %dms", millis() - start);
   }
+  if (kanjiCursorActive && !kanjiPopupActive) {
+    kanjiCursorRectValid = false;
+    drawKanjiCursor();
+  }
   silentIndexNextChapterIfNeeded(viewportWidth, viewportHeight);
   saveProgress(currentSpineIndex, section->currentPage, section->pageCount);
 
@@ -1241,9 +1245,14 @@ void EpubReaderActivity::enterKanjiCursorMode() {
 void EpubReaderActivity::exitKanjiCursorMode() {
   kanjiCursorActive = false;
   kanjiPopupActive = false;
+  kanjiCursorRectValid = false;
   kanjiIndex.clear();
   kanjiIndex.shrink_to_fit();
   kanjiCursorPage.reset();
+  kanjiDictionary.close();
+  if (auto* fcm = renderer.getFontCacheManager()) {
+    fcm->clearCache();
+  }
   requestUpdate();
 }
 
@@ -1285,6 +1294,7 @@ void EpubReaderActivity::moveKanjiCursorToLine(const int direction) {
 
 void EpubReaderActivity::drawKanjiCursor() {
   if (!kanjiCursorActive || !kanjiCursorPage || kanjiIndex.empty()) return;
+  if (kanjiIndexPos < 0 || kanjiIndexPos >= static_cast<int>(kanjiIndex.size())) return;
 
   const auto& entry = kanjiIndex[kanjiIndexPos];
   const auto& elements = kanjiCursorPage->elements;
@@ -1310,22 +1320,15 @@ void EpubReaderActivity::drawKanjiCursor() {
   const int cy = kanjiMarginTop + pl.yPos;
   const int cellSize = renderer.getLineHeight(SETTINGS.getReaderFontId());
 
-  renderer.clearScreen();
-
-  // Keep scope alive through the real render — the destructor calls clearCache(),
-  // so if scope dies before the second render the mini cache is wiped and the
-  // real render hits the cold SD overflow path for every glyph (~3.4s total).
-  if (auto* fcm = renderer.getFontCacheManager()) {
-    auto scope = fcm->createPrewarmScope();
-    kanjiCursorPage->render(renderer, SETTINGS.getReaderFontId(), kanjiMarginLeft, kanjiMarginTop);
-    scope.endScanAndPrewarm();
-    kanjiCursorPage->render(renderer, SETTINGS.getReaderFontId(), kanjiMarginLeft, kanjiMarginTop);
-    // scope destructor runs here — safe to clear cache after render
-  } else {
-    kanjiCursorPage->render(renderer, SETTINGS.getReaderFontId(), kanjiMarginLeft, kanjiMarginTop);
+  if (kanjiCursorRectValid) {
+    renderer.drawRect(kanjiCursorRectX, kanjiCursorRectY, kanjiCursorRectSize, kanjiCursorRectSize, 2, false);
   }
 
   renderer.drawRect(cx, cy, cellSize, cellSize, 2, true);
+  kanjiCursorRectValid = true;
+  kanjiCursorRectX = cx;
+  kanjiCursorRectY = cy;
+  kanjiCursorRectSize = cellSize;
   renderer.displayBuffer(HalDisplay::FAST_REFRESH);
 }
 
@@ -1449,7 +1452,8 @@ void EpubReaderActivity::showKanjiPopup() {
 
 void EpubReaderActivity::hideKanjiPopup() {
   kanjiPopupActive = false;
-  drawKanjiCursor();  // re-render cursor page cleanly
+  kanjiCursorRectValid = false;
+  requestUpdate();  // repaint the page under the popup, then restore the cursor overlay
 }
 
 // --- End kanji cursor overlay ---
