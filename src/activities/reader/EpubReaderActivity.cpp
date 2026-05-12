@@ -295,7 +295,7 @@ void EpubReaderActivity::loop() {
 
   // Kanji cursor mode: active only in tategaki (LandscapeCounterClockwise) orientation.
   if (kanjiCursorActive) {
-    // Popup mode: only Back dismisses it.
+    // Popup mode: Back dismisses it, Left/Right cycle through ranked dictionary matches.
     if (kanjiPopupActive) {
       if (mappedInput.isPressed(MappedInputManager::Button::Back) &&
           mappedInput.getHeldTime() >= ReaderUtils::GO_HOME_MS) {
@@ -306,6 +306,14 @@ void EpubReaderActivity::loop() {
       }
       if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
         hideKanjiPopup();
+        return;
+      }
+      if (mappedInput.wasPressed(MappedInputManager::Button::Left)) {
+        moveKanjiPopupMatch(-1);
+        return;
+      }
+      if (mappedInput.wasPressed(MappedInputManager::Button::Right)) {
+        moveKanjiPopupMatch(+1);
         return;
       }
       return;  // Swallow all other input while popup is active.
@@ -733,6 +741,9 @@ void EpubReaderActivity::pageTurn(bool isForwardTurn) {
   if (kanjiCursorActive) {
     kanjiCursorActive = false;
     kanjiPopupActive = false;
+    kanjiPopupMatches.clear();
+    kanjiPopupMatches.shrink_to_fit();
+    kanjiPopupMatchIndex = 0;
     kanjiIndex.clear();
     kanjiIndex.shrink_to_fit();
     kanjiCursorPage.reset();
@@ -1245,6 +1256,9 @@ void EpubReaderActivity::enterKanjiCursorMode() {
 void EpubReaderActivity::exitKanjiCursorMode() {
   kanjiCursorActive = false;
   kanjiPopupActive = false;
+  kanjiPopupMatches.clear();
+  kanjiPopupMatches.shrink_to_fit();
+  kanjiPopupMatchIndex = 0;
   kanjiCursorRectValid = false;
   kanjiIndex.clear();
   kanjiIndex.shrink_to_fit();
@@ -1389,9 +1403,15 @@ void EpubReaderActivity::showKanjiPopup() {
 
   // Extract the selected kanji and the forward context that dictionary lookup will receive.
   const std::string lookupText = extractKanjiLookupText(KANJI_LOOKUP_CONTEXT_CHARS);
-  std::vector<JapaneseDictionaryMatch> matches;
-  kanjiDictionary.lookupContext(lookupText, matches, 5, KANJI_LOOKUP_CONTEXT_CHARS);
-  const bool hasMatch = !matches.empty();
+  kanjiPopupMatches.clear();
+  kanjiPopupMatchIndex = 0;
+  kanjiDictionary.lookupContext(lookupText, kanjiPopupMatches, 8, KANJI_LOOKUP_CONTEXT_CHARS);
+
+  drawKanjiPopup();
+}
+
+void EpubReaderActivity::drawKanjiPopup() {
+  const bool hasMatch = !kanjiPopupMatches.empty();
 
   // In landscape CCW orientation the device is held in portrait.
   // Renderer X-axis = user's top-to-bottom; renderer Y-axis = user's right-to-left.
@@ -1420,7 +1440,8 @@ void EpubReaderActivity::showKanjiPopup() {
 
   int lineX = rx + pad;
   if (hasMatch) {
-    const auto& match = matches[0];
+    if (kanjiPopupMatchIndex >= kanjiPopupMatches.size()) kanjiPopupMatchIndex = 0;
+    const auto& match = kanjiPopupMatches[kanjiPopupMatchIndex];
     drawJapanesePopupLine(renderer, SETTINGS.getReaderFontId(), lineX, textY, match.term, maxTextWidth);
     lineX += termLineStep;
     const std::string pronunciation = popupPronunciationLine(match);
@@ -1442,16 +1463,40 @@ void EpubReaderActivity::showKanjiPopup() {
       if (lineX >= rx + rdx - pad - uiLineStep * 3) break;
       lineX = drawRotatedWrappedLines(renderer, UI_10_FONT_ID, lineX, textY, item, maxTextWidth, 2, uiLineStep);
     }
+    if (kanjiPopupMatches.size() > 1) {
+      const std::string position =
+          std::to_string(kanjiPopupMatchIndex + 1) + "/" + std::to_string(kanjiPopupMatches.size());
+      renderer.drawTextRotated90CW(UI_10_FONT_ID, rx + rdx - pad - 18, ry + pad + maxTextWidth, position.c_str(), true);
+    }
   } else {
     drawRotatedLine(renderer, UI_10_FONT_ID, lineX, textY, "No dictionary match", maxTextWidth);
   }
-  renderer.drawTextRotated90CW(UI_10_FONT_ID, rx + rdx - pad - 18, textY, "Back: return to cursor", true);
+
+  const bool hasMultipleMatches = kanjiPopupMatches.size() > 1;
+  const auto labels =
+      mappedInput.mapLabels(tr(STR_EXIT), "", hasMultipleMatches ? "Prev" : "", hasMultipleMatches ? "Next" : "");
+  GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
 
   renderer.displayBuffer(HalDisplay::FAST_REFRESH);
 }
 
+void EpubReaderActivity::moveKanjiPopupMatch(const int direction) {
+  if (!kanjiPopupActive || kanjiPopupMatches.size() <= 1 || direction == 0) return;
+  const int count = static_cast<int>(kanjiPopupMatches.size());
+  int next = static_cast<int>(kanjiPopupMatchIndex) + direction;
+  if (next < 0) {
+    next = count - 1;
+  } else if (next >= count) {
+    next = 0;
+  }
+  kanjiPopupMatchIndex = static_cast<size_t>(next);
+  drawKanjiPopup();
+}
+
 void EpubReaderActivity::hideKanjiPopup() {
   kanjiPopupActive = false;
+  kanjiPopupMatches.clear();
+  kanjiPopupMatchIndex = 0;
   kanjiCursorRectValid = false;
   requestUpdate();  // repaint the page under the popup, then restore the cursor overlay
 }

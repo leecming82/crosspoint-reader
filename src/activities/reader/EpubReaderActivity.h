@@ -44,6 +44,8 @@ class EpubReaderActivity final : public Activity {
   bool kanjiCursorActive = false;
   bool kanjiPopupActive = false;
   JapaneseDictionary kanjiDictionary;
+  std::vector<JapaneseDictionaryMatch> kanjiPopupMatches;
+  size_t kanjiPopupMatchIndex = 0;
   std::unique_ptr<Page> kanjiCursorPage;
   std::vector<KanjiEntry> kanjiIndex;
   int kanjiIndexPos = 0;
@@ -63,6 +65,8 @@ class EpubReaderActivity final : public Activity {
   void drawKanjiCursor();
   std::string extractKanjiLookupText(size_t maxChars) const;
   void showKanjiPopup();
+  void drawKanjiPopup();
+  void moveKanjiPopupMatch(int direction);
   void hideKanjiPopup();
 
   // Footnote support
