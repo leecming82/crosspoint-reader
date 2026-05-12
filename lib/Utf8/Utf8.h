@@ -40,3 +40,21 @@ inline bool utf8IsCombiningMark(const uint32_t cp) {
          || (cp >= 0x20D0 && cp <= 0x20FF)   // Combining Diacritical Marks for Symbols
          || (cp >= 0xFE20 && cp <= 0xFE2F);  // Combining Half Marks
 }
+
+// Returns true for codepoints that are useful starting positions for the
+// Japanese dictionary cursor. This intentionally excludes punctuation and
+// fullwidth Latin/digits so cursor navigation does not become noisy.
+inline bool utf8IsJapaneseDictionaryStart(const uint32_t cp) {
+  return (cp >= 0x3040 && cp <= 0x309F)        // Hiragana
+         || (cp >= 0x30A0 && cp <= 0x30FF)     // Katakana
+         || (cp >= 0x3400 && cp <= 0x4DBF)     // CJK Extension A
+         || (cp >= 0x4E00 && cp <= 0x9FFF)     // CJK Unified Ideographs
+         || (cp >= 0xF900 && cp <= 0xFAFF)     // CJK Compatibility Ideographs
+         || (cp >= 0xFF65 && cp <= 0xFF9F)     // Halfwidth Katakana
+         || (cp >= 0x20000 && cp <= 0x2A6DF)   // CJK Extension B
+         || (cp >= 0x2A700 && cp <= 0x2B73F)   // CJK Extension C
+         || (cp >= 0x2B740 && cp <= 0x2B81F)   // CJK Extension D
+         || (cp >= 0x2B820 && cp <= 0x2CEAF)   // CJK Extension E/F
+         || (cp >= 0x2CEB0 && cp <= 0x2EBEF)   // CJK Extension F/I
+         || (cp >= 0x2F800 && cp <= 0x2FA1F);  // CJK Compatibility Supplement
+}

@@ -263,10 +263,13 @@ bool JapaneseDictionary::openDefault() {
   if (!basePath.empty() && bucketsFile.isOpen() && recordsFile.isOpen() && stringsFile.isOpen()) return true;
 
   static constexpr const char* paths[] = {
+      "/.crosspoint/dicts/jitendex-cpdict-ranked-japanese",
       "/.crosspoint/dicts/jitendex-cpdict-ranked",
       "/.crosspoint/dicts/jitendex-cpdict-modern",
+      "/dict/jitendex-cpdict-ranked-japanese",
       "/dict/jitendex-cpdict-ranked",
       "/dict/jitendex-cpdict-modern",
+      "/jitendex-cpdict-ranked-japanese",
       "/jitendex-cpdict-ranked",
       "/jitendex-cpdict-modern",
   };
@@ -412,6 +415,7 @@ bool JapaneseDictionary::lookupContext(const std::string& context, std::vector<J
 
   const size_t collectionLimit = std::max<size_t>(maxMatches * 4, maxMatches + 8);
   for (auto it = prefixes.rbegin(); it != prefixes.rend() && outMatches.size() < collectionLimit; ++it) {
+    const size_t matchesBeforePrefix = outMatches.size();
     const auto candidates = expandDeinflections(*it);
     for (const auto& candidate : candidates) {
       if (outMatches.size() >= collectionLimit) break;
@@ -419,6 +423,7 @@ bool JapaneseDictionary::lookupContext(const std::string& context, std::vector<J
       searchedTerms.push_back(candidate.term);
       findExact(candidate.term, *it, candidate.depth, outMatches, collectionLimit);
     }
+    if (outMatches.size() > matchesBeforePrefix) break;
   }
 
   std::stable_sort(outMatches.begin(), outMatches.end(), [](const auto& a, const auto& b) {

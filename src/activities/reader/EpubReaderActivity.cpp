@@ -1220,9 +1220,9 @@ void EpubReaderActivity::enterKanjiCursorMode() {
     return;
   }
 
-  // Build a flat list of text positions for every kanji on the page.
+  // Build a flat list of text positions where dictionary terms can start.
   kanjiIndex.clear();
-  kanjiIndex.reserve(64);
+  kanjiIndex.reserve(128);
   const auto& elements = kanjiCursorPage->elements;
   for (int16_t ei = 0; ei < static_cast<int16_t>(elements.size()); ++ei) {
     if (elements[ei]->getTag() != TAG_PageLine) continue;
@@ -1234,7 +1234,7 @@ void EpubReaderActivity::enterKanjiCursorMode() {
       const auto* p = wordStart;
       while (*p != '\0') {
         const auto* cpStart = p;
-        if (isKanjiCodepoint(utf8NextCodepoint(&p))) {
+        if (utf8IsJapaneseDictionaryStart(utf8NextCodepoint(&p))) {
           kanjiIndex.push_back({ei, wi, static_cast<uint16_t>(cpStart - wordStart)});
         }
       }
@@ -1242,7 +1242,7 @@ void EpubReaderActivity::enterKanjiCursorMode() {
   }
 
   if (kanjiIndex.empty()) {
-    LOG_DBG("CURSOR", "No kanji found on page");
+    LOG_DBG("CURSOR", "No Japanese dictionary start characters found on page");
     kanjiCursorPage.reset();
     return;
   }

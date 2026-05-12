@@ -28,6 +28,44 @@ SKIP_CONTENT_KINDS = {
 }
 
 
+def first_char_scope(term):
+    cp = ord(term[0])
+    if (
+        0x3400 <= cp <= 0x4DBF
+        or 0x4E00 <= cp <= 0x9FFF
+        or 0xF900 <= cp <= 0xFAFF
+        or 0x20000 <= cp <= 0x2A6DF
+        or 0x2A700 <= cp <= 0x2B73F
+        or 0x2B740 <= cp <= 0x2B81F
+        or 0x2B820 <= cp <= 0x2CEAF
+        or 0x2CEB0 <= cp <= 0x2EBEF
+        or 0x2F800 <= cp <= 0x2FA1F
+    ):
+        return "kanji"
+    if 0x3040 <= cp <= 0x309F:
+        return "hiragana"
+    if 0x30A0 <= cp <= 0x30FF or 0xFF65 <= cp <= 0xFF9F:
+        return "katakana"
+    return "other"
+
+
+def include_first_char(term, scope):
+    if scope == "all":
+        return True
+    char_scope = first_char_scope(term)
+    if scope == "kanji":
+        return char_scope == "kanji"
+    if scope == "japanese":
+        return char_scope in ("kanji", "hiragana", "katakana")
+    raise ValueError(f"unknown first character scope: {scope}")
+
+
+def make_lookup_entry(entry, key=None):
+    copied = dict(entry)
+    copied["key"] = key if key is not None else entry["term"]
+    return copied
+
+
 def safe_prefix_bytes(text, limit):
     data = text.encode("utf-8")
     if len(data) <= limit:
@@ -252,10 +290,14 @@ def convert(args):
     os.makedirs(args.out_dir, exist_ok=True)
     drop_tags = {tag.strip() for tag in args.drop_tags.split(",") if tag.strip()}
     entries = []
-    skipped = {"min_score": 0, "tags": 0, "negative_sequence": 0}
+    skipped = {"min_score": 0, "tags": 0, "negative_sequence": 0, "first_char_scope": 0}
+    added_reading_aliases = 0
     raw_entries = load_yomitan_entries(args.src_dir, include_examples=args.include_examples)
     resolved_redirects, unresolved_redirects = resolve_redirects(raw_entries)
     for entry in raw_entries:
+        if not include_first_char(entry["term"], args.first_char_scope):
+            skipped["first_char_scope"] += 1
+            continue
         if args.min_score is not None and entry["score"] < args.min_score:
             skipped["min_score"] += 1
             continue
@@ -265,14 +307,29 @@ def convert(args):
         if drop_tags and entry["tags"].intersection(drop_tags):
             skipped["tags"] += 1
             continue
-        entries.append(entry)
-    entries.sort(key=lambda e: (e["term"], e["tier"], -e["score"], e["reading"], e["sequence"]))
+        entries.append(make_lookup_entry(entry))
+        if args.reading_aliases and entry["reading"] and entry["reading"] != entry["term"]:
+            if include_first_char(entry["reading"], args.first_char_scope):
+                entries.append(make_lookup_entry(entry, entry["reading"]))
+                added_reading_aliases += 1
+    entries.sort(key=lambda e: (e["key"], e["tier"], -e["score"], e["reading"], e["term"], e["sequence"]))
+    deduplicated_lookup_records = 0
+    deduped_entries = []
+    seen_lookup_payloads = set()
+    for entry in entries:
+        payload_key = (entry["key"], entry["reading"], entry["definition"])
+        if payload_key in seen_lookup_payloads:
+            deduplicated_lookup_records += 1
+            continue
+        seen_lookup_payloads.add(payload_key)
+        deduped_entries.append(entry)
+    entries = deduped_entries
 
     buckets = [(0, 0)] * UNICODE_BUCKETS
     bucket_start = {}
     bucket_count = {}
     for idx, entry in enumerate(entries):
-        cp = ord(entry["term"][0])
+        cp = ord(entry["key"][0])
         bucket_start.setdefault(cp, idx)
         bucket_count[cp] = bucket_count.get(cp, 0) + 1
     for cp, start in bucket_start.items():
@@ -285,14 +342,24 @@ def convert(args):
     with open(os.path.join(args.out_dir, "records.bin"), "wb") as records, open(
         os.path.join(args.out_dir, "strings.bin"), "wb"
     ) as strings:
+        string_offsets = {}
+
+        def write_string(data):
+            existing = string_offsets.get(data)
+            if existing is not None:
+                return existing
+            offset = strings.tell()
+            strings.write(data)
+            value = (offset, len(data))
+            string_offsets[data] = value
+            return value
+
         for entry in entries:
-            key = safe_prefix_bytes(entry["term"], KEY_BYTES)
+            key = safe_prefix_bytes(entry["key"], KEY_BYTES)
             reading = entry["reading"].encode("utf-8")
             definition = entry["definition"].encode("utf-8")
-            reading_off = strings.tell()
-            strings.write(reading)
-            def_off = strings.tell()
-            strings.write(definition)
+            reading_off, reading_len = write_string(reading)
+            def_off, def_len = write_string(definition)
             records.write(
                 RECORD_STRUCT.pack(
                     key.ljust(KEY_BYTES, b"\0"),
@@ -300,10 +367,10 @@ def convert(args):
                     entry["tier"],
                     0,
                     reading_off,
-                    len(reading),
+                    reading_len,
                     0,
                     def_off,
-                    len(definition),
+                    def_len,
                     entry["score"],
                     entry["sequence"],
                 )
@@ -326,6 +393,10 @@ def convert(args):
             "min_score": args.min_score,
             "drop_tags": sorted(drop_tags),
             "drop_negative_sequence": args.drop_negative_sequence,
+            "first_char_scope": args.first_char_scope,
+            "reading_aliases": args.reading_aliases,
+            "added_reading_aliases": added_reading_aliases,
+            "deduplicated_lookup_records": deduplicated_lookup_records,
             "include_examples": args.include_examples,
             "skipped": skipped,
             "redirects": {
@@ -401,6 +472,7 @@ class JapaneseDictFile:
             found = self.find_exact(prefix)
             if found:
                 matches.extend(found)
+                break
         matches.sort(key=lambda e: (-len(e["term"]), e["tier"], -e["score"], e["term"]))
         return matches
 
@@ -452,6 +524,17 @@ def main():
     p.add_argument("--min-score", type=int)
     p.add_argument("--drop-tags", default="")
     p.add_argument("--drop-negative-sequence", action="store_true")
+    p.add_argument(
+        "--first-char-scope",
+        choices=("all", "kanji", "japanese"),
+        default="all",
+        help="Filter entries by first character: all, kanji only, or kanji/kana Japanese starts.",
+    )
+    p.add_argument(
+        "--reading-aliases",
+        action="store_true",
+        help="Add extra lookup keys from non-empty readings, useful for kana surface text.",
+    )
     p.add_argument("--include-examples", action="store_true")
     p.set_defaults(func=convert)
     p = sub.add_parser("lookup")

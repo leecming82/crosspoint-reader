@@ -89,14 +89,31 @@ python3 scripts/build_japanese_dict.py convert test/jitendex-yomitan test/jitend
 python3 scripts/build_japanese_dict.py lookup test/jitendex-cpdict-ranked 日本語
 ```
 
+To build a ranked dictionary whose term starts are limited to Japanese lexical
+starts (kanji, hiragana, katakana, and halfwidth katakana), use:
+
+```sh
+python3 scripts/build_japanese_dict.py convert test/jitendex-yomitan test/jitendex-cpdict-ranked-japanese \
+  --first-char-scope japanese --reading-aliases
+```
+
+`--first-char-scope kanji` is also available for a kanji-start-only build.
+Without the flag, the converter preserves the previous broad `all` behavior.
+`--reading-aliases` adds kana reading lookup keys for kanji headwords, so kana
+surface text such as `どことなく` can find entries whose dictionary headword is
+stored as `何処となく`.
+
 ## Firmware Probe
 
 `JapaneseDictionary` currently looks for these SD-card directories, in order:
 
+- `/.crosspoint/dicts/jitendex-cpdict-ranked-japanese`
 - `/.crosspoint/dicts/jitendex-cpdict-ranked`
 - `/.crosspoint/dicts/jitendex-cpdict-modern`
+- `/dict/jitendex-cpdict-ranked-japanese`
 - `/dict/jitendex-cpdict-ranked`
 - `/dict/jitendex-cpdict-modern`
+- `/jitendex-cpdict-ranked-japanese`
 - `/jitendex-cpdict-ranked`
 - `/jitendex-cpdict-modern`
 
