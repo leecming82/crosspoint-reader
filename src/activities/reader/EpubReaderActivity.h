@@ -55,6 +55,7 @@ class EpubReaderActivity final : public Activity {
   int kanjiCursorRectX = 0;
   int kanjiCursorRectY = 0;
   int kanjiCursorRectSize = 0;
+  bool kanjiCursorRefreshPending = false;
   bool kanjiResumeValid = false;
   int kanjiResumeSpineIndex = -1;
   int kanjiResumePageNumber = -1;
@@ -66,7 +67,9 @@ class EpubReaderActivity final : public Activity {
   void exitKanjiCursorMode();
   void moveKanjiCursor(int direction);
   void moveKanjiCursorToLine(int direction);
-  void drawKanjiCursor();
+  bool drawKanjiCursor();
+  void queueKanjiCursorRedraw();
+  void flushKanjiCursorRefresh();
   std::string extractKanjiLookupText(size_t maxChars) const;
   void showKanjiPopup();
   void drawKanjiPopup();

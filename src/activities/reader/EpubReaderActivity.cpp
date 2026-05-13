@@ -417,20 +417,14 @@ void EpubReaderActivity::loop() {
     // Use wasPressed only (leading edge) to avoid double-fires across render windows.
     if (mappedInput.wasPressed(MappedInputManager::Button::Left)) {
       moveKanjiCursor(-1);
-      return;
-    }
-    if (mappedInput.wasPressed(MappedInputManager::Button::Right)) {
+    } else if (mappedInput.wasPressed(MappedInputManager::Button::Right)) {
       moveKanjiCursor(+1);
-      return;
-    }
-    if (mappedInput.wasPressed(MappedInputManager::Button::PageBack)) {
+    } else if (mappedInput.wasPressed(MappedInputManager::Button::PageBack)) {
       moveKanjiCursorToLine(-1);
-      return;
-    }
-    if (mappedInput.wasPressed(MappedInputManager::Button::PageForward)) {
+    } else if (mappedInput.wasPressed(MappedInputManager::Button::PageForward)) {
       moveKanjiCursorToLine(+1);
-      return;
     }
+    flushKanjiCursorRefresh();
     return;  // Swallow all other input while cursor is active.
   }
 
@@ -1044,7 +1038,8 @@ void EpubReaderActivity::render(RenderLock&& lock) {
   }
   if (kanjiCursorActive && !kanjiPopupActive) {
     kanjiCursorRectValid = false;
-    drawKanjiCursor();
+    queueKanjiCursorRedraw();
+    flushKanjiCursorRefresh();
   }
   silentIndexNextChapterIfNeeded(viewportWidth, viewportHeight);
   saveProgress(currentSpineIndex, section->currentPage, section->pageCount);
@@ -1341,7 +1336,8 @@ void EpubReaderActivity::enterKanjiCursorMode() {
   LOG_DBG("DICT", "Enter cursor ok entries=%d pos=%d resumed=%d", static_cast<int>(kanjiIndex.size()), kanjiIndexPos,
           resumed ? 1 : 0);
 
-  drawKanjiCursor();
+  queueKanjiCursorRedraw();
+  flushKanjiCursorRefresh();
 }
 
 void EpubReaderActivity::exitKanjiCursorMode() {
@@ -1362,6 +1358,7 @@ void EpubReaderActivity::exitKanjiCursorMode() {
   kanjiPopupMatches.clear();
   kanjiPopupMatches.shrink_to_fit();
   kanjiPopupMatchIndex = 0;
+  kanjiCursorRefreshPending = false;
   kanjiCursorRectValid = false;
   kanjiIndex.clear();
   kanjiIndex.shrink_to_fit();
@@ -1376,7 +1373,7 @@ void EpubReaderActivity::moveKanjiCursor(const int direction) {
   if (next < 0 || next >= static_cast<int>(kanjiIndex.size())) return;
   kanjiIndexPos = next;
   LOG_DBG("DICT", "Move cursor dir=%d pos=%d/%d", direction, kanjiIndexPos + 1, static_cast<int>(kanjiIndex.size()));
-  drawKanjiCursor();
+  queueKanjiCursorRedraw();
 }
 
 void EpubReaderActivity::moveKanjiCursorToLine(const int direction) {
@@ -1398,7 +1395,7 @@ void EpubReaderActivity::moveKanjiCursorToLine(const int direction) {
         kanjiIndexPos = pos;
         LOG_DBG("DICT", "Jump cursor dir=%d pos=%d/%d", direction, kanjiIndexPos + 1,
                 static_cast<int>(kanjiIndex.size()));
-        drawKanjiCursor();
+        queueKanjiCursorRedraw();
         return;
       }
     }
@@ -1407,26 +1404,26 @@ void EpubReaderActivity::moveKanjiCursorToLine(const int direction) {
 
   kanjiIndexPos = direction > 0 ? 0 : static_cast<int>(kanjiIndex.size()) - 1;
   LOG_DBG("DICT", "Wrap cursor dir=%d pos=%d/%d", direction, kanjiIndexPos + 1, static_cast<int>(kanjiIndex.size()));
-  drawKanjiCursor();
+  queueKanjiCursorRedraw();
 }
 
-void EpubReaderActivity::drawKanjiCursor() {
-  if (!kanjiCursorActive || !kanjiCursorPage || kanjiIndex.empty()) return;
-  if (kanjiIndexPos < 0 || kanjiIndexPos >= static_cast<int>(kanjiIndex.size())) return;
+bool EpubReaderActivity::drawKanjiCursor() {
+  if (!kanjiCursorActive || !kanjiCursorPage || kanjiIndex.empty()) return false;
+  if (kanjiIndexPos < 0 || kanjiIndexPos >= static_cast<int>(kanjiIndex.size())) return false;
 
   const auto& entry = kanjiIndex[kanjiIndexPos];
   const auto& elements = kanjiCursorPage->elements;
-  if (entry.elementIdx >= static_cast<int16_t>(elements.size())) return;
-  if (elements[entry.elementIdx]->getTag() != TAG_PageLine) return;
+  if (entry.elementIdx >= static_cast<int16_t>(elements.size())) return false;
+  if (elements[entry.elementIdx]->getTag() != TAG_PageLine) return false;
 
   const auto& pl = static_cast<const PageLine&>(*elements[entry.elementIdx]);
   const auto& tb = *pl.getBlock();
   const auto& xposVec = tb.getWordXpos();
   const auto& words = tb.getWords();
   const auto& styles = tb.getWordStyles();
-  if (entry.wordIdx >= static_cast<int16_t>(xposVec.size())) return;
+  if (entry.wordIdx >= static_cast<int16_t>(xposVec.size())) return false;
   if (entry.wordIdx >= static_cast<int16_t>(words.size()) || entry.wordIdx >= static_cast<int16_t>(styles.size()))
-    return;
+    return false;
 
   int intraWordX = 0;
   if (entry.byteOffset > 0 && entry.byteOffset <= words[entry.wordIdx].size()) {
@@ -1447,6 +1444,18 @@ void EpubReaderActivity::drawKanjiCursor() {
   kanjiCursorRectX = cx;
   kanjiCursorRectY = cy;
   kanjiCursorRectSize = cellSize;
+  return true;
+}
+
+void EpubReaderActivity::queueKanjiCursorRedraw() {
+  if (drawKanjiCursor()) {
+    kanjiCursorRefreshPending = true;
+  }
+}
+
+void EpubReaderActivity::flushKanjiCursorRefresh() {
+  if (!kanjiCursorRefreshPending) return;
+  kanjiCursorRefreshPending = false;
   renderer.displayBuffer(HalDisplay::FAST_REFRESH);
 }
 
