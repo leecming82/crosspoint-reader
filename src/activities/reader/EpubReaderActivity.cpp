@@ -438,6 +438,12 @@ void EpubReaderActivity::loop() {
     return;
   }
 
+  // Rendering may be loading from SD and driving the display over SPI. Do not
+  // mutate reader state until the current render finishes.
+  if (RenderLock::peek()) {
+    return;
+  }
+
   // Enter reader menu activity.
   if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
     const int currentPage = section ? section->currentPage + 1 : 0;

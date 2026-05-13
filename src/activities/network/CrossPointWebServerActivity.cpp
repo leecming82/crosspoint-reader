@@ -11,6 +11,8 @@
 
 #include "MappedInputManager.h"
 #include "NetworkModeSelectionActivity.h"
+#include "SdCardFontGlobals.h"
+#include "SilentRestart.h"
 #include "WifiSelectionActivity.h"
 #include "activities/network/CalibreConnectActivity.h"
 #include "components/UITheme.h"
@@ -46,6 +48,7 @@ void CrossPointWebServerActivity::onEnter() {
   Activity::onEnter();
 
   LOG_DBG("WEBACT", "Free heap at onEnter: %d bytes", ESP.getFreeHeap());
+  releaseMemoryForNetwork();
 
   // Reset state
   state = WebServerActivityState::MODE_SELECTION;
@@ -68,12 +71,26 @@ void CrossPointWebServerActivity::onEnter() {
                          });
 }
 
+void CrossPointWebServerActivity::releaseMemoryForNetwork() { sdFontSystem.unloadLoadedFonts(renderer); }
+
 void CrossPointWebServerActivity::onExit() {
   Activity::onExit();
 
   LOG_DBG("WEBACT", "Free heap at onExit start: %d bytes", ESP.getFreeHeap());
 
   state = WebServerActivityState::SHUTTING_DOWN;
+
+  if (WiFi.getMode() != WIFI_MODE_NULL) {
+    if (isApMode) {
+      LOG_DBG("WEBACT", "Stopping WiFi AP before silent restart...");
+      WiFi.softAPdisconnect(true);
+    } else {
+      LOG_DBG("WEBACT", "Disconnecting WiFi before silent restart...");
+      WiFi.disconnect(false);
+    }
+    delay(30);
+    silentRestart();
+  }
 
   // Stop the web server first (before disconnecting WiFi)
   stopWebServer();
@@ -249,6 +266,7 @@ void CrossPointWebServerActivity::startAccessPoint() {
 
 void CrossPointWebServerActivity::startWebServer() {
   LOG_DBG("WEBACT", "Starting web server...");
+  releaseMemoryForNetwork();
 
   // Create the web server instance
   webServer.reset(new CrossPointWebServer());
