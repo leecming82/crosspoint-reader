@@ -139,13 +139,14 @@ void drawJapanesePopupLine(const GfxRenderer& renderer, const int fontId, const 
 
   int drawY = y - physicalLeftPadding;
   const int minY = y - maxWidth;
+  const int maxGlyphStep = renderer.getLineHeight(fontId) + glyphGap;
   const auto* p = reinterpret_cast<const unsigned char*>(fitted.c_str());
   while (*p != '\0' && drawY > minY) {
     const auto* cpStart = p;
     utf8NextCodepoint(&p);
     const std::string glyph(reinterpret_cast<const char*>(cpStart), p - cpStart);
     renderer.drawText(fontId, x, drawY, glyph.c_str(), true);
-    drawY -= renderer.getTextAdvanceX(fontId, glyph.c_str(), EpdFontFamily::REGULAR) + glyphGap;
+    drawY -= std::min(renderer.getTextAdvanceX(fontId, glyph.c_str(), EpdFontFamily::REGULAR) + glyphGap, maxGlyphStep);
   }
 }
 
