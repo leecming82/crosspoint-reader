@@ -24,7 +24,15 @@ SKIP_CONTENT_KINDS = {
     "antonym",
     "antonym-content",
     "antonym-glossary",
+    "graphic",
+    "graphic-attribution",
     "reference-label",
+    "registered-trademark",
+}
+EXTRA_CONTENT_LABELS = {
+    "info-gloss": "Explanation",
+    "lang-source": "Language of Origin",
+    "sense-note": "Note",
 }
 
 
@@ -94,9 +102,33 @@ def text_content(node, out):
     if isinstance(data, dict) and data.get("class") == "tag":
         return
     content_kind = data.get("content") if isinstance(data, dict) else None
+    if content_kind in EXTRA_CONTENT_LABELS:
+        content = []
+        text_content_from_content_kind(node.get("content"), content_kind + "-content", content)
+        if content:
+            out.append(EXTRA_CONTENT_LABELS[content_kind] + ": " + " ".join(content))
+        return
     if content_kind in SKIP_CONTENT_KINDS:
         return
     text_content(node.get("content"), out)
+
+
+def text_content_from_content_kind(node, wanted_content_kind, out):
+    if node is None:
+        return
+    if isinstance(node, list):
+        for item in node:
+            text_content_from_content_kind(item, wanted_content_kind, out)
+        return
+    if not isinstance(node, dict):
+        return
+
+    data = node.get("data")
+    content_kind = data.get("content") if isinstance(data, dict) else None
+    if content_kind == wanted_content_kind:
+        text_content(node.get("content"), out)
+        return
+    text_content_from_content_kind(node.get("content"), wanted_content_kind, out)
 
 
 def tag_codes(node, out):
@@ -262,6 +294,12 @@ def text_content_without_examples(node, out):
         if isinstance(data, dict) and data.get("class") == "tag":
             return
         content_kind = data.get("content") if isinstance(data, dict) else None
+        if content_kind in EXTRA_CONTENT_LABELS:
+            content = []
+            text_content_from_content_kind(node.get("content"), content_kind + "-content", content)
+            if content:
+                out.append(EXTRA_CONTENT_LABELS[content_kind] + ": " + " ".join(content))
+            return
         if content_kind in ("example-sentence", "example-sentence-a", "example-sentence-b", "example-keyword"):
             return
         if content_kind in SKIP_CONTENT_KINDS:

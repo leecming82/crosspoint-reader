@@ -1583,8 +1583,10 @@ void EpubReaderActivity::drawKanjiPopup() {
       lineX += uiLineStep;
     }
     for (const auto& item : definition.glosses) {
-      if (lineX >= rx + rdx - pad - uiLineStep * 3) break;
-      lineX = drawRotatedWrappedLines(renderer, UI_10_FONT_ID, lineX, textY, item, maxTextWidth, 2, uiLineStep);
+      const int remainingColumns = (rx + rdx - pad - lineX) / uiLineStep;
+      if (remainingColumns <= 3) break;
+      lineX = drawRotatedWrappedLines(renderer, UI_10_FONT_ID, lineX, textY, item, maxTextWidth, remainingColumns - 2,
+                                      uiLineStep);
     }
     if (kanjiPopupMatches.size() > 1) {
       const std::string position =
