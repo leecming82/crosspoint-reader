@@ -199,6 +199,9 @@ void ActivityManager::goToReader(std::string path) {
 }
 
 void ActivityManager::goToSleep() {
+  // SleepActivity draws its screen synchronously in onEnter(); do not let a
+  // stale deferred render wake the render task during sleep preparation.
+  requestedUpdate = false;
   replaceActivity(std::make_unique<SleepActivity>(renderer, mappedInput));
   loop();  // Important: sleep screen must be rendered immediately, the caller will go to sleep right after this returns
 }
@@ -289,6 +292,8 @@ void ActivityManager::requestUpdateAndWait() {
   xTaskNotify(renderTaskHandle, 1, eIncrement);
   ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
 }
+
+void ActivityManager::waitForRenderIdle() { RenderLock lock; }
 
 // RenderLock
 
