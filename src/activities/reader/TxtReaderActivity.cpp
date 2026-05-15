@@ -29,10 +29,7 @@ int clampPercent(const int percent) {
 }
 
 int measureTxtLineForIndexing(const GfxRenderer& renderer, const int fontId, const std::string& line) {
-  if (renderer.isSdCardFont(fontId)) {
-    return renderer.getTextAdvanceX(fontId, line.c_str(), EpdFontFamily::REGULAR);
-  }
-  return renderer.getTextWidth(fontId, line.c_str());
+  return renderer.getTextAdvanceX(fontId, line.c_str(), EpdFontFamily::REGULAR);
 }
 
 size_t firstUtf8CodepointLength(const std::string& line) {
@@ -272,6 +269,17 @@ bool TxtReaderActivity::loadPageAtOffset(size_t offset, std::vector<std::string>
     return false;
   }
   buffer[chunkSize] = '\0';
+
+  // Prime the SD card font's advance table with this chunk's codepoints.
+  // Without this, every getTextAdvanceX() call in the wrap loop below triggers
+  // on-demand glyph loads through the 8-slot overflow ring buffer, which
+  // thrashes for any text with more than 8 unique chars (i.e. all English),
+  // floods the heap with short-lived bitmap allocations, and eventually
+  // corrupts FreeRTOS state. The advance table persists across calls per
+  // font, so the cost amortizes to ~ASCII-size after the first chunk.
+  if (renderer.isSdCardFont(cachedFontId)) {
+    renderer.ensureSdCardFontReady(cachedFontId, reinterpret_cast<const char*>(buffer), /*styleMask=*/0x01);
+  }
 
   // Parse lines from buffer
   size_t pos = 0;
