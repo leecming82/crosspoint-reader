@@ -2,6 +2,7 @@
 
 #include <HalStorage.h>
 
+#include <array>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -26,16 +27,23 @@ class JapaneseDictionary {
   const std::string& getBasePath() const { return basePath; }
 
  private:
+  static constexpr size_t RECORD_CACHE_BLOCKS = 8;
+
   struct Record;
+  struct RecordCacheSlot {
+    std::vector<uint8_t> data;
+    uint32_t blockStart = UINT32_MAX;
+    uint16_t count = 0;
+    uint32_t lastUsed = 0;
+    bool valid = false;
+  };
 
   std::string basePath;
   FsFile bucketsFile;
   FsFile recordsFile;
   FsFile stringsFile;
-  std::vector<uint8_t> cachedRecordBlock;
-  uint32_t cachedRecordBlockStart = UINT32_MAX;
-  uint16_t cachedRecordBlockCount = 0;
-  bool cachedRecordBlockValid = false;
+  std::array<RecordCacheSlot, RECORD_CACHE_BLOCKS> recordCacheSlots;
+  uint32_t recordCacheUseCounter = 0;
   uint32_t cachedBucketCp = UINT32_MAX;
   uint32_t cachedBucketStart = 0;
   uint32_t cachedBucketCount = 0;
@@ -48,4 +56,5 @@ class JapaneseDictionary {
   std::string readString(uint32_t offset, uint32_t length);
   bool findExact(const std::string& term, const std::string& sourceText, uint8_t deinflectionDepth,
                  std::vector<JapaneseDictionaryMatch>& outMatches, size_t maxMatches);
+  void resetRecordCache(bool releaseBuffers);
 };

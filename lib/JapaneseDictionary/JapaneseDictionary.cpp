@@ -21,6 +21,13 @@ uint32_t readLe32(const uint8_t* p) {
 
 int32_t readLeI32(const uint8_t* p) { return static_cast<int32_t>(readLe32(p)); }
 
+bool isJapaneseDictionaryTermChar(const uint32_t cp) {
+  if (utf8IsJapaneseDictionaryStart(cp)) return true;
+  return cp == 0x3005      // 々, ideographic iteration mark
+         || cp == 0x3006   // 〆
+         || cp == 0x30FC;  // ー, prolonged sound mark
+}
+
 std::vector<std::string> contextPrefixes(const std::string& context, const size_t maxChars) {
   std::vector<std::string> prefixes;
   prefixes.reserve(std::min<size_t>(maxChars, 24));
@@ -28,7 +35,8 @@ std::vector<std::string> contextPrefixes(const std::string& context, const size_
   const auto* p = start;
   size_t chars = 0;
   while (*p != '\0' && chars < maxChars) {
-    utf8NextCodepoint(&p);
+    const uint32_t cp = utf8NextCodepoint(&p);
+    if (!isJapaneseDictionaryTermChar(cp)) break;
     prefixes.emplace_back(reinterpret_cast<const char*>(start), p - start);
     ++chars;
   }
@@ -303,10 +311,7 @@ void JapaneseDictionary::close() {
   recordsFile = FsFile();
   stringsFile = FsFile();
   basePath.clear();
-  cachedRecordBlock.clear();
-  cachedRecordBlockValid = false;
-  cachedRecordBlockStart = UINT32_MAX;
-  cachedRecordBlockCount = 0;
+  resetRecordCache(true);
   cachedBucketValid = false;
   cachedBucketCp = UINT32_MAX;
   cachedBucketStart = 0;
@@ -326,12 +331,23 @@ bool JapaneseDictionary::openAt(const char* path) {
   bucketsFile = std::move(buckets);
   recordsFile = std::move(records);
   stringsFile = std::move(strings);
-  cachedRecordBlock.resize(RECORD_BYTES * RECORD_CACHE_RECORDS);
-  cachedRecordBlockValid = false;
-  cachedRecordBlockStart = UINT32_MAX;
-  cachedRecordBlockCount = 0;
+  resetRecordCache(false);
+  for (auto& slot : recordCacheSlots) slot.data.resize(RECORD_BYTES * RECORD_CACHE_RECORDS);
   cachedBucketValid = false;
   return true;
+}
+
+void JapaneseDictionary::resetRecordCache(const bool releaseBuffers) {
+  recordCacheUseCounter = 0;
+  for (auto& slot : recordCacheSlots) {
+    if (releaseBuffers) {
+      slot.data = std::vector<uint8_t>();
+    }
+    slot.blockStart = UINT32_MAX;
+    slot.count = 0;
+    slot.lastUsed = 0;
+    slot.valid = false;
+  }
 }
 
 bool JapaneseDictionary::readBucket(const uint32_t cp, uint32_t& start, uint32_t& count) {
@@ -359,26 +375,42 @@ bool JapaneseDictionary::readBucketCached(const uint32_t cp, uint32_t& start, ui
 }
 
 bool JapaneseDictionary::readRecord(const uint32_t index, Record& record) {
-  if (cachedRecordBlock.empty()) cachedRecordBlock.resize(RECORD_BYTES * RECORD_CACHE_RECORDS);
+  const uint32_t blockStart = index - (index % RECORD_CACHE_RECORDS);
+  RecordCacheSlot* slot = nullptr;
 
-  const bool cacheHit = cachedRecordBlockValid && index >= cachedRecordBlockStart &&
-                        index < cachedRecordBlockStart + cachedRecordBlockCount;
-  if (!cacheHit) {
-    const uint32_t blockStart = index - (index % RECORD_CACHE_RECORDS);
-    if (!recordsFile.seek(blockStart * RECORD_BYTES)) return false;
-    const int bytesRead = recordsFile.read(cachedRecordBlock.data(), cachedRecordBlock.size());
-    if (bytesRead < static_cast<int>(RECORD_BYTES)) return false;
-    cachedRecordBlockStart = blockStart;
-    cachedRecordBlockCount = static_cast<uint16_t>(bytesRead / RECORD_BYTES);
-    cachedRecordBlockValid = cachedRecordBlockCount > 0;
+  for (auto& candidate : recordCacheSlots) {
+    if (candidate.valid && index >= candidate.blockStart && index < candidate.blockStart + candidate.count) {
+      slot = &candidate;
+      break;
+    }
   }
 
-  if (!cachedRecordBlockValid || index < cachedRecordBlockStart ||
-      index >= cachedRecordBlockStart + cachedRecordBlockCount) {
+  const bool cacheHit = slot != nullptr;
+  if (!cacheHit) {
+    slot = &recordCacheSlots[0];
+    for (auto& candidate : recordCacheSlots) {
+      if (!candidate.valid) {
+        slot = &candidate;
+        break;
+      }
+      if (candidate.lastUsed < slot->lastUsed) slot = &candidate;
+    }
+
+    if (slot->data.empty()) slot->data.resize(RECORD_BYTES * RECORD_CACHE_RECORDS);
+    if (!recordsFile.seek(blockStart * RECORD_BYTES)) return false;
+    const int bytesRead = recordsFile.read(slot->data.data(), slot->data.size());
+    if (bytesRead < static_cast<int>(RECORD_BYTES)) return false;
+    slot->blockStart = blockStart;
+    slot->count = static_cast<uint16_t>(bytesRead / RECORD_BYTES);
+    slot->valid = slot->count > 0;
+  }
+
+  if (!slot || !slot->valid || index < slot->blockStart || index >= slot->blockStart + slot->count) {
     return false;
   }
 
-  const uint8_t* buf = cachedRecordBlock.data() + ((index - cachedRecordBlockStart) * RECORD_BYTES);
+  slot->lastUsed = ++recordCacheUseCounter;
+  const uint8_t* buf = slot->data.data() + ((index - slot->blockStart) * RECORD_BYTES);
   const uint16_t keyLen = std::min<uint16_t>(readLe16(buf + KEY_BYTES), KEY_BYTES);
   record.key.assign(reinterpret_cast<const char*>(buf), keyLen);
   record.tier = buf[98];
@@ -451,13 +483,17 @@ bool JapaneseDictionary::lookupContext(const std::string& context, std::vector<J
   const auto prefixes = contextPrefixes(context, maxPrefixChars);
   std::vector<std::string> searchedTerms;
   searchedTerms.reserve(32);
+  bool lookupSucceeded = true;
 
   const size_t collectionLimit = std::max<size_t>(maxMatches * 4, maxMatches + 8);
   for (auto it = prefixes.rbegin(); it != prefixes.rend() && outMatches.size() < collectionLimit; ++it) {
     const size_t matchesBeforePrefix = outMatches.size();
     if (!containsString(searchedTerms, *it)) {
       searchedTerms.push_back(*it);
-      findExact(*it, *it, 0, outMatches, collectionLimit);
+      if (!findExact(*it, *it, 0, outMatches, collectionLimit)) {
+        lookupSucceeded = false;
+        break;
+      }
       if (outMatches.size() > matchesBeforePrefix) break;
     }
 
@@ -466,8 +502,12 @@ bool JapaneseDictionary::lookupContext(const std::string& context, std::vector<J
       if (outMatches.size() >= collectionLimit) break;
       if (containsString(searchedTerms, candidate.term)) continue;
       searchedTerms.push_back(candidate.term);
-      findExact(candidate.term, *it, candidate.depth, outMatches, collectionLimit);
+      if (!findExact(candidate.term, *it, candidate.depth, outMatches, collectionLimit)) {
+        lookupSucceeded = false;
+        break;
+      }
     }
+    if (!lookupSucceeded) break;
     if (outMatches.size() > matchesBeforePrefix) break;
   }
 
@@ -480,5 +520,5 @@ bool JapaneseDictionary::lookupContext(const std::string& context, std::vector<J
   });
   if (outMatches.size() > maxMatches) outMatches.resize(maxMatches);
 
-  return true;
+  return lookupSucceeded;
 }
