@@ -5,9 +5,9 @@
 #include <Logging.h>
 #include <Serialization.h>
 
-#include "../converters/DirectPixelWriter.h"
-#include "../converters/ImageDecoderFactory.h"
-#include "../converters/ImageRotationUtils.h"
+#include "Epub/converters/DirectPixelWriter.h"
+#include "Epub/converters/ImageDecoderFactory.h"
+#include "Epub/converters/ImageRotationUtils.h"
 
 // Cache file format:
 // - uint16_t width
