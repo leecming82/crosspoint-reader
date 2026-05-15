@@ -32,6 +32,10 @@ class JapaneseDictionary {
   FsFile bucketsFile;
   FsFile recordsFile;
   FsFile stringsFile;
+  std::vector<uint8_t> cachedRecordBlock;
+  uint32_t cachedRecordBlockStart = UINT32_MAX;
+  uint16_t cachedRecordBlockCount = 0;
+  bool cachedRecordBlockValid = false;
   uint32_t cachedBucketCp = UINT32_MAX;
   uint32_t cachedBucketStart = 0;
   uint32_t cachedBucketCount = 0;

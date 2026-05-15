@@ -8,6 +8,7 @@
 namespace {
 constexpr size_t KEY_BYTES = 96;
 constexpr size_t RECORD_BYTES = 124;
+constexpr size_t RECORD_CACHE_RECORDS = 16;
 constexpr size_t BUCKET_BYTES = 8;
 constexpr uint32_t UNICODE_BUCKETS = 0x110000;
 
@@ -174,10 +175,24 @@ void addNegativeCandidates(std::vector<std::string>& out, const std::string& wor
   if (!isGodanARow(last)) addUnique(out, stem + "る");
 }
 
+void addIAdjectiveCandidates(std::vector<std::string>& out, const std::string& word) {
+  addSuffixCandidate(out, word, "く", "い");
+  addSuffixCandidate(out, word, "くて", "い");
+  addSuffixCandidate(out, word, "かった", "い");
+  addSuffixCandidate(out, word, "かったです", "い");
+  addSuffixCandidate(out, word, "くない", "い");
+  addSuffixCandidate(out, word, "くないです", "い");
+  addSuffixCandidate(out, word, "くなかった", "い");
+  addSuffixCandidate(out, word, "くなかったです", "い");
+  addSuffixCandidate(out, word, "くありません", "い");
+  addSuffixCandidate(out, word, "くありませんでした", "い");
+}
+
 void addInflectionStep(std::vector<std::string>& out, const std::string& word) {
   addTrimmedAuxiliaryTailCandidates(out, word);
   addTeTaCandidates(out, word);
   addNegativeCandidates(out, word);
+  addIAdjectiveCandidates(out, word);
 
   static constexpr const char* politeSuffixes[] = {"ませんでした", "ました", "ません", "ましょう", "ます"};
   for (const char* suffix : politeSuffixes) {
@@ -288,6 +303,10 @@ void JapaneseDictionary::close() {
   recordsFile = FsFile();
   stringsFile = FsFile();
   basePath.clear();
+  cachedRecordBlock.clear();
+  cachedRecordBlockValid = false;
+  cachedRecordBlockStart = UINT32_MAX;
+  cachedRecordBlockCount = 0;
   cachedBucketValid = false;
   cachedBucketCp = UINT32_MAX;
   cachedBucketStart = 0;
@@ -307,6 +326,10 @@ bool JapaneseDictionary::openAt(const char* path) {
   bucketsFile = std::move(buckets);
   recordsFile = std::move(records);
   stringsFile = std::move(strings);
+  cachedRecordBlock.resize(RECORD_BYTES * RECORD_CACHE_RECORDS);
+  cachedRecordBlockValid = false;
+  cachedRecordBlockStart = UINT32_MAX;
+  cachedRecordBlockCount = 0;
   cachedBucketValid = false;
   return true;
 }
@@ -336,10 +359,26 @@ bool JapaneseDictionary::readBucketCached(const uint32_t cp, uint32_t& start, ui
 }
 
 bool JapaneseDictionary::readRecord(const uint32_t index, Record& record) {
-  uint8_t buf[RECORD_BYTES];
-  if (!recordsFile.seek(index * RECORD_BYTES)) return false;
-  if (recordsFile.read(buf, sizeof(buf)) != static_cast<int>(sizeof(buf))) return false;
+  if (cachedRecordBlock.empty()) cachedRecordBlock.resize(RECORD_BYTES * RECORD_CACHE_RECORDS);
 
+  const bool cacheHit = cachedRecordBlockValid && index >= cachedRecordBlockStart &&
+                        index < cachedRecordBlockStart + cachedRecordBlockCount;
+  if (!cacheHit) {
+    const uint32_t blockStart = index - (index % RECORD_CACHE_RECORDS);
+    if (!recordsFile.seek(blockStart * RECORD_BYTES)) return false;
+    const int bytesRead = recordsFile.read(cachedRecordBlock.data(), cachedRecordBlock.size());
+    if (bytesRead < static_cast<int>(RECORD_BYTES)) return false;
+    cachedRecordBlockStart = blockStart;
+    cachedRecordBlockCount = static_cast<uint16_t>(bytesRead / RECORD_BYTES);
+    cachedRecordBlockValid = cachedRecordBlockCount > 0;
+  }
+
+  if (!cachedRecordBlockValid || index < cachedRecordBlockStart ||
+      index >= cachedRecordBlockStart + cachedRecordBlockCount) {
+    return false;
+  }
+
+  const uint8_t* buf = cachedRecordBlock.data() + ((index - cachedRecordBlockStart) * RECORD_BYTES);
   const uint16_t keyLen = std::min<uint16_t>(readLe16(buf + KEY_BYTES), KEY_BYTES);
   record.key.assign(reinterpret_cast<const char*>(buf), keyLen);
   record.tier = buf[98];
@@ -416,6 +455,12 @@ bool JapaneseDictionary::lookupContext(const std::string& context, std::vector<J
   const size_t collectionLimit = std::max<size_t>(maxMatches * 4, maxMatches + 8);
   for (auto it = prefixes.rbegin(); it != prefixes.rend() && outMatches.size() < collectionLimit; ++it) {
     const size_t matchesBeforePrefix = outMatches.size();
+    if (!containsString(searchedTerms, *it)) {
+      searchedTerms.push_back(*it);
+      findExact(*it, *it, 0, outMatches, collectionLimit);
+      if (outMatches.size() > matchesBeforePrefix) break;
+    }
+
     const auto candidates = expandDeinflections(*it);
     for (const auto& candidate : candidates) {
       if (outMatches.size() >= collectionLimit) break;
