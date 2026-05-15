@@ -1,9 +1,11 @@
 #include "StatusBarSettingsActivity.h"
 
 #include <GfxRenderer.h>
+#include <HalClock.h>
 #include <I18n.h>
 
 #include <cstring>
+#include <vector>
 
 #include "CrossPointSettings.h"
 #include "MappedInputManager.h"
@@ -11,14 +13,74 @@
 #include "fontIds.h"
 
 namespace {
-constexpr int MENU_ITEMS = 7;
-const StrId menuNames[MENU_ITEMS] = {StrId::STR_CHAPTER_PAGE_COUNT,
-                                     StrId::STR_BOOK_PROGRESS_PERCENTAGE,
-                                     StrId::STR_PROGRESS_BAR,
-                                     StrId::STR_PROGRESS_BAR_THICKNESS,
-                                     StrId::STR_TITLE,
-                                     StrId::STR_BATTERY,
-                                     StrId::STR_XTC_STATUS_BAR};
+enum class MenuItem {
+  ChapterPageCount,
+  BookProgressPercentage,
+  ProgressBar,
+  ProgressBarThickness,
+  Title,
+  Battery,
+  Clock,
+  ClockUtcOffset,
+  XtcStatusBar,
+};
+
+const std::vector<MenuItem>& menuItems() {
+  static const std::vector<MenuItem> items = [] {
+    std::vector<MenuItem> v = {MenuItem::ChapterPageCount,
+                               MenuItem::BookProgressPercentage,
+                               MenuItem::ProgressBar,
+                               MenuItem::ProgressBarThickness,
+                               MenuItem::Title,
+                               MenuItem::Battery};
+    if (halClock.isAvailable()) {
+      v.push_back(MenuItem::Clock);
+      v.push_back(MenuItem::ClockUtcOffset);
+    }
+    v.push_back(MenuItem::XtcStatusBar);
+    return v;
+  }();
+  return items;
+}
+
+StrId menuName(MenuItem item) {
+  switch (item) {
+    case MenuItem::ChapterPageCount:
+      return StrId::STR_CHAPTER_PAGE_COUNT;
+    case MenuItem::BookProgressPercentage:
+      return StrId::STR_BOOK_PROGRESS_PERCENTAGE;
+    case MenuItem::ProgressBar:
+      return StrId::STR_PROGRESS_BAR;
+    case MenuItem::ProgressBarThickness:
+      return StrId::STR_PROGRESS_BAR_THICKNESS;
+    case MenuItem::Title:
+      return StrId::STR_TITLE;
+    case MenuItem::Battery:
+      return StrId::STR_BATTERY;
+    case MenuItem::Clock:
+      return StrId::STR_CLOCK;
+    case MenuItem::ClockUtcOffset:
+      return StrId::STR_CLOCK_UTC_OFFSET;
+    case MenuItem::XtcStatusBar:
+      return StrId::STR_XTC_STATUS_BAR;
+  }
+  return StrId::STR_HIDE;
+}
+
+// UTC offset range: 0 = UTC-12:00, 24 = UTC+0, 52 = UTC+14:00 (half-hour steps)
+constexpr uint8_t UTC_OFFSET_MIN = 0;
+constexpr uint8_t UTC_OFFSET_MAX = 52;
+
+std::string formatUtcOffset(uint8_t biased) {
+  int totalMinutes = (static_cast<int>(biased) - 24) * 30;  // -720 to +840
+  bool neg = totalMinutes < 0;
+  int absMinutes = neg ? -totalMinutes : totalMinutes;
+  int hours = absMinutes / 60;
+  int mins = absMinutes % 60;
+  char buf[16];
+  snprintf(buf, sizeof(buf), "UTC%c%d:%02d", neg ? '-' : '+', hours, mins);
+  return buf;
+}
 constexpr int PROGRESS_BAR_ITEMS = 3;
 const StrId progressBarNames[PROGRESS_BAR_ITEMS] = {StrId::STR_BOOK, StrId::STR_CHAPTER, StrId::STR_HIDE};
 
@@ -42,13 +104,13 @@ void StatusBarSettingsActivity::onEnter() {
 
   selectedIndex = 0;
 
-  // Clamp statusBarProgressBar and statusBarTitle in case of corrupt/migrated data
+  // Clamp status bar settings in case of corrupt/migrated data
   if (SETTINGS.statusBarProgressBar >= PROGRESS_BAR_ITEMS) {
     SETTINGS.statusBarProgressBar = CrossPointSettings::STATUS_BAR_PROGRESS_BAR::HIDE_PROGRESS;
   }
 
-  if (SETTINGS.statusBarTitle >= PROGRESS_BAR_THICKNESS_ITEMS) {
-    SETTINGS.statusBarTitle = CrossPointSettings::STATUS_BAR_PROGRESS_BAR_THICKNESS::PROGRESS_BAR_NORMAL;
+  if (SETTINGS.statusBarProgressBarThickness >= PROGRESS_BAR_THICKNESS_ITEMS) {
+    SETTINGS.statusBarProgressBarThickness = CrossPointSettings::STATUS_BAR_PROGRESS_BAR_THICKNESS::PROGRESS_BAR_NORMAL;
   }
 
   if (SETTINGS.statusBarTitle >= TITLE_ITEMS) {
@@ -78,49 +140,69 @@ void StatusBarSettingsActivity::loop() {
 
   // Handle navigation
   buttonNavigator.onNextRelease([this] {
-    selectedIndex = ButtonNavigator::nextIndex(selectedIndex, MENU_ITEMS);
+    selectedIndex = ButtonNavigator::nextIndex(selectedIndex, static_cast<int>(menuItems().size()));
     requestUpdate();
   });
 
   buttonNavigator.onPreviousRelease([this] {
-    selectedIndex = ButtonNavigator::previousIndex(selectedIndex, MENU_ITEMS);
+    selectedIndex = ButtonNavigator::previousIndex(selectedIndex, static_cast<int>(menuItems().size()));
     requestUpdate();
   });
 
   buttonNavigator.onNextContinuous([this] {
-    selectedIndex = ButtonNavigator::nextIndex(selectedIndex, MENU_ITEMS);
+    selectedIndex = ButtonNavigator::nextIndex(selectedIndex, static_cast<int>(menuItems().size()));
     requestUpdate();
   });
 
   buttonNavigator.onPreviousContinuous([this] {
-    selectedIndex = ButtonNavigator::previousIndex(selectedIndex, MENU_ITEMS);
+    selectedIndex = ButtonNavigator::previousIndex(selectedIndex, static_cast<int>(menuItems().size()));
     requestUpdate();
   });
 }
 
 void StatusBarSettingsActivity::handleSelection() {
-  if (selectedIndex == 0) {
-    // Chapter Page Count
-    SETTINGS.statusBarChapterPageCount = (SETTINGS.statusBarChapterPageCount + 1) % 2;
-  } else if (selectedIndex == 1) {
-    // Book Progress %
-    SETTINGS.statusBarBookProgressPercentage = (SETTINGS.statusBarBookProgressPercentage + 1) % 2;
-  } else if (selectedIndex == 2) {
-    // Progress Bar
-    SETTINGS.statusBarProgressBar = (SETTINGS.statusBarProgressBar + 1) % PROGRESS_BAR_ITEMS;
-  } else if (selectedIndex == 3) {
-    // Progress Bar Thickness
-    SETTINGS.statusBarProgressBarThickness =
-        (SETTINGS.statusBarProgressBarThickness + 1) % PROGRESS_BAR_THICKNESS_ITEMS;
-  } else if (selectedIndex == 4) {
-    // Chapter Title
-    SETTINGS.statusBarTitle = (SETTINGS.statusBarTitle + 1) % TITLE_ITEMS;
-  } else if (selectedIndex == 5) {
-    // Show Battery
-    SETTINGS.statusBarBattery = (SETTINGS.statusBarBattery + 1) % 2;
-  } else if (selectedIndex == 6) {
-    // XTC Status Bar
-    SETTINGS.xtcStatusBarMode = (SETTINGS.xtcStatusBarMode + 1) % XTC_STATUS_BAR_ITEMS;
+  switch (menuItems()[selectedIndex]) {
+    case MenuItem::ChapterPageCount:
+      // Chapter Page Count
+      SETTINGS.statusBarChapterPageCount = (SETTINGS.statusBarChapterPageCount + 1) % 2;
+      break;
+    case MenuItem::BookProgressPercentage:
+      // Book Progress %
+      SETTINGS.statusBarBookProgressPercentage = (SETTINGS.statusBarBookProgressPercentage + 1) % 2;
+      break;
+    case MenuItem::ProgressBar:
+      // Progress Bar
+      SETTINGS.statusBarProgressBar = (SETTINGS.statusBarProgressBar + 1) % PROGRESS_BAR_ITEMS;
+      break;
+    case MenuItem::ProgressBarThickness:
+      // Progress Bar Thickness
+      SETTINGS.statusBarProgressBarThickness =
+          (SETTINGS.statusBarProgressBarThickness + 1) % PROGRESS_BAR_THICKNESS_ITEMS;
+      break;
+    case MenuItem::Title:
+      // Chapter Title
+      SETTINGS.statusBarTitle = (SETTINGS.statusBarTitle + 1) % TITLE_ITEMS;
+      break;
+    case MenuItem::Battery:
+      // Show Battery
+      SETTINGS.statusBarBattery = (SETTINGS.statusBarBattery + 1) % 2;
+      break;
+    case MenuItem::Clock:
+      // Show Clock (X3 only)
+      SETTINGS.statusBarClock = (SETTINGS.statusBarClock + 1) % 2;
+      break;
+    case MenuItem::ClockUtcOffset:
+      // UTC Offset (cycle in half-hour steps)
+      if (SETTINGS.clockUtcOffset >= UTC_OFFSET_MAX) {
+        SETTINGS.clockUtcOffset = UTC_OFFSET_MIN;
+      } else {
+        SETTINGS.clockUtcOffset++;
+      }
+      break;
+    case MenuItem::XtcStatusBar:
+      // XTC Status Bar
+      SETTINGS.xtcStatusBarMode = (SETTINGS.xtcStatusBarMode + 1) % XTC_STATUS_BAR_ITEMS;
+      break;
   }
   SETTINGS.saveToFile();
 }
@@ -137,28 +219,32 @@ void StatusBarSettingsActivity::render(RenderLock&&) {
   const int contentTop = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
   const int contentHeight = pageHeight - contentTop - metrics.buttonHintsHeight - metrics.verticalSpacing * 2;
   GUI.drawList(
-      renderer, Rect{0, contentTop, pageWidth, contentHeight}, static_cast<int>(MENU_ITEMS),
-      static_cast<int>(selectedIndex), [](int index) { return std::string(I18N.get(menuNames[index])); }, nullptr,
-      nullptr,
-      [this](int index) {
+      renderer, Rect{0, contentTop, pageWidth, contentHeight}, static_cast<int>(menuItems().size()),
+      static_cast<int>(selectedIndex), [](int index) { return std::string(I18N.get(menuName(menuItems()[index]))); },
+      nullptr, nullptr,
+      [this](int index) -> std::string {
         // Draw status for each setting
-        if (index == 0) {
-          return SETTINGS.statusBarChapterPageCount ? tr(STR_SHOW) : tr(STR_HIDE);
-        } else if (index == 1) {
-          return SETTINGS.statusBarBookProgressPercentage ? tr(STR_SHOW) : tr(STR_HIDE);
-        } else if (index == 2) {
-          return I18N.get(progressBarNames[SETTINGS.statusBarProgressBar]);
-        } else if (index == 3) {
-          return I18N.get(progressBarThicknessNames[SETTINGS.statusBarProgressBarThickness]);
-        } else if (index == 4) {
-          return I18N.get(titleNames[SETTINGS.statusBarTitle]);
-        } else if (index == 5) {
-          return SETTINGS.statusBarBattery ? tr(STR_SHOW) : tr(STR_HIDE);
-        } else if (index == 6) {
-          return I18N.get(xtcStatusBarNames[SETTINGS.xtcStatusBarMode]);
-        } else {
-          return tr(STR_HIDE);
+        switch (menuItems()[index]) {
+          case MenuItem::ChapterPageCount:
+            return SETTINGS.statusBarChapterPageCount ? tr(STR_SHOW) : tr(STR_HIDE);
+          case MenuItem::BookProgressPercentage:
+            return SETTINGS.statusBarBookProgressPercentage ? tr(STR_SHOW) : tr(STR_HIDE);
+          case MenuItem::ProgressBar:
+            return I18N.get(progressBarNames[SETTINGS.statusBarProgressBar]);
+          case MenuItem::ProgressBarThickness:
+            return I18N.get(progressBarThicknessNames[SETTINGS.statusBarProgressBarThickness]);
+          case MenuItem::Title:
+            return I18N.get(titleNames[SETTINGS.statusBarTitle]);
+          case MenuItem::Battery:
+            return SETTINGS.statusBarBattery ? tr(STR_SHOW) : tr(STR_HIDE);
+          case MenuItem::Clock:
+            return SETTINGS.statusBarClock ? tr(STR_SHOW) : tr(STR_HIDE);
+          case MenuItem::ClockUtcOffset:
+            return formatUtcOffset(SETTINGS.clockUtcOffset);
+          case MenuItem::XtcStatusBar:
+            return I18N.get(xtcStatusBarNames[SETTINGS.xtcStatusBarMode]);
         }
+        return tr(STR_HIDE);
       },
       true);
 
