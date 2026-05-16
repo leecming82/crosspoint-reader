@@ -104,8 +104,6 @@ void ReaderActivity::onEnter() {
     return;
   }
 
-  sdFontSystem.ensureLoaded(renderer);
-
   currentBookPath = initialBookPath;
   if (isBmpFile(initialBookPath)) {
     onGoToBmpViewer(initialBookPath);

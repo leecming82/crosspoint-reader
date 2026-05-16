@@ -160,18 +160,21 @@ The Settings screen allows you to configure the device's behavior. There are a f
   - "Noto Serif" (default) - Google's serif font
   - "Noto Sans" - Google's sans-serif font
   - "Open Dyslexic" - Font designed for readers with dyslexia
-- **Reader Font Size**: Adjust the text size for reading; options are "Small", "Medium" (default), "Large", or "X Large".
+- **Non-Japanese Font Size**: Adjust the text size for non-Japanese reading; options are "Small", "Medium" (default), "Large", or "X Large".
+- **Japanese Font Size**: Adjust the text size for Japanese Vertical reading; options are "Small", "Medium" (default), "Large", or "X Large".
 
 - **Reader Line Spacing**: Adjust the spacing between lines; options are "Tight", "Normal" (default), or "Wide".
 - **Reader Screen Margin**: Controls the screen margins in Reading Mode between 5 and 40 pixels in 5-pixel increments.
 - **Reader Paragraph Alignment**: Set the alignment of paragraphs; options are "Justified" (default), "Left", "Center", or "Right".
 - **Embedded Style**: Whether to use the EPUB file's embedded HTML and CSS stylisation and formatting; options are "ON" or "OFF".
 - **Hyphenation**: Whether to hyphenate text in Reading Mode; options are "ON" or "OFF".
-- **Reading Orientation**: Set the screen orientation for reading EPUB files:
-  - "Portrait" (default) - Standard portrait orientation
-  - "Landscape CW" - Landscape, rotated clockwise
-  - "Inverted" - Portrait, upside down
-  - "Landscape CCW" - Landscape, rotated counter-clockwise
+- **Reading Layout**: Choose how EPUB text should be laid out:
+  - "Auto" (default) - Uses book metadata to choose a reading layout where possible
+  - "English Portrait" - Standard portrait reading for English and most left-to-right books
+  - "English Landscape CW" - English reading rotated clockwise
+  - "English Inverted" - English portrait reading upside down
+  - "English Landscape CCW" - English reading rotated counter-clockwise
+  - "Japanese Vertical" - Tategaki-style vertical reading
 - **Extra Paragraph Spacing**: Set how to handle paragraph breaks:
   - "ON" - Vertical space will be added between paragraphs in Reading Mode
   - "OFF" - Paragraphs will not have vertical space added, but will have first-line indentation

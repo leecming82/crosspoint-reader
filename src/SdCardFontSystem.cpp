@@ -5,11 +5,12 @@
 
 #include "CrossPointSettings.h"
 
-static uint8_t fontSizeEnumFromSettings() {
-  uint8_t e = SETTINGS.fontSize;
+static uint8_t normalizeFontSizeEnum(uint8_t e) {
   if (e >= CrossPointSettings::FONT_SIZE_COUNT) e = 1;  // default to MEDIUM
   return e;
 }
+
+static uint8_t fontSizeEnumFromSettings() { return normalizeFontSizeEnum(SETTINGS.fontSize); }
 
 void SdCardFontSystem::begin(GfxRenderer& renderer) {
   registry_.discover();
@@ -40,7 +41,9 @@ void SdCardFontSystem::begin(GfxRenderer& renderer) {
   LOG_DBG("SDFS", "SD font system ready (%d families discovered)", registry_.getFamilyCount());
 }
 
-void SdCardFontSystem::ensureLoaded(GfxRenderer& renderer) {
+void SdCardFontSystem::ensureLoaded(GfxRenderer& renderer) { ensureLoaded(renderer, fontSizeEnumFromSettings()); }
+
+void SdCardFontSystem::ensureLoaded(GfxRenderer& renderer, uint8_t fontSizeEnum) {
   // If the web server (or another task) installed/deleted fonts, re-discover.
   // Track whether we just re-discovered so we can force a reload below even
   // when the wanted family/size still maps to the same point size — the file
@@ -53,7 +56,7 @@ void SdCardFontSystem::ensureLoaded(GfxRenderer& renderer) {
 
   const char* wantedFamily = SETTINGS.sdFontFamilyName;
   const std::string& currentFamily = manager_.currentFamilyName();
-  const uint8_t sizeEnum = fontSizeEnumFromSettings();
+  const uint8_t sizeEnum = normalizeFontSizeEnum(fontSizeEnum);
 
   if (wantedFamily[0] == '\0') {
     if (!currentFamily.empty()) {
@@ -104,8 +107,7 @@ void SdCardFontSystem::ensureLoaded(GfxRenderer& renderer) {
 void SdCardFontSystem::unloadLoadedFonts(GfxRenderer& renderer) { manager_.unloadAll(renderer); }
 
 int SdCardFontSystem::resolveFontId(const char* familyName, uint8_t /*fontSizeEnum*/) const {
-  // The manager loads exactly one size (closest to SETTINGS.fontSize), so the
-  // enum is implicit — always return the single loaded font ID for this family.
-  // ensureLoaded() must have been called with the current settings before this.
+  // The manager loads exactly one effective size at a time. The reader must
+  // call ensureLoaded(renderer, effectiveFontSize) before resolving the ID.
   return manager_.getFontId(familyName);
 }

@@ -1,4 +1,5 @@
 #pragma once
+#include <CrossPointSettings.h>
 #include <Epub.h>
 #include <Epub/FootnoteEntry.h>
 #include <Epub/Page.h>
@@ -34,6 +35,8 @@ class EpubReaderActivity final : public Activity {
   bool pendingScreenshot = false;
   bool pendingSyncSaveError = false;
   bool automaticPageTurnActive = false;
+  uint8_t effectiveReadingLayout = CrossPointSettings::READING_LAYOUT_HORIZONTAL_PORTRAIT;
+  uint8_t effectiveReaderOrientation = CrossPointSettings::PORTRAIT;
 
   // Kanji cursor overlay (tategaki dictionary lookup, Phase 1)
   struct KanjiEntry {
@@ -91,9 +94,13 @@ class EpubReaderActivity final : public Activity {
   void renderStatusBar() const;
   void silentIndexNextChapterIfNeeded(uint16_t viewportWidth, uint16_t viewportHeight);
   bool saveProgress(int spineIndex, int currentPage, int pageCount);
+  void resolveReadingProfile();
+  uint8_t effectiveReaderFontSize() const;
+  int effectiveReaderFontId() const;
   // Jump to a percentage of the book (0-100), mapping it to spine and page.
   void jumpToPercent(int percent);
   void onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction action);
+  void applyReadingLayout(uint8_t readingLayout);
   void applyOrientation(uint8_t orientation);
   void toggleAutoPageTurn(uint8_t selectedPageTurnOption);
   void pageTurn(bool isForwardTurn);

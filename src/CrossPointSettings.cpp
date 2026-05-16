@@ -333,10 +333,14 @@ int CrossPointSettings::getRefreshFrequency() const {
   }
 }
 
-int CrossPointSettings::getReaderFontId() const {
+int CrossPointSettings::getReaderFontId() const { return getReaderFontId(fontSize); }
+
+int CrossPointSettings::getReaderFontId(uint8_t fontSizeEnum) const {
+  if (fontSizeEnum >= FONT_SIZE_COUNT) fontSizeEnum = MEDIUM;
+
   // Check SD card font first
   if (sdFontFamilyName[0] != '\0' && sdFontIdResolver) {
-    int id = sdFontIdResolver(sdFontResolverCtx, sdFontFamilyName, fontSize);
+    int id = sdFontIdResolver(sdFontResolverCtx, sdFontFamilyName, fontSizeEnum);
     if (id != 0) return id;
     // Fall through to built-in if SD font not found
   }
@@ -344,7 +348,7 @@ int CrossPointSettings::getReaderFontId() const {
   switch (fontFamily) {
     case NOTOSERIF:
     default:
-      switch (fontSize) {
+      switch (fontSizeEnum) {
         case SMALL:
           return NOTOSERIF_12_FONT_ID;
         case MEDIUM:
@@ -356,7 +360,7 @@ int CrossPointSettings::getReaderFontId() const {
           return NOTOSERIF_18_FONT_ID;
       }
     case NOTOSANS:
-      switch (fontSize) {
+      switch (fontSizeEnum) {
         case SMALL:
           return NOTOSANS_12_FONT_ID;
         case MEDIUM:
@@ -368,7 +372,7 @@ int CrossPointSettings::getReaderFontId() const {
           return NOTOSANS_18_FONT_ID;
       }
     case OPENDYSLEXIC:
-      switch (fontSize) {
+      switch (fontSizeEnum) {
         case SMALL:
           return OPENDYSLEXIC_8_FONT_ID;
         case MEDIUM:

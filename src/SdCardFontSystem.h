@@ -21,6 +21,7 @@ class SdCardFontSystem {
   /// Call before entering the reader or after settings change.
   /// Also re-discovers if the registry has been marked dirty (e.g. by web upload).
   void ensureLoaded(GfxRenderer& renderer);
+  void ensureLoaded(GfxRenderer& renderer, uint8_t fontSizeEnum);
 
   /// Free any loaded SD font data while preserving the registry and selected
   /// settings. The reader will call ensureLoaded() when it needs the font again.
