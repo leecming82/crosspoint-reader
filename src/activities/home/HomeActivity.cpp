@@ -1,5 +1,6 @@
 #include "HomeActivity.h"
 
+#include <Arduino.h>
 #include <Bitmap.h>
 #include <Epub.h>
 #include <FsHelpers.h>
@@ -9,6 +10,7 @@
 #include <Utf8.h>
 #include <Xtc.h>
 
+#include <algorithm>
 #include <cstring>
 #include <vector>
 
@@ -20,6 +22,18 @@
 #include "components/UITheme.h"
 #include "fontIds.h"
 #include "util/StringUtils.h"
+
+namespace {
+
+uint32_t heapKb(const uint32_t bytes) { return (bytes + 512) / 1024; }
+
+std::string homeMemoryStatusText() {
+  return "Free: " + std::to_string(heapKb(ESP.getFreeHeap())) +
+         "K Max Blk: " + std::to_string(heapKb(ESP.getMaxAllocHeap())) +
+         "K Min Free: " + std::to_string(heapKb(ESP.getMinFreeHeap())) + "K";
+}
+
+}  // namespace
 
 int HomeActivity::getMenuItemCount() const {
   int count = 4;  // File Browser, Recents, File transfer, Settings
@@ -224,6 +238,18 @@ void HomeActivity::render(RenderLock&&) {
       !recentBooks.empty() ? StringUtils::uiSafeBookTitle(recentBooks[0].title, recentBooks[0].path) : "";
   GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.homeTopPadding},
                  metrics.homeContinueReadingInMenu && !recentBooks.empty() ? headerTitle.c_str() : nullptr);
+
+  if (SETTINGS.homeMemoryStatus) {
+    const std::string memoryText = homeMemoryStatusText();
+    const int textX = metrics.contentSidePadding;
+    const int batteryReserveWidth = 95;
+    const int maxTextWidth = std::max(0, pageWidth - textX - batteryReserveWidth);
+    const int textY = SETTINGS.uiTheme == CrossPointSettings::UI_THEME::ROUNDEDRAFF ? metrics.topPadding + 34
+                                                                                    : metrics.topPadding + 5;
+    const std::string displayText =
+        renderer.truncatedText(SMALL_FONT_ID, memoryText.c_str(), maxTextWidth, EpdFontFamily::REGULAR);
+    renderer.drawText(SMALL_FONT_ID, textX, textY, displayText.c_str());
+  }
 
   GUI.drawRecentBookCover(renderer, Rect{0, metrics.homeTopPadding, pageWidth, metrics.homeCoverTileHeight},
                           recentBooks, selectorIndex, coverRendered, coverBufferStored, bufferRestored,
