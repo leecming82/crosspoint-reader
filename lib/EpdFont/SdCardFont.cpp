@@ -1029,8 +1029,14 @@ bool SdCardFont::hasAdvanceTable() const {
 }
 
 uint16_t SdCardFont::getAdvance(uint32_t codepoint, uint8_t style) const {
+  uint16_t advance = 0;
+  tryGetAdvance(codepoint, style, &advance);
+  return advance;
+}
+
+bool SdCardFont::tryGetAdvance(uint32_t codepoint, uint8_t style, uint16_t* outAdvance) const {
   style = resolveStyle(style);
-  if (!advanceTable_[style]) return 0;
+  if (!advanceTable_[style]) return false;
   const AdvanceEntry* table = advanceTable_[style];
   const uint32_t size = advanceTableSize_[style];
   // Binary search sorted by codepoint
@@ -1044,9 +1050,10 @@ uint16_t SdCardFont::getAdvance(uint32_t codepoint, uint8_t style) const {
     }
   }
   if (lo < size && table[lo].codepoint == codepoint) {
-    return table[lo].advanceX;
+    if (outAdvance) *outAdvance = table[lo].advanceX;
+    return true;
   }
-  return 0;
+  return false;
 }
 
 // Given a sorted array of unique codepoints, resolve glyph indices per style,

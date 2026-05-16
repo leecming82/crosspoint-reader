@@ -1121,7 +1121,10 @@ int GfxRenderer::getSpaceWidth(const int fontId, const EpdFontFamily::Style styl
   auto sdIt = sdCardFonts_.find(fontId);
   if (sdIt != sdCardFonts_.end() && sdIt->second->hasAdvanceTable()) {
     const uint8_t resolvedStyle = resolveSdCardStyle(*sdIt->second, style);
-    return fp4::toPixel(sdIt->second->getAdvance(' ', resolvedStyle));
+    uint16_t advance = 0;
+    if (sdIt->second->tryGetAdvance(' ', resolvedStyle, &advance)) {
+      return fp4::toPixel(advance);
+    }
   }
 
   const auto fontIt = fontMap.find(fontId);
@@ -1142,7 +1145,10 @@ int GfxRenderer::getSpaceAdvance(const int fontId, const uint32_t leftCp, const 
   auto sdIt = sdCardFonts_.find(fontId);
   if (sdIt != sdCardFonts_.end() && sdIt->second->hasAdvanceTable()) {
     const uint8_t resolvedStyle = resolveSdCardStyle(*sdIt->second, style);
-    return fp4::toPixel(sdIt->second->getAdvance(' ', resolvedStyle));
+    uint16_t advance = 0;
+    if (sdIt->second->tryGetAdvance(' ', resolvedStyle, &advance)) {
+      return fp4::toPixel(advance);
+    }
   }
 
   const auto fontIt = fontMap.find(fontId);
@@ -1166,6 +1172,8 @@ int GfxRenderer::getKerning(const int fontId, const uint32_t leftCp, const uint3
 }
 
 int GfxRenderer::getTextAdvanceX(const int fontId, const char* text, EpdFontFamily::Style style) const {
+  const char* originalText = text;
+
   // Advance table fast-path for SD card fonts during layout.
   // No kerning/ligature lookup — consistent with previous metadataOnly behavior
   // where kern/lig data was not loaded.
@@ -1173,10 +1181,19 @@ int GfxRenderer::getTextAdvanceX(const int fontId, const char* text, EpdFontFami
   if (sdIt != sdCardFonts_.end() && sdIt->second->hasAdvanceTable()) {
     int32_t widthFP = 0;
     const uint8_t styleIdx = resolveSdCardStyle(*sdIt->second, style);
+    bool allAdvancesCached = true;
     while (uint32_t cp = utf8NextCodepoint(reinterpret_cast<const uint8_t**>(&text))) {
-      widthFP += sdIt->second->getAdvance(cp, styleIdx);
+      uint16_t advance = 0;
+      if (!sdIt->second->tryGetAdvance(cp, styleIdx, &advance)) {
+        allAdvancesCached = false;
+        break;
+      }
+      widthFP += advance;
     }
-    return fp4::toPixel(widthFP);
+    if (allAdvancesCached) {
+      return fp4::toPixel(widthFP);
+    }
+    text = originalText;
   }
 
   const auto fontIt = fontMap.find(fontId);
