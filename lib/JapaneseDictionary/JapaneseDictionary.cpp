@@ -166,6 +166,15 @@ void addPoliteStemCandidates(std::vector<std::string>& out, const std::string& s
   if (!isGodanARow(last)) addUnique(out, stem + "る");
 }
 
+void addBareMasuStemCandidates(std::vector<std::string>& out, const std::string& word) {
+  const std::string last = utf8LastChar(word);
+  if (const char* repl = godanFromMasuStem(last)) {
+    addUnique(out, word.substr(0, word.size() - last.size()) + repl);
+  }
+  addSuffixCandidate(out, word, "し", "する");
+  addSuffixCandidate(out, word, "こ", "くる");
+}
+
 void addNegativeCandidates(std::vector<std::string>& out, const std::string& word) {
   if (endsWith(word, "なかった")) addUnique(out, replaceSuffix(word, "なかった", "ない"));
   if (endsWith(word, "ませんでした")) addUnique(out, replaceSuffix(word, "ませんでした", "ません"));
@@ -199,6 +208,7 @@ void addIAdjectiveCandidates(std::vector<std::string>& out, const std::string& w
 void addInflectionStep(std::vector<std::string>& out, const std::string& word) {
   addTrimmedAuxiliaryTailCandidates(out, word);
   addTeTaCandidates(out, word);
+  addBareMasuStemCandidates(out, word);
   addNegativeCandidates(out, word);
   addIAdjectiveCandidates(out, word);
 
