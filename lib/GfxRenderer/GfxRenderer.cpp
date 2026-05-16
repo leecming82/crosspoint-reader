@@ -230,6 +230,13 @@ static void renderCharWithSyntheticBold(const GfxRenderer& renderer, GfxRenderer
                                         const EpdFontFamily& fontFamily, const uint32_t cp, const int cursorX,
                                         const int cursorY, const bool pixelState, const EpdFontFamily::Style style,
                                         const bool syntheticBold) {
+  // Synthetic bold is built by overstriking a regular glyph. Repeating that
+  // overstrike in the grayscale AA passes makes the gray edge pixels muddy, so
+  // keep synthetic-bold glyphs crisp BW-only.
+  if (syntheticBold && renderMode != GfxRenderer::BW) {
+    return;
+  }
+
   renderCharImpl<rotation>(renderer, renderMode, fontFamily, cp, cursorX, cursorY, pixelState, style);
   if (syntheticBold) {
     renderCharImpl<rotation>(renderer, renderMode, fontFamily, cp, cursorX + 1, cursorY, pixelState, style);
