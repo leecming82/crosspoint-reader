@@ -80,6 +80,7 @@ void CrossPointWebServerActivity::onExit() {
 
   state = WebServerActivityState::SHUTTING_DOWN;
 
+  // Skip reboot if WiFi was never activated (e.g. user backed out of mode selection).
   if (WiFi.getMode() != WIFI_MODE_NULL) {
     if (isApMode) {
       LOG_DBG("WEBACT", "Stopping WiFi AP before silent restart...");
@@ -91,37 +92,6 @@ void CrossPointWebServerActivity::onExit() {
     delay(30);
     silentRestart();
   }
-
-  // Stop the web server first (before disconnecting WiFi)
-  stopWebServer();
-
-  // Stop mDNS
-  MDNS.end();
-
-  // Stop DNS server if running (AP mode)
-  if (dnsServer) {
-    LOG_DBG("WEBACT", "Stopping DNS server...");
-    dnsServer->stop();
-    delete dnsServer;
-    dnsServer = nullptr;
-  }
-
-  // Brief wait for LWIP stack to flush pending packets
-  delay(50);
-
-  // Disconnect WiFi gracefully
-  if (isApMode) {
-    LOG_DBG("WEBACT", "Stopping WiFi AP...");
-    WiFi.softAPdisconnect(true);
-  } else {
-    LOG_DBG("WEBACT", "Disconnecting WiFi (graceful)...");
-    WiFi.disconnect(false);  // false = don't erase credentials, send disconnect frame
-  }
-  delay(30);  // Allow disconnect frame to be sent
-
-  LOG_DBG("WEBACT", "Setting WiFi mode OFF...");
-  WiFi.mode(WIFI_OFF);
-  delay(30);  // Allow WiFi hardware to power down
 
   LOG_DBG("WEBACT", "Free heap at onExit end: %d bytes", ESP.getFreeHeap());
 }
@@ -286,15 +256,6 @@ void CrossPointWebServerActivity::startWebServer() {
     // Go back on error
     onGoHome();
   }
-}
-
-void CrossPointWebServerActivity::stopWebServer() {
-  if (webServer && webServer->isRunning()) {
-    LOG_DBG("WEBACT", "Stopping web server...");
-    webServer->stop();
-    LOG_DBG("WEBACT", "Web server stopped");
-  }
-  webServer.reset();
 }
 
 void CrossPointWebServerActivity::loop() {
