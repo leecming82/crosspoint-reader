@@ -1,4 +1,5 @@
 #pragma once
+#include <CrossPointSettings.h>
 #include <I18n.h>
 
 #include <string>
@@ -7,8 +8,12 @@
 
 class QrDisplayActivity final : public Activity {
  public:
-  explicit QrDisplayActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, const std::string& textPayload)
-      : Activity("QrDisplay", renderer, mappedInput), textPayload(textPayload) {}
+  explicit QrDisplayActivity(
+      GfxRenderer& renderer, MappedInputManager& mappedInput, const std::string& textPayload,
+      const uint8_t effectiveReadingLayout = CrossPointSettings::READING_LAYOUT_HORIZONTAL_PORTRAIT)
+      : Activity("QrDisplay", renderer, mappedInput),
+        textPayload(textPayload),
+        effectiveReadingLayout(effectiveReadingLayout) {}
 
   void onEnter() override;
   void onExit() override;
@@ -17,4 +22,6 @@ class QrDisplayActivity final : public Activity {
 
  private:
   std::string textPayload;
+  uint8_t effectiveReadingLayout = CrossPointSettings::READING_LAYOUT_HORIZONTAL_PORTRAIT;
+  GfxRenderer::Orientation previousRendererOrientation = GfxRenderer::Orientation::Portrait;
 };

@@ -6,16 +6,22 @@
 #include <algorithm>
 
 #include "MappedInputManager.h"
+#include "ReaderUtils.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
 
 void EpubReaderFootnotesActivity::onEnter() {
   Activity::onEnter();
+  previousRendererOrientation = renderer.getOrientation();
+  renderer.setOrientation(ReaderUtils::menuOrientationForReadingLayout(effectiveReadingLayout));
   selectedIndex = 0;
   requestUpdate();
 }
 
-void EpubReaderFootnotesActivity::onExit() { Activity::onExit(); }
+void EpubReaderFootnotesActivity::onExit() {
+  renderer.setOrientation(previousRendererOrientation);
+  Activity::onExit();
+}
 
 void EpubReaderFootnotesActivity::loop() {
   if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {

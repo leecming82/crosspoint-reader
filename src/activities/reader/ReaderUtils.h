@@ -31,6 +31,42 @@ inline void applyOrientation(GfxRenderer& renderer, const uint8_t orientation) {
   }
 }
 
+inline GfxRenderer::Orientation menuOrientationForReadingLayout(const uint8_t readingLayout) {
+  switch (readingLayout) {
+    case CrossPointSettings::READING_LAYOUT_HORIZONTAL_LANDSCAPE_CW:
+      return GfxRenderer::Orientation::LandscapeClockwise;
+    case CrossPointSettings::READING_LAYOUT_HORIZONTAL_INVERTED:
+      return GfxRenderer::Orientation::PortraitInverted;
+    case CrossPointSettings::READING_LAYOUT_HORIZONTAL_LANDSCAPE_CCW:
+      return GfxRenderer::Orientation::LandscapeCounterClockwise;
+    case CrossPointSettings::READING_LAYOUT_VERTICAL_RL:
+      // Tategaki content uses native landscape coordinates, but the device is
+      // held in portrait. Reader menus should stay upright for that posture.
+      return GfxRenderer::Orientation::Portrait;
+    case CrossPointSettings::READING_LAYOUT_HORIZONTAL_PORTRAIT:
+    case CrossPointSettings::READING_LAYOUT_AUTO:
+    default:
+      return GfxRenderer::Orientation::Portrait;
+  }
+}
+
+class ScopedRendererOrientation {
+ public:
+  ScopedRendererOrientation(GfxRenderer& renderer, const GfxRenderer::Orientation orientation)
+      : renderer_(renderer), previous_(renderer.getOrientation()) {
+    renderer_.setOrientation(orientation);
+  }
+
+  ~ScopedRendererOrientation() { renderer_.setOrientation(previous_); }
+
+  ScopedRendererOrientation(const ScopedRendererOrientation&) = delete;
+  ScopedRendererOrientation& operator=(const ScopedRendererOrientation&) = delete;
+
+ private:
+  GfxRenderer& renderer_;
+  GfxRenderer::Orientation previous_;
+};
+
 struct PageTurnResult {
   bool prev;
   bool next;

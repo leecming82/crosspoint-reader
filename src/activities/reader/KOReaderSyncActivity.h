@@ -1,4 +1,5 @@
 #pragma once
+#include <CrossPointSettings.h>
 #include <Epub.h>
 
 #include <functional>
@@ -24,13 +25,15 @@ class KOReaderSyncActivity final : public Activity {
   explicit KOReaderSyncActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, const std::string& epubPath,
                                 int currentSpineIndex, int currentPage, int totalPagesInSpine,
                                 KOReaderPosition localKoPos, std::string localChapterName,
-                                std::optional<uint16_t> currentParagraphIndex = std::nullopt)
+                                std::optional<uint16_t> currentParagraphIndex = std::nullopt,
+                                uint8_t effectiveReadingLayout = CrossPointSettings::READING_LAYOUT_HORIZONTAL_PORTRAIT)
       : Activity("KOReaderSync", renderer, mappedInput),
         epubPath(epubPath),
         currentSpineIndex(currentSpineIndex),
         currentPage(currentPage),
         totalPagesInSpine(totalPagesInSpine),
         currentParagraphIndex(currentParagraphIndex),
+        effectiveReadingLayout(effectiveReadingLayout),
         localChapterName(std::move(localChapterName)),
         remoteProgress{},
         remotePosition{},
@@ -62,6 +65,8 @@ class KOReaderSyncActivity final : public Activity {
   int currentPage;
   int totalPagesInSpine;
   std::optional<uint16_t> currentParagraphIndex;
+  uint8_t effectiveReadingLayout = CrossPointSettings::READING_LAYOUT_HORIZONTAL_PORTRAIT;
+  GfxRenderer::Orientation previousRendererOrientation = GfxRenderer::Orientation::Portrait;
 
   State state = WIFI_SELECTION;
   std::string statusMessage;

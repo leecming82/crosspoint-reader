@@ -4,6 +4,7 @@
 #include <I18n.h>
 
 #include "MappedInputManager.h"
+#include "ReaderUtils.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
 
@@ -15,11 +16,16 @@ constexpr int kLargeStep = 10;
 
 void EpubReaderPercentSelectionActivity::onEnter() {
   Activity::onEnter();
+  previousRendererOrientation = renderer.getOrientation();
+  renderer.setOrientation(ReaderUtils::menuOrientationForReadingLayout(effectiveReadingLayout));
   // Set up rendering task and mark first frame dirty.
   requestUpdate();
 }
 
-void EpubReaderPercentSelectionActivity::onExit() { Activity::onExit(); }
+void EpubReaderPercentSelectionActivity::onExit() {
+  renderer.setOrientation(previousRendererOrientation);
+  Activity::onExit();
+}
 
 void EpubReaderPercentSelectionActivity::adjustPercent(const int delta) {
   // Apply delta and clamp within 0-100.

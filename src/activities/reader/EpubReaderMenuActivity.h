@@ -27,7 +27,8 @@ class EpubReaderMenuActivity final : public Activity {
 
   explicit EpubReaderMenuActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, const std::string& title,
                                   const int currentPage, const int totalPages, const int bookProgressPercent,
-                                  const uint8_t currentReadingLayout, const bool hasFootnotes);
+                                  const uint8_t configuredReadingLayout, const uint8_t resolvedReadingLayout,
+                                  const bool hasFootnotes);
 
   void onEnter() override;
   void onExit() override;
@@ -41,6 +42,9 @@ class EpubReaderMenuActivity final : public Activity {
   };
 
   static std::vector<MenuItem> buildMenuItems(bool hasFootnotes);
+  uint8_t normalizeReadingLayout(uint8_t readingLayout) const;
+  uint8_t menuLayoutForPending() const;
+  void applyMenuOrientation();
 
   // Fixed menu layout
   const std::vector<MenuItem> menuItems;
@@ -50,7 +54,9 @@ class EpubReaderMenuActivity final : public Activity {
   ButtonNavigator buttonNavigator;
   std::string title = "Reader Menu";
   uint8_t pendingReadingLayout = 0;
+  uint8_t effectiveReadingLayout = CrossPointSettings::READING_LAYOUT_HORIZONTAL_PORTRAIT;
   uint8_t selectedPageTurnOption = 0;
+  GfxRenderer::Orientation previousRendererOrientation = GfxRenderer::Orientation::Portrait;
   const std::vector<StrId> readingLayoutLabels = {
       StrId::STR_READING_LAYOUT_AUTO,
       StrId::STR_READING_LAYOUT_HORIZONTAL_PORTRAIT,

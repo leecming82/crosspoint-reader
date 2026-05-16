@@ -4,6 +4,7 @@
 #include <I18n.h>
 
 #include "MappedInputManager.h"
+#include "ReaderUtils.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
 #include "util/StringUtils.h"
@@ -28,6 +29,8 @@ int EpubReaderChapterSelectionActivity::getPageItems() const {
 
 void EpubReaderChapterSelectionActivity::onEnter() {
   Activity::onEnter();
+  previousRendererOrientation = renderer.getOrientation();
+  renderer.setOrientation(ReaderUtils::menuOrientationForReadingLayout(effectiveReadingLayout));
 
   if (!epub) {
     return;
@@ -42,7 +45,10 @@ void EpubReaderChapterSelectionActivity::onEnter() {
   requestUpdate();
 }
 
-void EpubReaderChapterSelectionActivity::onExit() { Activity::onExit(); }
+void EpubReaderChapterSelectionActivity::onExit() {
+  renderer.setOrientation(previousRendererOrientation);
+  Activity::onExit();
+}
 
 void EpubReaderChapterSelectionActivity::loop() {
   const int pageItems = getPageItems();

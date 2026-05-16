@@ -1,5 +1,6 @@
 #pragma once
 
+#include <CrossPointSettings.h>
 #include <Epub/FootnoteEntry.h>
 
 #include <cstring>
@@ -12,8 +13,11 @@
 class EpubReaderFootnotesActivity final : public Activity {
  public:
   explicit EpubReaderFootnotesActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,
-                                       const std::vector<FootnoteEntry>& footnotes)
-      : Activity("EpubReaderFootnotes", renderer, mappedInput), footnotes(footnotes) {}
+                                       const std::vector<FootnoteEntry>& footnotes,
+                                       const uint8_t effectiveReadingLayout)
+      : Activity("EpubReaderFootnotes", renderer, mappedInput),
+        footnotes(footnotes),
+        effectiveReadingLayout(effectiveReadingLayout) {}
 
   void onEnter() override;
   void onExit() override;
@@ -24,5 +28,7 @@ class EpubReaderFootnotesActivity final : public Activity {
   const std::vector<FootnoteEntry>& footnotes;
   int selectedIndex = 0;
   int scrollOffset = 0;
+  uint8_t effectiveReadingLayout = CrossPointSettings::READING_LAYOUT_HORIZONTAL_PORTRAIT;
+  GfxRenderer::Orientation previousRendererOrientation = GfxRenderer::Orientation::Portrait;
   ButtonNavigator buttonNavigator;
 };

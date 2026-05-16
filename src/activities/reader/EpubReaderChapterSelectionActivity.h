@@ -1,4 +1,5 @@
 #pragma once
+#include <CrossPointSettings.h>
 #include <Epub.h>
 
 #include <memory>
@@ -12,6 +13,8 @@ class EpubReaderChapterSelectionActivity final : public Activity {
   ButtonNavigator buttonNavigator;
   int currentSpineIndex = 0;
   int selectorIndex = 0;
+  uint8_t effectiveReadingLayout = CrossPointSettings::READING_LAYOUT_HORIZONTAL_PORTRAIT;
+  GfxRenderer::Orientation previousRendererOrientation = GfxRenderer::Orientation::Portrait;
 
   // Number of items that fit on a page, derived from logical screen height.
   // This adapts automatically when switching between portrait and landscape.
@@ -23,11 +26,12 @@ class EpubReaderChapterSelectionActivity final : public Activity {
  public:
   explicit EpubReaderChapterSelectionActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,
                                               const std::shared_ptr<Epub>& epub, const std::string& epubPath,
-                                              const int currentSpineIndex)
+                                              const int currentSpineIndex, const uint8_t effectiveReadingLayout)
       : Activity("EpubReaderChapterSelection", renderer, mappedInput),
         epub(epub),
         epubPath(epubPath),
-        currentSpineIndex(currentSpineIndex) {}
+        currentSpineIndex(currentSpineIndex),
+        effectiveReadingLayout(effectiveReadingLayout) {}
   void onEnter() override;
   void onExit() override;
   void loop() override;

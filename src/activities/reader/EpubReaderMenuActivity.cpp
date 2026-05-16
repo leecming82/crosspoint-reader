@@ -4,20 +4,28 @@
 #include <I18n.h>
 
 #include "MappedInputManager.h"
+#include "ReaderUtils.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
 
 EpubReaderMenuActivity::EpubReaderMenuActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,
                                                const std::string& title, const int currentPage, const int totalPages,
-                                               const int bookProgressPercent, const uint8_t currentReadingLayout,
-                                               const bool hasFootnotes)
+                                               const int bookProgressPercent, const uint8_t configuredReadingLayout,
+                                               const uint8_t resolvedReadingLayout, const bool hasFootnotes)
     : Activity("EpubReaderMenu", renderer, mappedInput),
       menuItems(buildMenuItems(hasFootnotes)),
       title(title),
-      pendingReadingLayout(currentReadingLayout),
+      pendingReadingLayout(configuredReadingLayout),
+      effectiveReadingLayout(resolvedReadingLayout),
       currentPage(currentPage),
       totalPages(totalPages),
-      bookProgressPercent(bookProgressPercent) {}
+      bookProgressPercent(bookProgressPercent) {
+  pendingReadingLayout = normalizeReadingLayout(pendingReadingLayout);
+  effectiveReadingLayout = normalizeReadingLayout(effectiveReadingLayout);
+  if (effectiveReadingLayout == CrossPointSettings::READING_LAYOUT_AUTO) {
+    effectiveReadingLayout = CrossPointSettings::READING_LAYOUT_HORIZONTAL_PORTRAIT;
+  }
+}
 
 std::vector<EpubReaderMenuActivity::MenuItem> EpubReaderMenuActivity::buildMenuItems(bool hasFootnotes) {
   std::vector<MenuItem> items;
@@ -37,12 +45,33 @@ std::vector<EpubReaderMenuActivity::MenuItem> EpubReaderMenuActivity::buildMenuI
   return items;
 }
 
+uint8_t EpubReaderMenuActivity::normalizeReadingLayout(const uint8_t readingLayout) const {
+  return readingLayout < readingLayoutLabels.size() ? readingLayout : CrossPointSettings::READING_LAYOUT_AUTO;
+}
+
+uint8_t EpubReaderMenuActivity::menuLayoutForPending() const {
+  const uint8_t pending = normalizeReadingLayout(pendingReadingLayout);
+  if (pending == CrossPointSettings::READING_LAYOUT_AUTO) {
+    return effectiveReadingLayout;
+  }
+  return pending;
+}
+
+void EpubReaderMenuActivity::applyMenuOrientation() {
+  renderer.setOrientation(ReaderUtils::menuOrientationForReadingLayout(menuLayoutForPending()));
+}
+
 void EpubReaderMenuActivity::onEnter() {
   Activity::onEnter();
+  previousRendererOrientation = renderer.getOrientation();
+  applyMenuOrientation();
   requestUpdate();
 }
 
-void EpubReaderMenuActivity::onExit() { Activity::onExit(); }
+void EpubReaderMenuActivity::onExit() {
+  renderer.setOrientation(previousRendererOrientation);
+  Activity::onExit();
+}
 
 void EpubReaderMenuActivity::loop() {
   // Handle navigation
@@ -61,6 +90,7 @@ void EpubReaderMenuActivity::loop() {
     if (selectedAction == MenuAction::ROTATE_SCREEN) {
       // Cycle layout preview locally; actual layout change happens on menu exit.
       pendingReadingLayout = (pendingReadingLayout + 1) % readingLayoutLabels.size();
+      applyMenuOrientation();
       requestUpdate();
       return;
     }
@@ -136,7 +166,7 @@ void EpubReaderMenuActivity::render(RenderLock&&) {
 
     if (menuItems[i].action == MenuAction::ROTATE_SCREEN) {
       // Render current layout value on the right edge of the content area.
-      const char* value = I18N.get(readingLayoutLabels[pendingReadingLayout]);
+      const char* value = I18N.get(readingLayoutLabels[normalizeReadingLayout(pendingReadingLayout)]);
       const auto width = renderer.getTextWidth(UI_10_FONT_ID, value);
       renderer.drawText(UI_10_FONT_ID, contentX + contentWidth - 20 - width, displayY, value, !isSelected);
     }

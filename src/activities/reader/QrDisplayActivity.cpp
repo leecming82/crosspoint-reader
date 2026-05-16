@@ -4,16 +4,22 @@
 #include <I18n.h>
 
 #include "MappedInputManager.h"
+#include "ReaderUtils.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
 #include "util/QrUtils.h"
 
 void QrDisplayActivity::onEnter() {
   Activity::onEnter();
+  previousRendererOrientation = renderer.getOrientation();
+  renderer.setOrientation(ReaderUtils::menuOrientationForReadingLayout(effectiveReadingLayout));
   requestUpdate();
 }
 
-void QrDisplayActivity::onExit() { Activity::onExit(); }
+void QrDisplayActivity::onExit() {
+  renderer.setOrientation(previousRendererOrientation);
+  Activity::onExit();
+}
 
 void QrDisplayActivity::loop() {
   if (mappedInput.wasReleased(MappedInputManager::Button::Back) ||

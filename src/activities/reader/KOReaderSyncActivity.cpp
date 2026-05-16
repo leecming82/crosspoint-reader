@@ -284,7 +284,8 @@ void KOReaderSyncActivity::performUpload() {
 
 void KOReaderSyncActivity::onEnter() {
   Activity::onEnter();
-  ReaderUtils::applyOrientation(renderer, SETTINGS.orientation);
+  previousRendererOrientation = renderer.getOrientation();
+  renderer.setOrientation(ReaderUtils::menuOrientationForReadingLayout(effectiveReadingLayout));
 
   // Check for credentials first
   if (!KOREADER_STORE.hasCredentials()) {
@@ -310,6 +311,7 @@ void KOReaderSyncActivity::onEnter() {
 }
 
 void KOReaderSyncActivity::onExit() {
+  renderer.setOrientation(previousRendererOrientation);
   Activity::onExit();
 
   if (wifiActivated) {
