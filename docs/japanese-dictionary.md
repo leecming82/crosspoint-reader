@@ -76,7 +76,10 @@ The dictionary lookup should:
 1. Read the bucket for the first Unicode codepoint.
 2. Generate prefixes from the selected context.
 3. Search longest prefixes first.
-4. Return exact term matches before phase-3 deinflection exists.
+4. For the winning prefix, return both exact term matches and deinflected
+   lemma matches.
+5. Rank longest consumed text first, then dictionary tier/score, then exact
+   matches before deinflected matches when rank is otherwise tied.
 
 This fits the kanji-first cursor because most selected buckets are small. Even
 large kanji buckets are a few thousand records, and binary search keeps reads

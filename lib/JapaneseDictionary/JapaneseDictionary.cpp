@@ -173,6 +173,9 @@ void addBareMasuStemCandidates(std::vector<std::string>& out, const std::string&
   }
   addSuffixCandidate(out, word, "し", "する");
   addSuffixCandidate(out, word, "こ", "くる");
+  addSuffixCandidate(out, word, "来", "来る");
+  addSuffixCandidate(out, word, "來", "來る");
+  if (!isGodanARow(last)) addUnique(out, word + "る");
 }
 
 void addNegativeCandidates(std::vector<std::string>& out, const std::string& word) {
@@ -282,6 +285,12 @@ std::vector<DeinflectionCandidate> expandDeinflections(const std::string& input)
     if (before == levelEnd) break;
   }
   return ordered;
+}
+
+bool hasImmediateDeinflectionCandidate(const std::string& input) {
+  std::vector<std::string> next;
+  addInflectionStep(next, input);
+  return !next.empty();
 }
 
 }  // namespace
@@ -509,7 +518,7 @@ bool JapaneseDictionary::lookupContext(const std::string& context, std::vector<J
         lookupSucceeded = false;
         break;
       }
-      if (outMatches.size() > matchesBeforePrefix) break;
+      if (outMatches.size() > matchesBeforePrefix && !hasImmediateDeinflectionCandidate(*it)) break;
     }
 
     const auto candidates = expandDeinflections(*it);
@@ -528,9 +537,9 @@ bool JapaneseDictionary::lookupContext(const std::string& context, std::vector<J
 
   std::stable_sort(outMatches.begin(), outMatches.end(), [](const auto& a, const auto& b) {
     if (a.sourceText.size() != b.sourceText.size()) return a.sourceText.size() > b.sourceText.size();
-    if (a.deinflectionDepth != b.deinflectionDepth) return a.deinflectionDepth < b.deinflectionDepth;
     if (a.tier != b.tier) return a.tier < b.tier;
     if (a.score != b.score) return a.score > b.score;
+    if (a.deinflectionDepth != b.deinflectionDepth) return a.deinflectionDepth < b.deinflectionDepth;
     return a.term < b.term;
   });
   if (outMatches.size() > maxMatches) outMatches.resize(maxMatches);
