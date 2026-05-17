@@ -92,6 +92,8 @@ class EpubReaderActivity final : public Activity {
   void renderContents(std::unique_ptr<Page> page, int orientedMarginTop, int orientedMarginRight,
                       int orientedMarginBottom, int orientedMarginLeft);
   void renderStatusBar() const;
+  int displayPageCount() const;
+  bool ensureSectionIndexedToPage(int targetPage, uint16_t viewportWidth, uint16_t viewportHeight, bool showProgress);
   void silentIndexNextChapterIfNeeded(uint16_t viewportWidth, uint16_t viewportHeight);
   bool saveProgress(int spineIndex, int currentPage, int pageCount);
   void resolveReadingProfile();
