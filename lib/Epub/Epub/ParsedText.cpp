@@ -287,25 +287,9 @@ bool isCjkClosingPunctuation(const uint32_t cp) {
   }
 }
 
-bool isCjkSentenceEndingPeriod(const uint32_t cp) { return cp == 0x002E || cp == 0x3002 || cp == 0xFF0E; }
-
 bool isCjkChunkBoundary(const uint32_t cp) {
   return cp == 0x0021 || cp == 0x002E || cp == 0x003F ||  // ! . ?
          cp == 0x3002 || cp == 0xFF01 || cp == 0xFF0E || cp == 0xFF1F;
-}
-
-bool endsWithHangableClosingPunctuation(const CjkUnit& unit) {
-  return unit.isCjk && isCjkClosingPunctuation(unit.lastCp);
-}
-
-bool shouldAttachNoLineStartToPreviousCjkUnit(const std::vector<CjkUnit>& units, const size_t wordIndex,
-                                              const size_t offset, const EpdFontFamily::Style style,
-                                              const uint32_t cp) {
-  if (units.empty() || !isCjkNoLineStart(cp)) {
-    return false;
-  }
-  const CjkUnit& previous = units.back();
-  return previous.isCjk && previous.wordIndex == wordIndex && previous.endByte == offset && previous.style == style;
 }
 
 // Returns the advance width for a word while ignoring soft hyphen glyphs and optionally appending a visible hyphen.
@@ -809,17 +793,6 @@ bool ParsedText::layoutAndExtractCjkLines(const GfxRenderer& renderer, const int
       const int unitWidth = isCjkClosingPunctuation(cp) && measuredAdvance > 0
                                 ? measuredAdvance
                                 : std::max(cjkCellAdvance, measuredAdvance);
-      if (shouldAttachNoLineStartToPreviousCjkUnit(units, wordIndex, offset, wordStyles[wordIndex], cp)) {
-        CjkUnit& previous = units.back();
-        previous.endByte = nextOffset;
-        previous.lastCp = cp;
-        previous.width = static_cast<uint16_t>(
-            std::min<int>(std::numeric_limits<uint16_t>::max(), previous.width + std::max(1, unitWidth)));
-        previousUnitWasCjk = true;
-        offset = nextOffset;
-        firstUnitInWord = false;
-        continue;
-      }
       units.push_back({wordIndex, offset, nextOffset, cp, cp, static_cast<uint16_t>(std::max(1, unitWidth)),
                        noGapBefore, noBreakBefore, true, wordStyles[wordIndex]});
       previousUnitWasCjk = true;
@@ -860,17 +833,6 @@ bool ParsedText::layoutAndExtractCjkLines(const GfxRenderer& renderer, const int
       return renderer.getKerning(fontId, previous.lastCp, current.firstCp, previous.style);
     }
     return renderer.getSpaceAdvance(fontId, previous.lastCp, current.firstCp, previous.style);
-  };
-
-  auto canHangClosingPunctuation = [cjkCellAdvance](const CjkUnit& unit, const int currentLineWidth,
-                                                    const int candidateWidth, const int effectivePageWidth) {
-    if (!endsWithHangableClosingPunctuation(unit) || currentLineWidth > effectivePageWidth) {
-      return false;
-    }
-    const int overflow = candidateWidth - effectivePageWidth;
-    const int maxOverflow =
-        isCjkSentenceEndingPeriod(unit.lastCp) ? std::max(1, cjkCellAdvance) : std::max(1, cjkCellAdvance / 2);
-    return overflow > 0 && overflow <= maxOverflow;
   };
 
   auto leadingOpeningHangWidth = [&units, firstLineIndent](const bool isFirstLine, const size_t start) {
@@ -984,9 +946,7 @@ bool ParsedText::layoutAndExtractCjkLines(const GfxRenderer& renderer, const int
         candidateWidth += gapBefore(units[i - 1], units[i]);
       }
 
-      const bool hangingClosingPunctuation =
-          canHangClosingPunctuation(units[i], lineWidth, candidateWidth, effectivePageWidth);
-      if (candidateWidth > effectivePageWidth && i > lineStart && !hangingClosingPunctuation) {
+      if (candidateWidth > effectivePageWidth && i > lineStart) {
         break;
       }
 
@@ -994,11 +954,6 @@ bool ParsedText::layoutAndExtractCjkLines(const GfxRenderer& renderer, const int
       if (canBreakAfter(i)) {
         bestBreak = i + 1;
         widthAtBestBreak = lineWidth;
-      }
-
-      if (candidateWidth > effectivePageWidth) {
-        ++i;
-        break;
       }
     }
 
