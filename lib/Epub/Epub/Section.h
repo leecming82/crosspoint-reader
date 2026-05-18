@@ -25,8 +25,6 @@ class Section {
 
  public:
   uint16_t pageCount = 0;
-  uint16_t estimatedPageCount = 0;
-  bool fullyIndexed = true;
   int currentPage = 0;
 
   explicit Section(const std::shared_ptr<Epub>& epub, const int spineIndex, GfxRenderer& renderer)
@@ -42,7 +40,7 @@ class Section {
   bool createSectionFile(int fontId, float lineCompression, bool extraParagraphSpacing, uint8_t paragraphAlignment,
                          uint16_t viewportWidth, uint16_t viewportHeight, bool hyphenationEnabled, bool embeddedStyle,
                          uint8_t imageRendering, bool focusReadingEnabled, uint8_t readingLayout,
-                         const std::function<void(size_t, size_t)>& progressFn = nullptr, uint16_t maxPages = 0);
+                         const std::function<void(size_t, size_t)>& progressFn = nullptr);
   std::unique_ptr<Page> loadPageFromSectionFile();
 
   // Look up the page number for an anchor id from the section cache file.

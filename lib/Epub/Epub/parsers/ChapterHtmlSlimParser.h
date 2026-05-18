@@ -28,12 +28,6 @@ class ChapterHtmlSlimParser {
   GfxRenderer& renderer;
   std::function<void(std::unique_ptr<Page>, uint16_t, uint16_t)> completePageFn;
   std::function<void(size_t, size_t)> progressFn;  // Indexing progress callback: bytes read, total bytes
-  XML_Parser activeParser = nullptr;
-  uint32_t sourceFileSize = 0;
-  uint32_t estimateSourceBytes = 0;
-  uint16_t maxPages = 0;
-  bool pageLimitReached = false;
-  bool reachedEndOfDocument = false;
   int depth = 0;
   int skipUntilDepth = INT_MAX;
   int boldUntilDepth = INT_MAX;
@@ -108,8 +102,6 @@ class ChapterHtmlSlimParser {
   void flushPartWordBuffer();
   void commitPendingAnchor();
   void makePages();
-  uint32_t currentSourceByteOffset() const;
-  void stopAtPageLimitIfNeeded();
   // XML callbacks
   static void XMLCALL startElement(void* userData, const XML_Char* name, const XML_Char** atts);
   static void XMLCALL characterData(void* userData, const XML_Char* s, int len);
@@ -126,7 +118,7 @@ class ChapterHtmlSlimParser {
                                  const bool embeddedStyle, const std::string& contentBase,
                                  const std::string& imageBasePath, const uint8_t imageRendering = 0,
                                  const std::function<void(size_t, size_t)>& progressFn = nullptr,
-                                 const CssParser* cssParser = nullptr, const uint16_t maxPages = 0)
+                                 const CssParser* cssParser = nullptr)
 
       : epub(epub),
         filepath(filepath),
@@ -145,13 +137,10 @@ class ChapterHtmlSlimParser {
         embeddedStyle(embeddedStyle),
         imageRendering(imageRendering),
         contentBase(contentBase),
-        imageBasePath(imageBasePath),
-        maxPages(maxPages) {}
+        imageBasePath(imageBasePath) {}
 
   ~ChapterHtmlSlimParser() = default;
   bool parseAndBuildPages();
   void addLineToPage(std::shared_ptr<TextBlock> line);
   const std::vector<std::pair<std::string, uint16_t>>& getAnchors() const { return anchorData; }
-  bool isFullyParsed() const { return reachedEndOfDocument; }
-  uint16_t estimateTotalPages() const;
 };

@@ -8,9 +8,7 @@
 #include <XmlParserUtils.h>
 #include <expat.h>
 
-#include <algorithm>
 #include <iterator>
-#include <limits>
 
 #include "Epub.h"
 #include "Epub/Page.h"
@@ -94,45 +92,6 @@ bool isGeneratedKoboAnchor(const char* id) {
     return false;
   }
   return strncmp(id, "kobo.", 5) == 0 || strncmp(id, "kobospan", 8) == 0 || strcmp(id, "koboSpanStyle") == 0;
-}
-
-uint32_t ChapterHtmlSlimParser::currentSourceByteOffset() const {
-  if (!activeParser) {
-    return sourceFileSize;
-  }
-
-  const long byteIndex = XML_GetCurrentByteIndex(activeParser);
-  if (byteIndex < 0) {
-    return 0;
-  }
-  return static_cast<uint32_t>(byteIndex);
-}
-
-uint16_t ChapterHtmlSlimParser::estimateTotalPages() const {
-  if (reachedEndOfDocument) {
-    return static_cast<uint16_t>(completedPageCount);
-  }
-
-  if (sourceFileSize == 0 || estimateSourceBytes == 0 || completedPageCount == 0) {
-    return static_cast<uint16_t>(completedPageCount);
-  }
-
-  const uint32_t estimated = static_cast<uint32_t>(
-      (static_cast<uint64_t>(sourceFileSize) * completedPageCount + estimateSourceBytes / 2) / estimateSourceBytes);
-  return static_cast<uint16_t>(
-      std::min<uint32_t>(std::numeric_limits<uint16_t>::max(), std::max<uint32_t>(completedPageCount, estimated)));
-}
-
-void ChapterHtmlSlimParser::stopAtPageLimitIfNeeded() {
-  if (maxPages == 0 || pageLimitReached || completedPageCount < maxPages) {
-    return;
-  }
-
-  pageLimitReached = true;
-  estimateSourceBytes = currentSourceByteOffset();
-  if (activeParser) {
-    XML_StopParser(activeParser, XML_TRUE);
-  }
 }
 
 // Update effective bold/italic/underline based on block style and inline style stack
@@ -590,10 +549,6 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
                   self->completePageFn(std::move(self->currentPage), self->xpathParagraphIndex,
                                        self->xpathListItemIndex);
                   self->completedPageCount++;
-                  self->stopAtPageLimitIfNeeded();
-                  if (self->pageLimitReached) {
-                    return;
-                  }
                   self->currentPage.reset(new Page());
                   if (!self->currentPage) {
                     LOG_ERR("EHP", "Failed to create new page");
@@ -871,9 +826,6 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
 
 void XMLCALL ChapterHtmlSlimParser::characterData(void* userData, const XML_Char* s, const int len) {
   auto* self = static_cast<ChapterHtmlSlimParser*>(userData);
-  if (self->pageLimitReached) {
-    return;
-  }
 
   // Skip content of nested table
   if (self->tableDepth > 1) {
@@ -1253,7 +1205,6 @@ bool ChapterHtmlSlimParser::parseAndBuildPages() {
   }
 
   const size_t fileSize = file.size();
-  sourceFileSize = static_cast<uint32_t>(fileSize);
   // Get file size to decide whether to show indexing progress.
   if (progressFn && fileSize >= MIN_SIZE_FOR_POPUP) {
     progressFn(0, fileSize);
@@ -1262,7 +1213,6 @@ bool ChapterHtmlSlimParser::parseAndBuildPages() {
   XML_SetUserData(parser, this);
   XML_SetElementHandler(parser, startElement, endElement);
   XML_SetCharacterDataHandler(parser, characterData);
-  activeParser = parser;
 
   // Compute the time taken to parse and build pages
   const uint32_t chapterStartTime = millis();
@@ -1289,10 +1239,7 @@ bool ChapterHtmlSlimParser::parseAndBuildPages() {
 
     done = file.available() == 0;
 
-    const auto parseStatus = XML_ParseBuffer(parser, static_cast<int>(len), done);
-    if (parseStatus == XML_STATUS_SUSPENDED && pageLimitReached) {
-      done = 1;
-    } else if (parseStatus == XML_STATUS_ERROR) {
+    if (XML_ParseBuffer(parser, static_cast<int>(len), done) == XML_STATUS_ERROR) {
       LOG_ERR("EHP", "Parse error at line %lu:\n%s", XML_GetCurrentLineNumber(parser),
               XML_ErrorString(XML_GetErrorCode(parser)));
       destroyXmlParser(parser);
@@ -1313,14 +1260,11 @@ bool ChapterHtmlSlimParser::parseAndBuildPages() {
   } while (!done);
   LOG_DBG("EHP", "Time to parse and build pages: %lu ms", millis() - chapterStartTime);
 
-  activeParser = nullptr;
   destroyXmlParser(parser);
   file.close();
 
-  reachedEndOfDocument = !pageLimitReached;
-
   // Process last page if there is still text
-  if (!pageLimitReached && currentTextBlock) {
+  if (currentTextBlock) {
     makePages();
     commitPendingAnchor();
     completePageFn(std::move(currentPage), xpathParagraphIndex, xpathListItemIndex);
@@ -1333,10 +1277,6 @@ bool ChapterHtmlSlimParser::parseAndBuildPages() {
 }
 
 void ChapterHtmlSlimParser::addLineToPage(std::shared_ptr<TextBlock> line) {
-  if (pageLimitReached) {
-    return;
-  }
-
   const int lineHeight = renderer.getLineHeight(fontId) * lineCompression;
 
   if (!currentPage) {
@@ -1347,10 +1287,6 @@ void ChapterHtmlSlimParser::addLineToPage(std::shared_ptr<TextBlock> line) {
   if (currentPageNextY + lineHeight > viewportHeight) {
     completePageFn(std::move(currentPage), xpathParagraphIndex, xpathListItemIndex);
     completedPageCount++;
-    stopAtPageLimitIfNeeded();
-    if (pageLimitReached) {
-      return;
-    }
     currentPage.reset(new Page());
     currentPageNextY = 0;
   }
