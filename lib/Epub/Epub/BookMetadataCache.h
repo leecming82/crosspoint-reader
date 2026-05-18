@@ -20,10 +20,29 @@ class BookMetadataCache {
     std::string href;
     uint32_t cumulativeSize;
     int16_t tocIndex;
+    uint16_t physicalSpineIndex;
+    uint32_t sourceStartOffset;
+    uint32_t sourceEndOffset;
+    uint16_t splitIndex;
+    uint16_t splitCount;
 
-    SpineEntry() : cumulativeSize(0), tocIndex(-1) {}
+    SpineEntry()
+        : cumulativeSize(0),
+          tocIndex(-1),
+          physicalSpineIndex(0),
+          sourceStartOffset(0),
+          sourceEndOffset(0),
+          splitIndex(0),
+          splitCount(1) {}
     SpineEntry(std::string href, const uint32_t cumulativeSize, const int16_t tocIndex)
-        : href(std::move(href)), cumulativeSize(cumulativeSize), tocIndex(tocIndex) {}
+        : href(std::move(href)),
+          cumulativeSize(cumulativeSize),
+          tocIndex(tocIndex),
+          physicalSpineIndex(0),
+          sourceStartOffset(0),
+          sourceEndOffset(0),
+          splitIndex(0),
+          splitCount(1) {}
   };
 
   struct TocEntry {
@@ -42,11 +61,22 @@ class BookMetadataCache {
           spineIndex(spineIndex) {}
   };
 
+  struct AnchorEntry {
+    std::string href;
+    std::string anchor;
+    int16_t spineIndex;
+
+    AnchorEntry() : spineIndex(-1) {}
+    AnchorEntry(std::string href, std::string anchor, const int16_t spineIndex)
+        : href(std::move(href)), anchor(std::move(anchor)), spineIndex(spineIndex) {}
+  };
+
  private:
   std::string cachePath;
   uint32_t lutOffset;
   uint16_t spineCount;
   uint16_t tocCount;
+  uint16_t anchorCount;
   bool loaded;
   bool buildMode;
 
@@ -78,14 +108,22 @@ class BookMetadataCache {
 
   uint32_t writeSpineEntry(FsFile& file, const SpineEntry& entry) const;
   uint32_t writeTocEntry(FsFile& file, const TocEntry& entry) const;
+  uint32_t writeAnchorEntry(FsFile& file, const AnchorEntry& entry) const;
   SpineEntry readSpineEntry(FsFile& file) const;
   TocEntry readTocEntry(FsFile& file) const;
+  AnchorEntry readAnchorEntry(FsFile& file) const;
 
  public:
   BookMetadata coreMetadata;
 
   explicit BookMetadataCache(std::string cachePath)
-      : cachePath(std::move(cachePath)), lutOffset(0), spineCount(0), tocCount(0), loaded(false), buildMode(false) {}
+      : cachePath(std::move(cachePath)),
+        lutOffset(0),
+        spineCount(0),
+        tocCount(0),
+        anchorCount(0),
+        loaded(false),
+        buildMode(false) {}
   ~BookMetadataCache() = default;
 
   // Building phase (stream to disk immediately)
@@ -106,6 +144,8 @@ class BookMetadataCache {
   bool load();
   SpineEntry getSpineEntry(int index);
   TocEntry getTocEntry(int index);
+  AnchorEntry getAnchorEntry(int index);
+  int resolveAnchorToSpineIndex(const std::string& href, const std::string& anchor);
   int getSpineCount() const { return spineCount; }
   int getTocCount() const { return tocCount; }
   bool isLoaded() const { return loaded; }

@@ -8,6 +8,8 @@
 #include <XmlParserUtils.h>
 #include <expat.h>
 
+#include <algorithm>
+#include <cstring>
 #include <iterator>
 
 #include "Epub.h"
@@ -1205,14 +1207,30 @@ bool ChapterHtmlSlimParser::parseAndBuildPages() {
   }
 
   const size_t fileSize = file.size();
+  const bool parseFragment = sourceStartOffset > 0 || (sourceEndOffset > 0 && sourceEndOffset < fileSize);
+  const size_t parseStart = parseFragment ? std::min<size_t>(sourceStartOffset, fileSize) : 0;
+  const size_t parseEnd =
+      parseFragment && sourceEndOffset > parseStart ? std::min<size_t>(sourceEndOffset, fileSize) : fileSize;
+  const size_t parseSize = parseEnd > parseStart ? parseEnd - parseStart : 0;
   // Get file size to decide whether to show indexing progress.
-  if (progressFn && fileSize >= MIN_SIZE_FOR_POPUP) {
-    progressFn(0, fileSize);
+  if (progressFn && parseSize >= MIN_SIZE_FOR_POPUP) {
+    progressFn(0, parseSize);
   }
 
   XML_SetUserData(parser, this);
   XML_SetElementHandler(parser, startElement, endElement);
   XML_SetCharacterDataHandler(parser, characterData);
+
+  if (parseFragment) {
+    constexpr const char* fragmentPrefix = "<html><body>";
+    if (XML_Parse(parser, fragmentPrefix, static_cast<int>(strlen(fragmentPrefix)), XML_FALSE) == XML_STATUS_ERROR) {
+      LOG_ERR("EHP", "Parse error in fragment prefix:\n%s", XML_ErrorString(XML_GetErrorCode(parser)));
+      destroyXmlParser(parser);
+      file.close();
+      return false;
+    }
+    file.seek(parseStart);
+  }
 
   // Compute the time taken to parse and build pages
   const uint32_t chapterStartTime = millis();
@@ -1227,19 +1245,21 @@ bool ChapterHtmlSlimParser::parseAndBuildPages() {
       return false;
     }
 
-    const size_t len = file.read(buf, PARSE_BUFFER_SIZE);
+    const size_t remaining = parseFragment ? parseSize - bytesRead : PARSE_BUFFER_SIZE;
+    const size_t wanted = parseFragment ? std::min<size_t>(PARSE_BUFFER_SIZE, remaining) : PARSE_BUFFER_SIZE;
+    const size_t len = wanted > 0 ? file.read(buf, wanted) : 0;
     bytesRead += len;
 
-    if (len == 0 && file.available() > 0) {
+    if (len == 0 && (!parseFragment && file.available() > 0)) {
       LOG_ERR("EHP", "File read error");
       destroyXmlParser(parser);
       file.close();
       return false;
     }
 
-    done = file.available() == 0;
+    done = parseFragment ? bytesRead >= parseSize : file.available() == 0;
 
-    if (XML_ParseBuffer(parser, static_cast<int>(len), done) == XML_STATUS_ERROR) {
+    if (XML_ParseBuffer(parser, static_cast<int>(len), done && !parseFragment) == XML_STATUS_ERROR) {
       LOG_ERR("EHP", "Parse error at line %lu:\n%s", XML_GetCurrentLineNumber(parser),
               XML_ErrorString(XML_GetErrorCode(parser)));
       destroyXmlParser(parser);
@@ -1251,13 +1271,24 @@ bool ChapterHtmlSlimParser::parseAndBuildPages() {
     if (now - lastHeartbeat >= INDEXING_HEARTBEAT_MS) {
       lastHeartbeat = now;
       LOG_DBG("EHP", "Indexing heartbeat: %u/%u bytes, pages=%d, heap=%u", static_cast<unsigned>(bytesRead),
-              static_cast<unsigned>(fileSize), completedPageCount, static_cast<unsigned>(ESP.getFreeHeap()));
-      if (progressFn && fileSize >= MIN_SIZE_FOR_POPUP) {
-        progressFn(bytesRead, fileSize);
+              static_cast<unsigned>(parseSize), completedPageCount, static_cast<unsigned>(ESP.getFreeHeap()));
+      if (progressFn && parseSize >= MIN_SIZE_FOR_POPUP) {
+        progressFn(bytesRead, parseSize);
       }
       delay(1);
     }
   } while (!done);
+
+  if (parseFragment) {
+    constexpr const char* fragmentSuffix = "</body></html>";
+    if (XML_Parse(parser, fragmentSuffix, static_cast<int>(strlen(fragmentSuffix)), XML_TRUE) == XML_STATUS_ERROR) {
+      LOG_ERR("EHP", "Parse error in fragment suffix at line %lu:\n%s", XML_GetCurrentLineNumber(parser),
+              XML_ErrorString(XML_GetErrorCode(parser)));
+      destroyXmlParser(parser);
+      file.close();
+      return false;
+    }
+  }
   LOG_DBG("EHP", "Time to parse and build pages: %lu ms", millis() - chapterStartTime);
 
   destroyXmlParser(parser);

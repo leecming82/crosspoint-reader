@@ -8,6 +8,7 @@
 namespace FsHelpers {
 
 std::string normalisePath(const std::string& path);
+std::string decodePercentEscapes(const std::string& value);
 
 void sortFileList(std::vector<std::string>& strs);
 

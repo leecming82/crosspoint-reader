@@ -379,6 +379,8 @@ bool Epub::load(const bool buildIfMissing, const bool skipLoadingCss) {
   // Cache doesn't exist or is invalid, build it
   LOG_DBG("EBP", "Cache not found, building spine/TOC cache");
   setupCacheDir();
+  Storage.removeDir((cachePath + "/sections").c_str());
+  Storage.remove((cachePath + "/progress.bin").c_str());
 
   const uint32_t indexingStart = millis();
 
@@ -882,20 +884,41 @@ float Epub::calculateProgress(const int currentSpineIndex, const float currentSp
   return totalProgress / static_cast<float>(bookSize);
 }
 
-int Epub::resolveHrefToSpineIndex(const std::string& href) const {
+int Epub::resolveHrefToSpineIndex(const std::string& href, const int currentSpineIndex) const {
   if (!bookMetadataCache || !bookMetadataCache->isLoaded()) return -1;
 
   // Extract filename (remove #anchor)
-  std::string target = href;
+  std::string target = FsHelpers::decodePercentEscapes(href);
   size_t hashPos = target.find('#');
+  std::string anchor;
+  if (hashPos != std::string::npos && hashPos + 1 < target.size()) {
+    anchor = target.substr(hashPos + 1);
+  }
   if (hashPos != std::string::npos) target = target.substr(0, hashPos);
 
   // Same-file reference (anchor-only)
-  if (target.empty()) return -1;
+  if (target.empty()) {
+    if (!anchor.empty() && currentSpineIndex >= 0 && currentSpineIndex < getSpineItemsCount()) {
+      const auto currentSpine = getSpineItem(currentSpineIndex);
+      const int anchorSpineIndex = bookMetadataCache->resolveAnchorToSpineIndex(currentSpine.href, anchor);
+      if (anchorSpineIndex >= 0) {
+        return anchorSpineIndex;
+      }
+      return currentSpineIndex;
+    }
+    return -1;
+  }
 
   // Extract just the filename for comparison
   size_t targetSlash = target.find_last_of('/');
   std::string targetFilename = (targetSlash != std::string::npos) ? target.substr(targetSlash + 1) : target;
+
+  if (!anchor.empty()) {
+    const int anchorSpineIndex = bookMetadataCache->resolveAnchorToSpineIndex(target, anchor);
+    if (anchorSpineIndex >= 0) {
+      return anchorSpineIndex;
+    }
+  }
 
   for (int i = 0; i < getSpineItemsCount(); i++) {
     const auto& spineHref = getSpineItem(i).href;

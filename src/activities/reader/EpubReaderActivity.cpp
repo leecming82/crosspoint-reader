@@ -22,6 +22,7 @@
 #include "CrossPointState.h"
 #include "EpubReaderChapterSelectionActivity.h"
 #include "EpubReaderFootnotesActivity.h"
+#include "EpubReaderNavigation.h"
 #include "EpubReaderPercentSelectionActivity.h"
 #include "EpubReaderUtils.h"
 #include "KOReaderCredentialStore.h"
@@ -1300,12 +1301,8 @@ void EpubReaderActivity::renderStatusBar() const {
     }
 
   } else if (SETTINGS.statusBarTitle == CrossPointSettings::STATUS_BAR_TITLE::CHAPTER_TITLE) {
-    title = std::string("Pages 1-") + std::to_string(static_cast<int>(pageCount));
-    const int tocIndex = epub->getTocIndexForSpineIndex(currentSpineIndex);
-    if (tocIndex != -1) {
-      const auto tocItem = epub->getTocItem(tocIndex);
-      title = StringUtils::uiSafeLabelOrFallback(tocItem.title, title);
-    }
+    title = EpubReaderNavigation::titleForSpine(epub, currentSpineIndex,
+                                                std::string("Section ") + std::to_string(currentSpineIndex + 1));
 
   } else if (SETTINGS.statusBarTitle == CrossPointSettings::STATUS_BAR_TITLE::BOOK_TITLE) {
     title = StringUtils::uiSafeBookTitle(epub->getTitle(), epub->getPath());
@@ -1337,10 +1334,9 @@ void EpubReaderActivity::navigateToHref(const std::string& hrefStr, const bool s
   bool sameFile = !hrefStr.empty() && hrefStr[0] == '#';
 
   int targetSpineIndex;
-  if (sameFile) {
+  targetSpineIndex = epub->resolveHrefToSpineIndex(hrefStr, currentSpineIndex);
+  if (sameFile && targetSpineIndex < 0) {
     targetSpineIndex = currentSpineIndex;
-  } else {
-    targetSpineIndex = epub->resolveHrefToSpineIndex(hrefStr);
   }
 
   if (targetSpineIndex < 0) {

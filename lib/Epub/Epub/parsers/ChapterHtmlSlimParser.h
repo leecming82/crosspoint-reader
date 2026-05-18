@@ -54,6 +54,8 @@ class ChapterHtmlSlimParser {
   uint8_t imageRendering;
   std::string contentBase;
   std::string imageBasePath;
+  uint32_t sourceStartOffset = 0;
+  uint32_t sourceEndOffset = 0;
   int imageCounter = 0;
 
   // Style tracking (replaces depth-based approach)
@@ -118,7 +120,8 @@ class ChapterHtmlSlimParser {
                                  const bool embeddedStyle, const std::string& contentBase,
                                  const std::string& imageBasePath, const uint8_t imageRendering = 0,
                                  const std::function<void(size_t, size_t)>& progressFn = nullptr,
-                                 const CssParser* cssParser = nullptr)
+                                 const CssParser* cssParser = nullptr, const uint32_t sourceStartOffset = 0,
+                                 const uint32_t sourceEndOffset = 0)
 
       : epub(epub),
         filepath(filepath),
@@ -137,7 +140,9 @@ class ChapterHtmlSlimParser {
         embeddedStyle(embeddedStyle),
         imageRendering(imageRendering),
         contentBase(contentBase),
-        imageBasePath(imageBasePath) {}
+        imageBasePath(imageBasePath),
+        sourceStartOffset(sourceStartOffset),
+        sourceEndOffset(sourceEndOffset) {}
 
   ~ChapterHtmlSlimParser() = default;
   bool parseAndBuildPages();

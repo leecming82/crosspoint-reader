@@ -3,13 +3,18 @@
 #include <GfxRenderer.h>
 #include <I18n.h>
 
+#include <algorithm>
+
 #include "MappedInputManager.h"
 #include "ReaderUtils.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
-#include "util/StringUtils.h"
 
-int EpubReaderChapterSelectionActivity::getTotalItems() const { return epub->getTocItemsCount(); }
+int EpubReaderChapterSelectionActivity::getTotalItems() const { return static_cast<int>(navigationEntries.size()); }
+
+void EpubReaderChapterSelectionActivity::buildNavigationEntries() {
+  navigationEntries = EpubReaderNavigation::buildEntries(epub);
+}
 
 int EpubReaderChapterSelectionActivity::getPageItems() const {
   // Layout constants used in renderScreen
@@ -36,9 +41,23 @@ void EpubReaderChapterSelectionActivity::onEnter() {
     return;
   }
 
-  selectorIndex = epub->getTocIndexForSpineIndex(currentSpineIndex);
-  if (selectorIndex == -1) {
-    selectorIndex = 0;
+  buildNavigationEntries();
+  selectorIndex = 0;
+  for (int i = 0; i < static_cast<int>(navigationEntries.size()); i++) {
+    if (navigationEntries[i].spineIndex == currentSpineIndex) {
+      selectorIndex = i;
+      break;
+    }
+  }
+  if (selectorIndex == 0 && !navigationEntries.empty() && navigationEntries[0].spineIndex != currentSpineIndex) {
+    const int tocIndex = epub->getTocIndexForSpineIndex(currentSpineIndex);
+    for (int i = 0; i < static_cast<int>(navigationEntries.size()); i++) {
+      if (navigationEntries[i].spineIndex >= 0 &&
+          epub->getTocIndexForSpineIndex(navigationEntries[i].spineIndex) == tocIndex) {
+        selectorIndex = i;
+        break;
+      }
+    }
   }
 
   // Trigger first update
@@ -55,7 +74,9 @@ void EpubReaderChapterSelectionActivity::loop() {
   const int totalItems = getTotalItems();
 
   if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
-    const auto newSpineIndex = epub->getSpineIndexForTocIndex(selectorIndex);
+    const auto newSpineIndex = (selectorIndex >= 0 && selectorIndex < static_cast<int>(navigationEntries.size()))
+                                   ? navigationEntries[selectorIndex].spineIndex
+                                   : -1;
     if (newSpineIndex == -1) {
       ActivityResult result;
       result.isCancelled = true;
@@ -127,14 +148,12 @@ void EpubReaderChapterSelectionActivity::render(RenderLock&&) {
     const int displayY = 60 + contentY + i * 30;
     const bool isSelected = (itemIndex == selectorIndex);
 
-    auto item = epub->getTocItem(itemIndex);
+    const auto& item = navigationEntries[itemIndex];
 
     // Indent per TOC level while keeping content within the gutter-safe region.
     const int indentSize = contentX + 20 + (item.level - 1) * 15;
-    const std::string chapterFallback = std::string("Chapter ") + std::to_string(itemIndex + 1);
-    const std::string displayTitle = StringUtils::uiSafeLabelOrFallback(item.title, chapterFallback);
     const std::string chapterName =
-        renderer.truncatedText(UI_10_FONT_ID, displayTitle.c_str(), contentWidth - 40 - indentSize);
+        renderer.truncatedText(UI_10_FONT_ID, item.title.c_str(), contentWidth - 40 - indentSize);
 
     renderer.drawText(UI_10_FONT_ID, indentSize, displayY, chapterName.c_str(), !isSelected);
   }

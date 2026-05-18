@@ -3,8 +3,10 @@
 #include <Epub.h>
 
 #include <memory>
+#include <vector>
 
 #include "activities/Activity.h"
+#include "activities/reader/EpubReaderNavigation.h"
 #include "util/ButtonNavigator.h"
 
 class EpubReaderChapterSelectionActivity final : public Activity {
@@ -16,12 +18,15 @@ class EpubReaderChapterSelectionActivity final : public Activity {
   uint8_t effectiveReadingLayout = CrossPointSettings::READING_LAYOUT_HORIZONTAL_PORTRAIT;
   GfxRenderer::Orientation previousRendererOrientation = GfxRenderer::Orientation::Portrait;
 
+  std::vector<EpubReaderNavigation::Entry> navigationEntries;
+
   // Number of items that fit on a page, derived from logical screen height.
   // This adapts automatically when switching between portrait and landscape.
   int getPageItems() const;
 
   // Total TOC items count
   int getTotalItems() const;
+  void buildNavigationEntries();
 
  public:
   explicit EpubReaderChapterSelectionActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,
