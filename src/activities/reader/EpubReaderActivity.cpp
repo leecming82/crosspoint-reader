@@ -220,7 +220,7 @@ int drawRotatedWrappedLines(const GfxRenderer& renderer, const int fontId, const
 void drawJapanesePopupLine(const GfxRenderer& renderer, const int fontId, const int x, const int y,
                            const std::string& text, const int maxWidth) {
   if (!hasVisibleDefinitionText(text)) return;
-  constexpr int physicalLeftPadding = 36;
+  constexpr int physicalLeftPadding = 44;
   constexpr int glyphGap = 2;
   const int effectiveMaxWidth = maxWidth - physicalLeftPadding;
   if (effectiveMaxWidth <= 0) return;
