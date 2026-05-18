@@ -1156,6 +1156,9 @@ void EpubReaderActivity::silentIndexNextChapterIfNeeded(const uint16_t viewportW
                                      SETTINGS.imageRendering, SETTINGS.focusReadingEnabled, effectiveReadingLayout)) {
     LOG_ERR("ERS", "Failed silent indexing for chapter: %d", nextSpineIndex);
   }
+  if (auto* fcm = renderer.getFontCacheManager()) {
+    fcm->clearPersistentCache();
+  }
 }
 
 bool EpubReaderActivity::saveProgress(int spineIndex, int currentPage, int pageCount) {
@@ -1227,9 +1230,8 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
   const auto tDisplay = millis();
 
   // Save BW buffer to reset buffer/display state after grayscale data sync.
-  // If indexing fragmented heap enough that this fails, skip AA for this page;
-  // otherwise X3 grayscale can leave RED RAM unsynced and force a slow full sync
-  // on the next page turn.
+  // If fragmented heap prevents this allocation, still render AA and restore the
+  // BW state by re-rendering below. That keeps AA uniform across dense pages.
   const bool bwBufferStored = SETTINGS.textAntiAliasing && renderer.storeBwBuffer();
   const auto tBwStore = millis();
 
@@ -1253,7 +1255,6 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
     renderer.displayGrayBuffer();
     const auto tGrayDisplay = millis();
     renderer.setRenderMode(GfxRenderer::BW);
-    // restore the bw data
     renderer.restoreBwBuffer();
     const auto tBwRestore = millis();
 
@@ -1265,8 +1266,38 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
             tGrayMsb - tGrayLsb, tGrayDisplay - tGrayMsb, tBwRestore - tGrayDisplay, tEnd - t0);
   } else {
     if (SETTINGS.textAntiAliasing) {
-      LOG_ERR("ERS", "Skipping text AA: failed to store BW buffer (free=%u max=%u)",
-              static_cast<unsigned>(ESP.getFreeHeap()), static_cast<unsigned>(ESP.getMaxAllocHeap()));
+      LOG_ERR("ERS", "Rendering text AA without BW backup (free=%u max=%u)", static_cast<unsigned>(ESP.getFreeHeap()),
+              static_cast<unsigned>(ESP.getMaxAllocHeap()));
+
+      renderer.clearScreen(0x00);
+      renderer.setRenderMode(GfxRenderer::GRAYSCALE_LSB);
+      page->render(renderer, effectiveReaderFontId(), orientedMarginLeft, orientedMarginTop);
+      renderer.copyGrayscaleLsbBuffers();
+      const auto tGrayLsb = millis();
+
+      renderer.clearScreen(0x00);
+      renderer.setRenderMode(GfxRenderer::GRAYSCALE_MSB);
+      page->render(renderer, effectiveReaderFontId(), orientedMarginLeft, orientedMarginTop);
+      renderer.copyGrayscaleMsbBuffers();
+      const auto tGrayMsb = millis();
+
+      renderer.displayGrayBuffer();
+      const auto tGrayDisplay = millis();
+
+      renderer.setRenderMode(GfxRenderer::BW);
+      renderer.clearScreen();
+      page->render(renderer, effectiveReaderFontId(), orientedMarginLeft, orientedMarginTop);
+      renderStatusBar();
+      renderer.cleanupGrayscaleWithFrameBuffer();
+      const auto tBwRestore = millis();
+
+      const auto tEnd = millis();
+      LOG_DBG("ERS",
+              "Page render: prewarm=%lums bw_render=%lums display=%lums bw_store=%lums "
+              "gray_lsb=%lums gray_msb=%lums gray_display=%lums bw_rerender=%lums total=%lums",
+              tPrewarm - t0, tBwRender - tPrewarm, tDisplay - tBwRender, tBwStore - tDisplay, tGrayLsb - tBwStore,
+              tGrayMsb - tGrayLsb, tGrayDisplay - tGrayMsb, tBwRestore - tGrayDisplay, tEnd - t0);
+      return;
     }
     const auto tBwRestore = millis();
 
