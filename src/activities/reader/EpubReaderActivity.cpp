@@ -222,25 +222,37 @@ void drawJapanesePopupLine(const GfxRenderer& renderer, const int fontId, const 
   if (!hasVisibleDefinitionText(text)) return;
   constexpr int physicalLeftPadding = 44;
   constexpr int glyphGap = 2;
-  const int effectiveMaxWidth = maxWidth - physicalLeftPadding;
-  if (effectiveMaxWidth <= 0) return;
-  const std::string fitted = renderer.truncatedText(fontId, text.c_str(), effectiveMaxWidth);
-  if (!hasVisibleDefinitionText(fitted)) return;
 
   int drawY = y - physicalLeftPadding;
   const int minY = y - maxWidth;
   const int lineHeight = renderer.getLineHeight(fontId);
   const int cjkCellAdvance = std::max(1, lineHeight * 9 / 10);
   const int maxGlyphStep = std::max(lineHeight, cjkCellAdvance) + glyphGap;
-  const auto* p = reinterpret_cast<const unsigned char*>(fitted.c_str());
+  const char* ellipsis = "\xe2\x80\xa6";
+  const int ellipsisAdvance =
+      std::min(std::max(renderer.getTextAdvanceX(fontId, ellipsis, EpdFontFamily::REGULAR), cjkCellAdvance) + glyphGap,
+               maxGlyphStep);
+  bool overflow = false;
+
+  const auto* p = reinterpret_cast<const unsigned char*>(text.c_str());
   while (*p != '\0' && drawY > minY) {
     const auto* cpStart = p;
     utf8NextCodepoint(&p);
     const std::string glyph(reinterpret_cast<const char*>(cpStart), p - cpStart);
-    renderer.drawText(fontId, x, drawY, glyph.c_str(), true);
     const int measuredAdvance = renderer.getTextAdvanceX(fontId, glyph.c_str(), EpdFontFamily::REGULAR);
     const int glyphAdvance = measuredAdvance > 0 ? measuredAdvance : cjkCellAdvance;
-    drawY -= std::min(glyphAdvance + glyphGap, maxGlyphStep);
+    const int step = std::min(glyphAdvance + glyphGap, maxGlyphStep);
+    if (*p != '\0' && drawY - step <= minY && drawY - ellipsisAdvance > minY) {
+      renderer.drawText(fontId, x, drawY, ellipsis, true);
+      overflow = true;
+      break;
+    }
+    renderer.drawText(fontId, x, drawY, glyph.c_str(), true);
+    drawY -= step;
+  }
+
+  if (!overflow && *p != '\0' && drawY > minY) {
+    renderer.drawText(fontId, x, drawY, ellipsis, true);
   }
 }
 
