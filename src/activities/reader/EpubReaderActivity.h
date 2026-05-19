@@ -79,6 +79,13 @@ class EpubReaderActivity final : public Activity {
   void moveKanjiPopupMatch(int direction);
   void hideKanjiPopup();
 
+  // Tracks whether this book is currently removed from Recent Books by the
+  // removeReadBooksFromRecents feature (set at End-of-Book, cleared if paged back in).
+  bool recentsEntryRemoved = false;
+  // Set when the reader is left at end-of-book and SETTINGS.moveFinishedToReadFolder is on.
+  // Consumed in onExit() to relocate the finished book into /Read/.
+  bool pendingReadFolderMove = false;
+
   // Footnote support
   std::vector<FootnoteEntry> currentPageFootnotes;
   struct SavedPosition {

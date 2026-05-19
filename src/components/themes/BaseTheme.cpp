@@ -268,7 +268,7 @@ void BaseTheme::drawList(const GfxRenderer& renderer, Rect rect, int itemCount, 
   // Draw selection
   int contentWidth = rect.width - 5;
   if (selectedIndex >= 0) {
-    renderer.fillRect(0, rect.y + selectedIndex % pageItems * rowHeight - 2, rect.width, rowHeight);
+    renderer.fillRect(rect.x, rect.y + selectedIndex % pageItems * rowHeight - 2, rect.width, rowHeight);
   }
   constexpr int maxValueWidth = 200;
   constexpr int minValueGap = 10;
@@ -763,8 +763,8 @@ void BaseTheme::drawStatusBar(GfxRenderer& renderer, const float bookProgress, c
   // Draw Clock (X3 only — DS3231 RTC)
   int clockTextWidth = 0;
   if (SETTINGS.statusBarClock && halClock.isAvailable()) {
-    char timeBuf[6];
-    if (halClock.formatTime(timeBuf, sizeof(timeBuf), SETTINGS.clockUtcOffset)) {
+    char timeBuf[9];
+    if (halClock.formatTime(timeBuf, sizeof(timeBuf), SETTINGS.clockUtcOffsetQ, SETTINGS.clockFormat == 1)) {
       clockTextWidth = renderer.getTextWidth(SMALL_FONT_ID, timeBuf);
       // Position to the left of the progress text (with a small gap)
       const int clockX = renderer.getScreenWidth() - metrics.statusBarHorizontalMargin - orientedMarginRight -

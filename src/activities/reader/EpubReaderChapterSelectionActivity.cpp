@@ -16,22 +16,6 @@ void EpubReaderChapterSelectionActivity::buildNavigationEntries() {
   navigationEntries = EpubReaderNavigation::buildEntries(epub);
 }
 
-int EpubReaderChapterSelectionActivity::getPageItems() const {
-  // Layout constants used in renderScreen
-  constexpr int lineHeight = 30;
-
-  const int screenHeight = renderer.getScreenHeight();
-  const auto orientation = renderer.getOrientation();
-  // In inverted portrait, the button hints are drawn near the logical top.
-  // Reserve vertical space so list items do not collide with the hints.
-  const bool isPortraitInverted = orientation == GfxRenderer::Orientation::PortraitInverted;
-  const int hintGutterHeight = isPortraitInverted ? 50 : 0;
-  const int startY = 60 + hintGutterHeight;
-  const int availableHeight = screenHeight - startY - lineHeight;
-  // Clamp to at least one item to avoid division by zero and empty paging.
-  return std::max(1, availableHeight / lineHeight);
-}
-
 void EpubReaderChapterSelectionActivity::onEnter() {
   Activity::onEnter();
   previousRendererOrientation = renderer.getOrientation();
@@ -70,7 +54,7 @@ void EpubReaderChapterSelectionActivity::onExit() {
 }
 
 void EpubReaderChapterSelectionActivity::loop() {
-  const int pageItems = getPageItems();
+  const int pageItems = UITheme::getInstance().getNumberOfItemsPerPage(renderer, true, false, true, false);
   const int totalItems = getTotalItems();
 
   if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
@@ -117,46 +101,22 @@ void EpubReaderChapterSelectionActivity::loop() {
 void EpubReaderChapterSelectionActivity::render(RenderLock&&) {
   renderer.clearScreen();
 
-  const auto pageWidth = renderer.getScreenWidth();
-  const auto orientation = renderer.getOrientation();
-  // Landscape orientation: reserve a horizontal gutter for button hints.
-  const bool isLandscapeCw = orientation == GfxRenderer::Orientation::LandscapeClockwise;
-  const bool isLandscapeCcw = orientation == GfxRenderer::Orientation::LandscapeCounterClockwise;
-  // Inverted portrait: reserve vertical space for hints at the top.
-  const bool isPortraitInverted = orientation == GfxRenderer::Orientation::PortraitInverted;
-  const int hintGutterWidth = (isLandscapeCw || isLandscapeCcw) ? 30 : 0;
-  // Landscape CW places hints on the left edge; CCW keeps them on the right.
-  const int contentX = isLandscapeCw ? hintGutterWidth : 0;
-  const int contentWidth = pageWidth - hintGutterWidth;
-  const int hintGutterHeight = isPortraitInverted ? 50 : 0;
-  const int contentY = hintGutterHeight;
-  const int pageItems = getPageItems();
+  auto metrics = UITheme::getInstance().getMetrics();
+  Rect screen = UITheme::getInstance().getScreenSafeArea(renderer, true, false);
+
+  GUI.drawHeader(renderer, Rect{screen.x, screen.y + metrics.topPadding, screen.width, metrics.headerHeight},
+                 tr(STR_SELECT_CHAPTER));
+
+  const int contentTop = screen.y + metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
+  const int contentHeight = screen.height - contentTop - metrics.verticalSpacing;
+
   const int totalItems = getTotalItems();
-
-  // Manual centering to honor content gutters.
-  const int titleX =
-      contentX + (contentWidth - renderer.getTextWidth(UI_12_FONT_ID, tr(STR_SELECT_CHAPTER), EpdFontFamily::BOLD)) / 2;
-  renderer.drawText(UI_12_FONT_ID, titleX, 15 + contentY, tr(STR_SELECT_CHAPTER), true, EpdFontFamily::BOLD);
-
-  const auto pageStartIndex = selectorIndex / pageItems * pageItems;
-  // Highlight only the content area, not the hint gutters.
-  renderer.fillRect(contentX, 60 + contentY + (selectorIndex % pageItems) * 30 - 2, contentWidth - 1, 30);
-
-  for (int i = 0; i < pageItems; i++) {
-    int itemIndex = pageStartIndex + i;
-    if (itemIndex >= totalItems) break;
-    const int displayY = 60 + contentY + i * 30;
-    const bool isSelected = (itemIndex == selectorIndex);
-
-    const auto& item = navigationEntries[itemIndex];
-
-    // Indent per TOC level while keeping content within the gutter-safe region.
-    const int indentSize = contentX + 20 + (item.level - 1) * 15;
-    const std::string chapterName =
-        renderer.truncatedText(UI_10_FONT_ID, item.title.c_str(), contentWidth - 40 - indentSize);
-
-    renderer.drawText(UI_10_FONT_ID, indentSize, displayY, chapterName.c_str(), !isSelected);
-  }
+  GUI.drawList(renderer, Rect{screen.x, contentTop, screen.width, contentHeight}, totalItems, selectorIndex,
+               [this](int index) {
+                 const auto& item = navigationEntries[index];
+                 std::string indent((item.level - 1) * 2, ' ');
+                 return indent + item.title;
+               });
 
   const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_SELECT), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
