@@ -35,6 +35,9 @@ class EpubReaderActivity final : public Activity {
   bool pendingScreenshot = false;
   bool pendingSyncSaveError = false;
   bool automaticPageTurnActive = false;
+  enum class PendingPageTurnIntent : uint8_t { None, Prev, Next };
+  PendingPageTurnIntent pendingPageTurnIntent = PendingPageTurnIntent::None;
+  unsigned long pendingPageTurnIntentAt = 0UL;
   uint8_t effectiveReadingLayout = CrossPointSettings::READING_LAYOUT_HORIZONTAL_PORTRAIT;
   uint8_t effectiveReaderOrientation = CrossPointSettings::PORTRAIT;
 
@@ -111,6 +114,9 @@ class EpubReaderActivity final : public Activity {
   void applyOrientation(uint8_t orientation);
   void toggleAutoPageTurn(uint8_t selectedPageTurnOption);
   void pageTurn(bool isForwardTurn);
+  void latchPageTurnIntentWhileBusy();
+  bool consumeLatchedPageTurnIntent(bool& isForwardTurn);
+  void clearLatchedPageTurnIntent();
 
   // Footnote navigation
   void navigateToHref(const std::string& href, bool savePosition = false);

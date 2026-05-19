@@ -44,6 +44,7 @@ namespace {
 // pages per minute, first item is 1 to prevent division by zero if accessed
 constexpr int PAGE_TURN_RATES[] = {1, 1, 3, 6, 12};
 constexpr size_t KANJI_LOOKUP_CONTEXT_CHARS = 12;
+constexpr unsigned long PENDING_PAGE_TURN_INTENT_TTL_MS = 3000;
 
 int clampPercent(int percent) {
   if (percent < 0) {
@@ -401,6 +402,7 @@ void moveFinishedBookToReadFolder(const std::string& srcPath, const std::string&
 
 void EpubReaderActivity::onEnter() {
   Activity::onEnter();
+  clearLatchedPageTurnIntent();
 
   if (!epub) {
     return;
@@ -456,6 +458,7 @@ void EpubReaderActivity::onEnter() {
 
 void EpubReaderActivity::onExit() {
   Activity::onExit();
+  clearLatchedPageTurnIntent();
 
   // Reset orientation back to portrait for the rest of the UI
   renderer.setOrientation(GfxRenderer::Orientation::Portrait);
@@ -599,11 +602,13 @@ void EpubReaderActivity::loop() {
   // Rendering may be loading from SD and driving the display over SPI. Do not
   // mutate reader state until the current render finishes.
   if (RenderLock::peek()) {
+    latchPageTurnIntentWhileBusy();
     return;
   }
 
   // Enter reader menu activity.
   if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
+    clearLatchedPageTurnIntent();
     const int currentPage = section ? section->currentPage + 1 : 0;
     const int totalPages = section ? section->pageCount : 0;
     float bookProgress = 0.0f;
@@ -629,6 +634,7 @@ void EpubReaderActivity::loop() {
 
   // Long press BACK (1s+) goes to file selection
   if (mappedInput.isPressed(MappedInputManager::Button::Back) && mappedInput.getHeldTime() >= ReaderUtils::GO_HOME_MS) {
+    clearLatchedPageTurnIntent();
     activityManager.goToFileBrowser(epub ? epub->getPath() : "");
     return;
   }
@@ -637,14 +643,21 @@ void EpubReaderActivity::loop() {
   if (mappedInput.wasReleased(MappedInputManager::Button::Back) &&
       mappedInput.getHeldTime() < ReaderUtils::GO_HOME_MS) {
     if (footnoteDepth > 0) {
+      clearLatchedPageTurnIntent();
       restoreSavedPosition();
       return;
     }
+    clearLatchedPageTurnIntent();
     onGoHome();
     return;
   }
 
-  const auto [prevTriggered, nextTriggered, fromTilt] = ReaderUtils::detectPageTurn(mappedInput);
+  bool latchedForwardTurn = false;
+  const bool latchedPageTurn = consumeLatchedPageTurnIntent(latchedForwardTurn);
+  const auto [livePrevTriggered, liveNextTriggered, fromTilt] =
+      latchedPageTurn ? ReaderUtils::PageTurnResult{false, false, false} : ReaderUtils::detectPageTurn(mappedInput);
+  const bool prevTriggered = latchedPageTurn ? !latchedForwardTurn : livePrevTriggered;
+  const bool nextTriggered = latchedPageTurn ? latchedForwardTurn : liveNextTriggered;
   if (!prevTriggered && !nextTriggered) {
     return;
   }
@@ -662,7 +675,7 @@ void EpubReaderActivity::loop() {
     return;
   }
 
-  const bool longPress = !fromTilt && mappedInput.getHeldTime() > ReaderUtils::SKIP_HOLD_MS;
+  const bool longPress = !latchedPageTurn && !fromTilt && mappedInput.getHeldTime() > ReaderUtils::SKIP_HOLD_MS;
 
   // Don't skip chapter after screenshot
   if (gpio.wasReleased(HalGPIO::BTN_POWER) && gpio.wasReleased(HalGPIO::BTN_DOWN)) {
@@ -983,7 +996,42 @@ void EpubReaderActivity::toggleAutoPageTurn(const uint8_t selectedPageTurnOption
   }
 }
 
+void EpubReaderActivity::clearLatchedPageTurnIntent() {
+  pendingPageTurnIntent = PendingPageTurnIntent::None;
+  pendingPageTurnIntentAt = 0UL;
+}
+
+void EpubReaderActivity::latchPageTurnIntentWhileBusy() {
+  const auto [prevTriggered, nextTriggered, fromTilt] = ReaderUtils::detectPageTurn(mappedInput);
+  if (fromTilt || (!prevTriggered && !nextTriggered)) {
+    return;
+  }
+
+  // Single-slot latch: preserve only the latest explicit page-turn intent while
+  // render/display owns the mutex. This avoids multi-page buffering.
+  pendingPageTurnIntent = nextTriggered ? PendingPageTurnIntent::Next : PendingPageTurnIntent::Prev;
+  pendingPageTurnIntentAt = millis();
+}
+
+bool EpubReaderActivity::consumeLatchedPageTurnIntent(bool& isForwardTurn) {
+  if (pendingPageTurnIntent == PendingPageTurnIntent::None) {
+    return false;
+  }
+
+  const unsigned long age = millis() - pendingPageTurnIntentAt;
+  if (age > PENDING_PAGE_TURN_INTENT_TTL_MS) {
+    clearLatchedPageTurnIntent();
+    return false;
+  }
+
+  isForwardTurn = pendingPageTurnIntent == PendingPageTurnIntent::Next;
+  clearLatchedPageTurnIntent();
+  return true;
+}
+
 void EpubReaderActivity::pageTurn(bool isForwardTurn) {
+  clearLatchedPageTurnIntent();
+
   // Clear cursor state without triggering a redundant requestUpdate — pageTurn does its own.
   if (kanjiCursorActive) {
     kanjiCursorActive = false;
