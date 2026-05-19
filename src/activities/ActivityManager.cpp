@@ -196,11 +196,11 @@ void ActivityManager::goToReader(std::string path) {
   replaceActivity(std::make_unique<ReaderActivity>(renderer, mappedInput, std::move(path)));
 }
 
-void ActivityManager::goToSleep() {
+void ActivityManager::goToSleep(bool fromTimeout) {
   // SleepActivity draws its screen synchronously in onEnter(); do not let a
   // stale deferred render wake the render task during sleep preparation.
   requestedUpdate = false;
-  replaceActivity(std::make_unique<SleepActivity>(renderer, mappedInput));
+  replaceActivity(std::make_unique<SleepActivity>(renderer, mappedInput, fromTimeout));
   loop();  // Important: sleep screen must be rendered immediately, the caller will go to sleep right after this returns
 }
 
@@ -210,9 +210,24 @@ void ActivityManager::goToFullScreenMessage(std::string message, EpdFontFamily::
   replaceActivity(std::make_unique<FullScreenMessageActivity>(renderer, mappedInput, std::move(message), style));
 }
 
+void ActivityManager::goHome(HomeMenuItem initialMenuItem) {
+  if (initialMenuItem == HomeMenuItem::NONE && currentActivity) {
+    const auto& activityName = currentActivity->name;
+    if (activityName == "FileBrowser") {
+      initialMenuItem = HomeMenuItem::FILE_BROWSER;
+    } else if (activityName == "RecentBooks") {
+      initialMenuItem = HomeMenuItem::RECENTS;
+    } else if (activityName == "OpdsBookBrowser") {
+      initialMenuItem = HomeMenuItem::OPDS_BROWSER;
+    } else if (activityName == "CrossPointWebServer") {
+      initialMenuItem = HomeMenuItem::FILE_TRANSFER;
+    } else if (activityName == "Settings") {
+      initialMenuItem = HomeMenuItem::SETTINGS_MENU;
+    }
+  }
+  replaceActivity(std::make_unique<HomeActivity>(renderer, mappedInput, initialMenuItem));
+}
 void ActivityManager::goToCrashReport() { replaceActivity(std::make_unique<CrashActivity>(renderer, mappedInput)); }
-
-void ActivityManager::goHome() { replaceActivity(std::make_unique<HomeActivity>(renderer, mappedInput)); }
 
 void ActivityManager::pushActivity(std::unique_ptr<Activity>&& activity) {
   if (pendingActivity) {
