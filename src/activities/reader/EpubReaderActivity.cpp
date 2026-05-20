@@ -1366,6 +1366,7 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
   const auto tBwRender = millis();
 
   if (imagePageWithAA) {
+    kanjiPopupDismissFastRefreshPending = false;
     // Double FAST_REFRESH with selective image blanking (pablohc's technique):
     // HALF_REFRESH sets particles too firmly for the grayscale LUT to adjust.
     // Instead, blank only the image area and do two fast refreshes.
@@ -1384,6 +1385,9 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
       renderer.displayBuffer(HalDisplay::HALF_REFRESH);
     }
     // Double FAST_REFRESH handles ghosting for image pages; don't count toward full refresh cadence
+  } else if (kanjiPopupDismissFastRefreshPending) {
+    kanjiPopupDismissFastRefreshPending = false;
+    renderer.displayBuffer(HalDisplay::FAST_REFRESH);
   } else {
     ReaderUtils::displayWithRefreshCycle(renderer, pagesUntilFullRefresh);
   }
@@ -1643,6 +1647,7 @@ void EpubReaderActivity::exitKanjiCursorMode() {
   kanjiPopupMatches.shrink_to_fit();
   kanjiPopupMatchIndex = 0;
   kanjiCursorRefreshPending = false;
+  kanjiPopupDismissFastRefreshPending = false;
   kanjiCursorRectValid = false;
   kanjiIndex.clear();
   kanjiIndex.shrink_to_fit();
@@ -1903,6 +1908,7 @@ void EpubReaderActivity::hideKanjiPopup() {
   kanjiPopupMatches.clear();
   kanjiPopupMatchIndex = 0;
   kanjiCursorRectValid = false;
+  kanjiPopupDismissFastRefreshPending = true;
   requestUpdate();  // repaint the page under the popup, then restore the cursor overlay
 }
 
