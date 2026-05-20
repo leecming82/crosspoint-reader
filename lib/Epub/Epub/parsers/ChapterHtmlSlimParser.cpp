@@ -1034,15 +1034,18 @@ void XMLCALL ChapterHtmlSlimParser::endElement(void* userData, const XML_Char* n
     } else if (strcmp(name, "rp") == 0) {
       self->rubyCaptureMode = RubyCaptureMode::Base;
     } else if (strcmp(name, "ruby") == 0 && self->depth == self->rubyDepth) {
-      // Fallback rendering: aggregate ruby as base（reading） instead of flattening rb/rt pairs inline.
-      std::string fallback = self->rubyBase;
-      if (!self->rubyText.empty()) {
-        fallback += "\xef\xbc\x88";  // fullwidth left parenthesis
-        fallback += self->rubyText;
-        fallback += "\xef\xbc\x89";  // fullwidth right parenthesis
+      if (!self->rubyBase.empty()) {
+        auto style = EpdFontFamily::REGULAR;
+        if (self->effectiveBold) {
+          style = static_cast<EpdFontFamily::Style>(style | EpdFontFamily::BOLD);
+        }
+        if (self->effectiveItalic) {
+          style = static_cast<EpdFontFamily::Style>(style | EpdFontFamily::ITALIC);
+        }
+        self->currentTextBlock->addRubyWord(self->rubyBase, self->rubyText, style, self->effectiveUnderline,
+                                            self->nextWordContinues);
+        self->nextWordContinues = true;
       }
-      self->appendToPartWordBuffer(fallback.c_str(), static_cast<int>(fallback.size()));
-      self->nextWordContinues = true;
       self->insideRuby = false;
       self->rubyDepth = -1;
       self->rubyCaptureMode = RubyCaptureMode::None;
@@ -1308,7 +1311,8 @@ bool ChapterHtmlSlimParser::parseAndBuildPages() {
 }
 
 void ChapterHtmlSlimParser::addLineToPage(std::shared_ptr<TextBlock> line) {
-  const int lineHeight = renderer.getLineHeight(fontId) * lineCompression;
+  const int rubyPadding = line->rubyTopPadding(renderer);
+  const int lineHeight = renderer.getLineHeight(fontId) * lineCompression + rubyPadding;
 
   if (!currentPage) {
     currentPage.reset(new Page());

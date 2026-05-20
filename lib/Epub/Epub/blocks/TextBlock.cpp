@@ -6,22 +6,48 @@
 
 #include <cstring>
 
+namespace {
+constexpr int SMALL_FONT_ID = 674098198;
+}
+
+bool TextBlock::hasRuby() const {
+  for (const auto& ruby : rubyTexts) {
+    if (!ruby.empty()) {
+      return true;
+    }
+  }
+  return false;
+}
+
+int TextBlock::rubyTopPadding(const GfxRenderer& renderer) const {
+  return hasRuby() ? renderer.getLineHeight(SMALL_FONT_ID) : 0;
+}
+
 void TextBlock::render(const GfxRenderer& renderer, const int fontId, const int x, const int y) const {
   // Focus annotations are optional: empty vectors mean no word in this block has a split.
   // When present, they must be sized in lockstep with words[].
   const bool hasFocus = !wordFocusBoundary.empty();
   if (words.size() != wordXpos.size() || words.size() != wordStyles.size() ||
-      (hasFocus && (words.size() != wordFocusBoundary.size() || words.size() != wordFocusSuffixX.size()))) {
-    LOG_ERR("TXB", "Render skipped: size mismatch (words=%u, xpos=%u, styles=%u, boundary=%u, suffixX=%u)\n",
+      (hasFocus && (words.size() != wordFocusBoundary.size() || words.size() != wordFocusSuffixX.size())) ||
+      (!rubyTexts.empty() && words.size() != rubyTexts.size())) {
+    LOG_ERR("TXB", "Render skipped: size mismatch (words=%u, xpos=%u, styles=%u, boundary=%u, suffixX=%u, ruby=%u)\n",
             (uint32_t)words.size(), (uint32_t)wordXpos.size(), (uint32_t)wordStyles.size(),
-            (uint32_t)wordFocusBoundary.size(), (uint32_t)wordFocusSuffixX.size());
+            (uint32_t)wordFocusBoundary.size(), (uint32_t)wordFocusSuffixX.size(), (uint32_t)rubyTexts.size());
     return;
   }
 
+  const int baseY = y + rubyTopPadding(renderer);
   for (size_t i = 0; i < words.size(); i++) {
     const int wordX = wordXpos[i] + x;
     const EpdFontFamily::Style currentStyle = wordStyles[i];
     const uint8_t boundary = hasFocus ? wordFocusBoundary[i] : 0;
+
+    if (!rubyTexts.empty() && i < rubyTexts.size() && !rubyTexts[i].empty()) {
+      const int baseWidth = renderer.getTextWidth(fontId, words[i].c_str(), currentStyle);
+      const int rubyWidth = renderer.getTextWidth(SMALL_FONT_ID, rubyTexts[i].c_str(), EpdFontFamily::REGULAR);
+      const int rubyX = wordX + (baseWidth - rubyWidth) / 2;
+      renderer.drawText(SMALL_FONT_ID, rubyX, y, rubyTexts[i].c_str(), true, EpdFontFamily::REGULAR);
+    }
 
     if (boundary > 0) {
       // Focus split: draw bold prefix, then the regular suffix at a pre-computed x offset.
@@ -36,18 +62,18 @@ void TextBlock::render(const GfxRenderer& renderer, const int fontId, const int 
       const size_t boldLen = std::min<size_t>({static_cast<size_t>(boundary), words[i].size(), sizeof(boldBuf) - 1});
       memcpy(boldBuf, words[i].c_str(), boldLen);
       boldBuf[boldLen] = '\0';
-      renderer.drawText(fontId, wordX, y, boldBuf, true, boldStyle);
+      renderer.drawText(fontId, wordX, baseY, boldBuf, true, boldStyle);
       const int suffixX = wordX + wordFocusSuffixX[i];
-      renderer.drawText(fontId, suffixX, y, words[i].c_str() + boldLen, true, currentStyle);
+      renderer.drawText(fontId, suffixX, baseY, words[i].c_str() + boldLen, true, currentStyle);
     } else {
-      renderer.drawText(fontId, wordX, y, words[i].c_str(), true, currentStyle);
+      renderer.drawText(fontId, wordX, baseY, words[i].c_str(), true, currentStyle);
     }
 
     if ((currentStyle & EpdFontFamily::UNDERLINE) != 0) {
       const std::string& w = words[i];
       const int fullWordWidth = renderer.getTextWidth(fontId, w.c_str(), currentStyle);
       // y is the top of the text line; add ascender to reach baseline, then offset 2px below
-      const int underlineY = y + renderer.getFontAscenderSize(fontId) + 2;
+      const int underlineY = baseY + renderer.getFontAscenderSize(fontId) + 2;
 
       int startX = wordX;
       int underlineWidth = fullWordWidth;
@@ -72,11 +98,13 @@ bool TextBlock::serialize(FsFile& file) const {
   // or sized in lockstep with words[].
   const bool hasFocus = !wordFocusBoundary.empty();
   if (words.size() != wordXpos.size() || words.size() != wordStyles.size() ||
-      (hasFocus && (words.size() != wordFocusBoundary.size() || words.size() != wordFocusSuffixX.size()))) {
-    LOG_ERR("TXB", "Serialization failed: size mismatch (words=%u, xpos=%u, styles=%u, boundary=%u, suffixX=%u)\n",
+      (hasFocus && (words.size() != wordFocusBoundary.size() || words.size() != wordFocusSuffixX.size())) ||
+      (!rubyTexts.empty() && words.size() != rubyTexts.size())) {
+    LOG_ERR("TXB",
+            "Serialization failed: size mismatch (words=%u, xpos=%u, styles=%u, boundary=%u, suffixX=%u, ruby=%u)\n",
             static_cast<uint32_t>(words.size()), static_cast<uint32_t>(wordXpos.size()),
             static_cast<uint32_t>(wordStyles.size()), static_cast<uint32_t>(wordFocusBoundary.size()),
-            static_cast<uint32_t>(wordFocusSuffixX.size()));
+            static_cast<uint32_t>(wordFocusSuffixX.size()), static_cast<uint32_t>(rubyTexts.size()));
     return false;
   }
 
@@ -91,6 +119,14 @@ bool TextBlock::serialize(FsFile& file) const {
   if (hasFocus) {
     for (auto b : wordFocusBoundary) serialization::writePod(file, b);
     for (auto sx : wordFocusSuffixX) serialization::writePod(file, sx);
+  }
+
+  const bool hasRuby = this->hasRuby();
+  serialization::writePod(file, static_cast<uint8_t>(hasRuby ? 1 : 0));
+  if (hasRuby) {
+    for (size_t i = 0; i < words.size(); ++i) {
+      serialization::writeString(file, i < rubyTexts.size() ? rubyTexts[i] : std::string());
+    }
   }
 
   // Style (alignment + margins/padding/indent)
@@ -145,6 +181,13 @@ std::unique_ptr<TextBlock> TextBlock::deserialize(FsFile& file) {
     for (auto& b : wordFocusBoundary) serialization::readPod(file, b);
     for (auto& sx : wordFocusSuffixX) serialization::readPod(file, sx);
   }
+  uint8_t hasRuby;
+  serialization::readPod(file, hasRuby);
+  std::vector<std::string> rubyTexts;
+  if (hasRuby) {
+    rubyTexts.resize(wc);
+    for (auto& ruby : rubyTexts) serialization::readString(file, ruby);
+  }
 
   // Style (alignment + margins/padding/indent)
   serialization::readPod(file, blockStyle.alignment);
@@ -161,6 +204,6 @@ std::unique_ptr<TextBlock> TextBlock::deserialize(FsFile& file) {
   serialization::readPod(file, blockStyle.textIndentDefined);
 
   return std::unique_ptr<TextBlock>(new TextBlock(std::move(words), std::move(wordXpos), std::move(wordStyles),
-                                                  std::move(wordFocusBoundary), std::move(wordFocusSuffixX),
-                                                  blockStyle));
+                                                  std::move(wordFocusBoundary), std::move(wordFocusSuffixX), blockStyle,
+                                                  std::move(rubyTexts)));
 }
