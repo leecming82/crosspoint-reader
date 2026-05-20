@@ -92,3 +92,102 @@ void utf8TruncateChars(std::string& str, const size_t numChars) {
     utf8RemoveLastChar(str);
   }
 }
+
+namespace {
+
+constexpr uint32_t COMBINING_DAKUTEN = 0x3099;
+constexpr uint32_t COMBINING_HANDAKUTEN = 0x309A;
+
+struct KanaComposition {
+  uint32_t base;
+  uint32_t composed;
+};
+
+constexpr KanaComposition DAKUTEN_TABLE[] = {
+    {0x304B, 0x304C}, {0x304D, 0x304E}, {0x304F, 0x3050}, {0x3051, 0x3052}, {0x3053, 0x3054}, {0x3055, 0x3056},
+    {0x3057, 0x3058}, {0x3059, 0x305A}, {0x305B, 0x305C}, {0x305D, 0x305E}, {0x305F, 0x3060}, {0x3061, 0x3062},
+    {0x3064, 0x3065}, {0x3066, 0x3067}, {0x3068, 0x3069}, {0x306F, 0x3070}, {0x3072, 0x3073}, {0x3075, 0x3076},
+    {0x3078, 0x3079}, {0x307B, 0x307C}, {0x3046, 0x3094}, {0x30AB, 0x30AC}, {0x30AD, 0x30AE}, {0x30AF, 0x30B0},
+    {0x30B1, 0x30B2}, {0x30B3, 0x30B4}, {0x30B5, 0x30B6}, {0x30B7, 0x30B8}, {0x30B9, 0x30BA}, {0x30BB, 0x30BC},
+    {0x30BD, 0x30BE}, {0x30BF, 0x30C0}, {0x30C1, 0x30C2}, {0x30C4, 0x30C5}, {0x30C6, 0x30C7}, {0x30C8, 0x30C9},
+    {0x30CF, 0x30D0}, {0x30D2, 0x30D3}, {0x30D5, 0x30D6}, {0x30D8, 0x30D9}, {0x30DB, 0x30DC}, {0x30A6, 0x30F4},
+    {0x30EF, 0x30F7}, {0x30F0, 0x30F8}, {0x30F1, 0x30F9}, {0x30F2, 0x30FA},
+};
+
+constexpr KanaComposition HANDAKUTEN_TABLE[] = {
+    {0x306F, 0x3071}, {0x3072, 0x3074}, {0x3075, 0x3077}, {0x3078, 0x307A}, {0x307B, 0x307D},
+    {0x30CF, 0x30D1}, {0x30D2, 0x30D4}, {0x30D5, 0x30D7}, {0x30D8, 0x30DA}, {0x30DB, 0x30DD},
+};
+
+uint32_t lookupComposition(const uint32_t base, const KanaComposition* table, const size_t count) {
+  for (size_t i = 0; i < count; ++i) {
+    if (table[i].base == base) return table[i].composed;
+  }
+  return 0;
+}
+
+void encodeUtf8Bmp(char* dst, const uint32_t cp) {
+  dst[0] = static_cast<char>(0xE0 | (cp >> 12));
+  dst[1] = static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
+  dst[2] = static_cast<char>(0x80 | (cp & 0x3F));
+}
+
+}  // namespace
+
+void utf8NfcNormalizeKana(std::string& str) {
+  const size_t len = str.size();
+  if (len < 6) return;
+
+  size_t readPos = 0;
+  size_t writePos = 0;
+  uint32_t prevCp = 0;
+  size_t prevCpWritePos = 0;
+  int prevCpLen = 0;
+
+  while (readPos < len) {
+    const auto lead = static_cast<uint8_t>(str[readPos]);
+    const int cpLen = utf8CodepointLen(lead);
+    if (readPos + cpLen > len) break;
+
+    uint32_t cp;
+    if (cpLen == 1) {
+      cp = lead;
+    } else if (cpLen == 2) {
+      cp = (lead & 0x1F) << 6 | (static_cast<uint8_t>(str[readPos + 1]) & 0x3F);
+    } else if (cpLen == 3) {
+      cp = (lead & 0x0F) << 12 | (static_cast<uint8_t>(str[readPos + 1]) & 0x3F) << 6 |
+           (static_cast<uint8_t>(str[readPos + 2]) & 0x3F);
+    } else {
+      cp = (lead & 0x07) << 18 | (static_cast<uint8_t>(str[readPos + 1]) & 0x3F) << 12 |
+           (static_cast<uint8_t>(str[readPos + 2]) & 0x3F) << 6 | (static_cast<uint8_t>(str[readPos + 3]) & 0x3F);
+    }
+
+    if (prevCpLen > 0 && (cp == COMBINING_DAKUTEN || cp == COMBINING_HANDAKUTEN)) {
+      const auto* table = (cp == COMBINING_DAKUTEN) ? DAKUTEN_TABLE : HANDAKUTEN_TABLE;
+      const size_t count = (cp == COMBINING_DAKUTEN) ? (sizeof(DAKUTEN_TABLE) / sizeof(DAKUTEN_TABLE[0]))
+                                                     : (sizeof(HANDAKUTEN_TABLE) / sizeof(HANDAKUTEN_TABLE[0]));
+      const uint32_t composed = lookupComposition(prevCp, table, count);
+      if (composed != 0) {
+        encodeUtf8Bmp(&str[prevCpWritePos], composed);
+        readPos += cpLen;
+        prevCp = composed;
+        continue;
+      }
+    }
+
+    prevCp = cp;
+    prevCpWritePos = writePos;
+    prevCpLen = cpLen;
+    if (readPos != writePos) {
+      for (int i = 0; i < cpLen; ++i) {
+        str[writePos + i] = str[readPos + i];
+      }
+    }
+    writePos += cpLen;
+    readPos += cpLen;
+  }
+
+  if (writePos < len) {
+    str.resize(writePos);
+  }
+}

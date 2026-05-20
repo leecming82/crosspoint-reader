@@ -9,11 +9,67 @@
 #include <algorithm>
 
 #include "FontCacheManager.h"
+#include "cjk_ui_font_20.h"
 
 namespace {
 
 const char* resolveVisualText(const char* text, std::string& visualBuffer, int paragraphLevel);
 constexpr uint32_t COMPRESSED_BW_BACKUP_CAP = 32 * 1024;
+constexpr int UI_10_FONT_ID = 22918846;
+constexpr int UI_12_FONT_ID = 1635686837;
+constexpr int SMALL_FONT_ID = 674098198;
+
+bool isUiFontId(const int fontId) {
+  return fontId == UI_10_FONT_ID || fontId == UI_12_FONT_ID || fontId == SMALL_FONT_ID;
+}
+
+bool shouldUseCjkUiFallback(const int fontId, const uint32_t cp) {
+  return isUiFontId(fontId) && cp >= 0x80 && CjkUiFont20::hasCjkUiGlyph(cp);
+}
+
+uint8_t cjkUiAdvance(const uint32_t cp) {
+  uint8_t advance = CjkUiFont20::getCjkUiGlyphWidth(cp);
+  // The generated font uses full 20px cells for CJK. Slightly tighter advance
+  // matches the crosspoint-jp UI spacing and keeps filenames from bloating.
+  return advance >= CjkUiFont20::CJK_UI_FONT_WIDTH ? 18 : advance;
+}
+
+void drawCjkUiGlyph(const GfxRenderer& renderer, const int x, const int y, const uint32_t cp, const bool black) {
+  const uint8_t* bitmap = CjkUiFont20::getCjkUiGlyph(cp);
+  if (!bitmap) return;
+
+  for (uint8_t glyphY = 0; glyphY < CjkUiFont20::CJK_UI_FONT_HEIGHT; glyphY++) {
+    for (uint8_t glyphX = 0; glyphX < CjkUiFont20::CJK_UI_FONT_WIDTH; glyphX++) {
+      const uint8_t byteIndex = glyphY * CjkUiFont20::CJK_UI_FONT_BYTES_PER_ROW + (glyphX / 8);
+      const uint8_t bitIndex = 7 - (glyphX % 8);
+      const uint8_t byte = pgm_read_byte(&bitmap[byteIndex]);
+      if ((byte >> bitIndex) & 1) {
+        renderer.drawPixel(x + glyphX, y + glyphY, black);
+      }
+    }
+  }
+}
+
+int measureUiTextWithCjkFallback(const EpdFontFamily& font, const int fontId, const char* text,
+                                 const EpdFontFamily::Style style) {
+  if (text == nullptr) return 0;
+
+  int width = 0;
+  while (uint32_t cp = utf8NextCodepoint(reinterpret_cast<const uint8_t**>(&text))) {
+    if (utf8IsCombiningMark(cp)) continue;
+    cp = font.applyLigatures(cp, text, style);
+    if (shouldUseCjkUiFallback(fontId, cp)) {
+      width += cjkUiAdvance(cp);
+      continue;
+    }
+
+    const EpdGlyph* glyph = font.getGlyph(cp, style);
+    if (glyph) {
+      width += fp4::toPixel(glyph->advanceX);
+    }
+  }
+  return width;
+}
 
 /**
  * Resolves the requested style to the best available style in the given SD card font.
@@ -278,6 +334,10 @@ int GfxRenderer::getTextWidth(const int fontId, const char* text, const EpdFontF
     return 0;
   }
 
+  if (isUiFontId(fontId)) {
+    return measureUiTextWithCjkFallback(fontIt->second, fontId, text, style);
+  }
+
   int w = 0, h = 0;
   fontIt->second.getTextDimensions(text, &w, &h, style);
   return w;
@@ -331,6 +391,20 @@ void GfxRenderer::drawText(const int fontId, const int x, const int y, const cha
     }
 
     cp = font.applyLigatures(cp, text, style);
+
+    if (shouldUseCjkUiFallback(fontId, cp)) {
+      if (prevCp != 0) {
+        lastBaseX += fp4::toPixel(prevAdvanceFP);
+      }
+      drawCjkUiGlyph(*this, lastBaseX, y, cp, black);
+      lastBaseX += cjkUiAdvance(cp);
+      lastBaseLeft = 0;
+      lastBaseWidth = 0;
+      lastBaseTop = 0;
+      prevAdvanceFP = 0;
+      prevCp = 0;
+      continue;
+    }
 
     // Differential rounding: snap (previous advance + current kern) as one unit so
     // identical character pairs always produce the same pixel step regardless of
@@ -1291,6 +1365,10 @@ int GfxRenderer::getTextAdvanceX(const int fontId, const char* text, EpdFontFami
   int widthPx = 0;
   int32_t prevAdvanceFP = 0;  // 12.4 fixed-point: prev glyph's advance + next kern for snap
   const auto& font = fontIt->second;
+  if (isUiFontId(fontId)) {
+    return measureUiTextWithCjkFallback(font, fontId, text, style);
+  }
+
   while ((cp = utf8NextCodepoint(reinterpret_cast<const uint8_t**>(&text)))) {
     if (utf8IsCombiningMark(cp)) {
       continue;

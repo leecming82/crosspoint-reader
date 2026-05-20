@@ -58,3 +58,8 @@ inline bool utf8IsJapaneseDictionaryStart(const uint32_t cp) {
          || (cp >= 0x2CEB0 && cp <= 0x2EBEF)   // CJK Extension F/I
          || (cp >= 0x2F800 && cp <= 0x2FA1F);  // CJK Compatibility Supplement
 }
+
+// Compose Japanese kana followed by combining dakuten/handakuten into their
+// precomposed forms. This is intentionally narrow and is used for display-only
+// filename normalization; callers must keep the original path for SD access.
+void utf8NfcNormalizeKana(std::string& str);

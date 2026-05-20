@@ -5,6 +5,7 @@
 #include <GfxRenderer.h>
 #include <HalStorage.h>
 #include <I18n.h>
+#include <Utf8.h>
 
 #include <algorithm>
 
@@ -244,6 +245,8 @@ void FileBrowserActivity::loop() {
 }
 
 std::string getFileName(std::string filename) {
+  utf8NfcNormalizeKana(filename);
+
   if (filename.back() == '/') {
     filename.pop_back();
     filename = StringUtils::uiSafeTextWithMarkers(filename);
