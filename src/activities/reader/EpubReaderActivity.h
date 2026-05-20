@@ -63,6 +63,7 @@ class EpubReaderActivity final : public Activity {
   int kanjiCursorRectSize = 0;
   bool kanjiCursorRefreshPending = false;
   bool kanjiPopupDismissFastRefreshPending = false;
+  bool kanjiCursorRebuildPending = false;
   bool kanjiResumeValid = false;
   int kanjiResumeSpineIndex = -1;
   int kanjiResumePageNumber = -1;
@@ -71,6 +72,10 @@ class EpubReaderActivity final : public Activity {
   static constexpr unsigned long CURSOR_ENTER_MS = 600;
 
   void enterKanjiCursorMode();
+  bool rebuildKanjiCursorPage();
+  void releaseKanjiCursorPageCache(bool releaseIndexCapacity);
+  void releaseKanjiPopupMatches();
+  void clearKanjiCursorState(bool saveResumePosition, bool requestRedraw);
   void exitKanjiCursorMode();
   void moveKanjiCursor(int direction);
   void moveKanjiCursorToLine(int direction);

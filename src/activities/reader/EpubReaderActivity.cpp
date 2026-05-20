@@ -686,6 +686,7 @@ void EpubReaderActivity::loop() {
     // We don't want to delete the section mid-render, so grab the semaphore
     {
       RenderLock lock(*this);
+      clearKanjiCursorState(/*saveResumePosition=*/false, /*requestRedraw=*/false);
       nextPageNumber = 0;
       currentSpineIndex = nextTriggered ? currentSpineIndex + 1 : currentSpineIndex - 1;
       section.reset();
@@ -772,6 +773,7 @@ void EpubReaderActivity::jumpToPercent(int percent) {
   // Reset state so render() reloads and repositions on the target spine.
   {
     RenderLock lock(*this);
+    clearKanjiCursorState(/*saveResumePosition=*/false, /*requestRedraw=*/false);
     currentSpineIndex = targetSpineIndex;
     nextPageNumber = 0;
     pendingPercentJump = true;
@@ -790,6 +792,7 @@ void EpubReaderActivity::onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction 
           [this](const ActivityResult& result) {
             if (!result.isCancelled && currentSpineIndex != std::get<ChapterResult>(result.data).spineIndex) {
               RenderLock lock(*this);
+              clearKanjiCursorState(/*saveResumePosition=*/false, /*requestRedraw=*/false);
               currentSpineIndex = std::get<ChapterResult>(result.data).spineIndex;
               nextPageNumber = 0;
               section.reset();
@@ -865,6 +868,7 @@ void EpubReaderActivity::onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction 
           uint16_t backupSpine = currentSpineIndex;
           uint16_t backupPage = section->currentPage;
           uint16_t backupPageCount = section->pageCount;
+          clearKanjiCursorState(/*saveResumePosition=*/false, /*requestRedraw=*/false);
           section.reset();
           epub->clearCache();
           epub->setupCacheDir();
@@ -921,6 +925,7 @@ void EpubReaderActivity::onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction 
         LOG_DBG("KOSync", "Releasing epub for sync (heap before: %u)", (unsigned)ESP.getFreeHeap());
         {
           RenderLock lock(*this);
+          clearKanjiCursorState(/*saveResumePosition=*/false, /*requestRedraw=*/false);
           if (section) {
             nextPageNumber = section->currentPage;
           }
@@ -951,6 +956,7 @@ void EpubReaderActivity::applyReadingLayout(const uint8_t readingLayout) {
   // Preserve current reading position so we can restore after reflow.
   {
     RenderLock lock(*this);
+    clearKanjiCursorState(/*saveResumePosition=*/false, /*requestRedraw=*/false);
     if (section) {
       cachedSpineIndex = currentSpineIndex;
       cachedChapterTotalPageCount = section->pageCount;
@@ -987,6 +993,7 @@ void EpubReaderActivity::toggleAutoPageTurn(const uint8_t selectedPageTurnOption
   if (statusBarHeight == 0 || statusBarHeight == UITheme::getInstance().getProgressBarHeight()) {
     // Preserve current reading position so we can restore after reflow.
     RenderLock lock(*this);
+    clearKanjiCursorState(/*saveResumePosition=*/false, /*requestRedraw=*/false);
     if (section) {
       cachedSpineIndex = currentSpineIndex;
       cachedChapterTotalPageCount = section->pageCount;
@@ -1033,16 +1040,7 @@ void EpubReaderActivity::pageTurn(bool isForwardTurn) {
   clearLatchedPageTurnIntent();
 
   // Clear cursor state without triggering a redundant requestUpdate — pageTurn does its own.
-  if (kanjiCursorActive) {
-    kanjiCursorActive = false;
-    kanjiPopupActive = false;
-    kanjiPopupMatches.clear();
-    kanjiPopupMatches.shrink_to_fit();
-    kanjiPopupMatchIndex = 0;
-    kanjiIndex.clear();
-    kanjiIndex.shrink_to_fit();
-    kanjiCursorPage.reset();
-  }
+  clearKanjiCursorState(/*saveResumePosition=*/false, /*requestRedraw=*/false);
   if (isForwardTurn) {
     if (section->currentPage < section->pageCount - 1) {
       section->currentPage++;
@@ -1271,6 +1269,9 @@ void EpubReaderActivity::render(RenderLock&& lock) {
     LOG_DBG("ERS", "Rendered page in %dms", millis() - start);
   }
   if (kanjiCursorActive && !kanjiPopupActive) {
+    if (kanjiCursorRebuildPending && !rebuildKanjiCursorPage()) {
+      clearKanjiCursorState(/*saveResumePosition=*/false, /*requestRedraw=*/false);
+    }
     kanjiCursorRectValid = false;
     queueKanjiCursorRedraw();
     flushKanjiCursorRefresh();
@@ -1542,6 +1543,7 @@ void EpubReaderActivity::navigateToHref(const std::string& hrefStr, const bool s
 
   {
     RenderLock lock(*this);
+    clearKanjiCursorState(/*saveResumePosition=*/false, /*requestRedraw=*/false);
     pendingAnchor = std::move(anchor);
     currentSpineIndex = targetSpineIndex;
     nextPageNumber = 0;
@@ -1559,6 +1561,7 @@ void EpubReaderActivity::restoreSavedPosition() {
 
   {
     RenderLock lock(*this);
+    clearKanjiCursorState(/*saveResumePosition=*/false, /*requestRedraw=*/false);
     currentSpineIndex = pos.spineIndex;
     nextPageNumber = pos.pageNumber;
     section.reset();
@@ -1572,6 +1575,17 @@ void EpubReaderActivity::enterKanjiCursorMode() {
   if (!section) return;
   LOG_DBG("DICT", "Enter cursor requested spine=%d page=%d", currentSpineIndex, section->currentPage);
 
+  if (!rebuildKanjiCursorPage()) {
+    return;
+  }
+
+  queueKanjiCursorRedraw();
+  flushKanjiCursorRefresh();
+}
+
+bool EpubReaderActivity::rebuildKanjiCursorPage() {
+  if (!section) return false;
+
   // Compute the same margins used by renderContents so cursor coords align.
   int dummy1, dummy2;
   renderer.getOrientedViewableTRBL(&kanjiMarginTop, &dummy1, &dummy2, &kanjiMarginLeft);
@@ -1581,7 +1595,7 @@ void EpubReaderActivity::enterKanjiCursorMode() {
   kanjiCursorPage = section->loadPageFromSectionFile();
   if (!kanjiCursorPage) {
     LOG_ERR("CURSOR", "Failed to load page for cursor mode");
-    return;
+    return false;
   }
 
   // Build a flat list of text positions where dictionary terms can start.
@@ -1608,7 +1622,7 @@ void EpubReaderActivity::enterKanjiCursorMode() {
   if (kanjiIndex.empty()) {
     LOG_DBG("DICT", "No Japanese dictionary start chars spine=%d page=%d", currentSpineIndex, section->currentPage);
     kanjiCursorPage.reset();
-    return;
+    return false;
   }
 
   const bool resumed = kanjiResumeValid && kanjiResumeSpineIndex == currentSpineIndex &&
@@ -1621,15 +1635,28 @@ void EpubReaderActivity::enterKanjiCursorMode() {
     kanjiIndexPos = 0;
   }
   kanjiCursorActive = true;
+  kanjiCursorRebuildPending = false;
   LOG_DBG("DICT", "Enter cursor ok entries=%d pos=%d resumed=%d", static_cast<int>(kanjiIndex.size()), kanjiIndexPos,
           resumed ? 1 : 0);
-
-  queueKanjiCursorRedraw();
-  flushKanjiCursorRefresh();
+  return true;
 }
 
-void EpubReaderActivity::exitKanjiCursorMode() {
-  if (section && kanjiCursorActive && !kanjiIndex.empty() && kanjiIndexPos >= 0 &&
+void EpubReaderActivity::releaseKanjiCursorPageCache(const bool releaseIndexCapacity) {
+  kanjiCursorPage.reset();
+  kanjiIndex.clear();
+  if (releaseIndexCapacity) {
+    std::vector<KanjiEntry>().swap(kanjiIndex);
+  }
+}
+
+void EpubReaderActivity::releaseKanjiPopupMatches() {
+  kanjiPopupMatches.clear();
+  std::vector<JapaneseDictionaryMatch>().swap(kanjiPopupMatches);
+  kanjiPopupMatchIndex = 0;
+}
+
+void EpubReaderActivity::clearKanjiCursorState(const bool saveResumePosition, const bool requestRedraw) {
+  if (saveResumePosition && section && kanjiCursorActive && !kanjiIndex.empty() && kanjiIndexPos >= 0 &&
       kanjiIndexPos < static_cast<int>(kanjiIndex.size())) {
     kanjiResumeValid = true;
     kanjiResumeSpineIndex = currentSpineIndex;
@@ -1637,23 +1664,26 @@ void EpubReaderActivity::exitKanjiCursorMode() {
     kanjiResumeIndexPos = kanjiIndexPos;
     LOG_DBG("DICT", "Exit cursor saved spine=%d page=%d pos=%d entries=%d", kanjiResumeSpineIndex,
             kanjiResumePageNumber, kanjiResumeIndexPos, static_cast<int>(kanjiIndex.size()));
-  } else {
+  } else if (kanjiCursorActive || !kanjiIndex.empty() || kanjiPopupActive) {
     LOG_DBG("DICT", "Exit cursor no-save active=%d entries=%d", kanjiCursorActive ? 1 : 0,
             static_cast<int>(kanjiIndex.size()));
   }
   kanjiCursorActive = false;
   kanjiPopupActive = false;
-  kanjiPopupMatches.clear();
-  kanjiPopupMatches.shrink_to_fit();
-  kanjiPopupMatchIndex = 0;
+  releaseKanjiPopupMatches();
   kanjiCursorRefreshPending = false;
   kanjiPopupDismissFastRefreshPending = false;
+  kanjiCursorRebuildPending = false;
   kanjiCursorRectValid = false;
-  kanjiIndex.clear();
-  kanjiIndex.shrink_to_fit();
-  kanjiCursorPage.reset();
+  releaseKanjiCursorPageCache(/*releaseIndexCapacity=*/true);
   kanjiDictionary.close();
-  requestUpdate();
+  if (requestRedraw) {
+    requestUpdate();
+  }
+}
+
+void EpubReaderActivity::exitKanjiCursorMode() {
+  clearKanjiCursorState(/*saveResumePosition=*/true, /*requestRedraw=*/true);
 }
 
 void EpubReaderActivity::moveKanjiCursor(const int direction) {
@@ -1812,6 +1842,7 @@ void EpubReaderActivity::showKanjiPopup() {
   kanjiDictionary.lookupContext(lookupText, kanjiPopupMatches, 8, KANJI_LOOKUP_CONTEXT_CHARS);
   LOG_DBG("DICT", "Lookup result matches=%d dict=%s", static_cast<int>(kanjiPopupMatches.size()),
           kanjiDictionary.getBasePath().c_str());
+  kanjiDictionary.close();
 
   drawKanjiPopup();
 }
@@ -1904,10 +1935,19 @@ void EpubReaderActivity::moveKanjiPopupMatch(const int direction) {
 
 void EpubReaderActivity::hideKanjiPopup() {
   LOG_DBG("DICT", "Hide popup matches=%d", static_cast<int>(kanjiPopupMatches.size()));
+  if (section && kanjiCursorActive && !kanjiIndex.empty() && kanjiIndexPos >= 0 &&
+      kanjiIndexPos < static_cast<int>(kanjiIndex.size())) {
+    kanjiResumeValid = true;
+    kanjiResumeSpineIndex = currentSpineIndex;
+    kanjiResumePageNumber = section->currentPage;
+    kanjiResumeIndexPos = kanjiIndexPos;
+  }
   kanjiPopupActive = false;
-  kanjiPopupMatches.clear();
-  kanjiPopupMatchIndex = 0;
+  releaseKanjiPopupMatches();
+  kanjiDictionary.close();
+  releaseKanjiCursorPageCache(/*releaseIndexCapacity=*/true);
   kanjiCursorRectValid = false;
+  kanjiCursorRebuildPending = true;
   kanjiPopupDismissFastRefreshPending = true;
   requestUpdate();  // repaint the page under the popup, then restore the cursor overlay
 }
