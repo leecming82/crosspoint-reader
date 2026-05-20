@@ -21,6 +21,22 @@ class GfxRenderer {
  public:
   enum RenderMode { BW, GRAYSCALE_LSB, GRAYSCALE_MSB };
 
+  struct BwBufferStats {
+    enum class BackupKind : uint8_t { None, RawChunks, CompressedRle };
+
+    BackupKind backupKind = BackupKind::None;
+    uint16_t chunkCount = 0;
+    uint16_t chunkSize = 0;
+    uint32_t bufferBytes = 0;
+    uint16_t allocatedChunks = 0;
+    uint32_t allocatedBytes = 0;
+    int16_t failedChunk = -1;
+    uint16_t failedChunkSize = 0;
+    uint32_t compressedBytes = 0;
+    uint32_t compressedCapacity = 0;
+    uint16_t compressionAborted = 0;
+  };
+
   // Logical screen orientation from the perspective of callers
   enum Orientation {
     Portrait,                  // 480x800 logical coordinates (current default)
@@ -42,6 +58,9 @@ class GfxRenderer {
   uint16_t panelWidthBytes = HalDisplay::DISPLAY_WIDTH_BYTES;
   uint32_t frameBufferSize = HalDisplay::BUFFER_SIZE;
   std::vector<uint8_t*> bwBufferChunks;
+  BwBufferStats lastBwBufferStats;
+  uint8_t* compressedBwBuffer = nullptr;
+  uint32_t compressedBwBufferSize = 0;
   std::map<int, EpdFontFamily> fontMap;
   // Mutable because ensureSdCardFontReady() is const (called from layout code
   // that holds a const GfxRenderer&) but triggers SD card reads and heap
@@ -57,6 +76,9 @@ class GfxRenderer {
   void renderChar(const EpdFontFamily& fontFamily, uint32_t cp, int* x, int* y, bool pixelState,
                   EpdFontFamily::Style style) const;
   void freeBwBufferChunks();
+  void freeCompressedBwBuffer();
+  bool storeCompressedBwBuffer(uint32_t maxBytes);
+  bool restoreCompressedBwBuffer();
   template <Color color>
   void drawPixelDither(int x, int y) const;
   template <Color color>
@@ -65,7 +87,10 @@ class GfxRenderer {
  public:
   explicit GfxRenderer(HalDisplay& halDisplay)
       : display(halDisplay), renderMode(BW), orientation(Portrait), fadingFix(false) {}
-  ~GfxRenderer() { freeBwBufferChunks(); }
+  ~GfxRenderer() {
+    freeBwBufferChunks();
+    freeCompressedBwBuffer();
+  }
 
   static constexpr int VIEWABLE_MARGIN_TOP = 9;
   static constexpr int VIEWABLE_MARGIN_RIGHT = 3;
@@ -172,7 +197,8 @@ class GfxRenderer {
   void copyGrayscaleLsbBuffers() const;
   void copyGrayscaleMsbBuffers() const;
   void displayGrayBuffer() const;
-  bool storeBwBuffer();    // Returns true if buffer was stored successfully
+  bool storeBwBuffer();  // Returns true if buffer was stored successfully
+  const BwBufferStats& getLastBwBufferStats() const { return lastBwBufferStats; }
   void restoreBwBuffer();  // Restore and free the stored buffer
   void cleanupGrayscaleWithFrameBuffer() const;
 
