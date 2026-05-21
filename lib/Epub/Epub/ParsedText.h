@@ -39,9 +39,11 @@ class ParsedText {
   bool layoutAndExtractCjkLines(const GfxRenderer& renderer, int fontId, int pageWidth,
                                 const std::function<void(std::shared_ptr<TextBlock>)>& processLine,
                                 bool includeLastLine = true);
-  bool layoutAndExtractChunkedCjkLines(const GfxRenderer& renderer, int fontId, int pageWidth,
-                                       const std::function<void(std::shared_ptr<TextBlock>)>& processLine,
-                                       bool includeLastLine = true);
+  bool layoutAndExtractChunkedYokogakiCjkLines(const GfxRenderer& renderer, int fontId, int pageWidth,
+                                               const std::function<void(std::shared_ptr<TextBlock>)>& processLine,
+                                               bool includeLastLine = true);
+  bool layoutAndExtractChunkedTategakiColumns(const GfxRenderer& renderer, int fontId, uint16_t columnHeight,
+                                              const std::function<void(std::shared_ptr<TextBlock>)>& processColumn);
 
  public:
   explicit ParsedText(const bool extraParagraphSpacing, const bool hyphenationEnabled = false,

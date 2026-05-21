@@ -23,6 +23,8 @@ constexpr size_t SOFT_HYPHEN_BYTES = 2;
 constexpr size_t MIN_FREE_HEAP_FOR_CJK_LAYOUT = 48 * 1024;
 constexpr size_t MAX_CJK_LAYOUT_UNITS = 1024;
 constexpr size_t CJK_LAYOUT_CHUNK_TARGET_UNITS = 768;
+constexpr size_t MAX_VERTICAL_LAYOUT_UNITS = 384;
+constexpr size_t VERTICAL_LAYOUT_CHUNK_TARGET_UNITS = 256;
 
 struct CjkUnit {
   size_t wordIndex;
@@ -617,6 +619,10 @@ void ParsedText::layoutAndExtractVerticalColumns(const GfxRenderer& renderer, co
     return;
   }
 
+  if (layoutAndExtractChunkedTategakiColumns(renderer, fontId, columnHeight, processColumn)) {
+    return;
+  }
+
   if (renderer.isSdCardFont(fontId)) {
     uint8_t styleMask = 0;
     for (auto style : wordStyles) {
@@ -801,6 +807,119 @@ void ParsedText::layoutAndExtractVerticalColumns(const GfxRenderer& renderer, co
   rubyTexts.clear();
 }
 
+bool ParsedText::layoutAndExtractChunkedTategakiColumns(
+    const GfxRenderer& renderer, const int fontId, const uint16_t columnHeight,
+    const std::function<void(std::shared_ptr<TextBlock>)>& processColumn) {
+  struct Chunk {
+    std::vector<std::string> words;
+    std::vector<EpdFontFamily::Style> styles;
+    std::vector<bool> continues;
+    std::vector<std::string> rubyTexts;
+    size_t units = 0;
+  };
+
+  size_t totalUnits = 0;
+  for (const auto& word : words) {
+    const auto* ptr = reinterpret_cast<const unsigned char*>(word.c_str());
+    while (utf8NextCodepoint(&ptr)) {
+      ++totalUnits;
+      if (totalUnits > MAX_VERTICAL_LAYOUT_UNITS) {
+        break;
+      }
+    }
+    if (totalUnits > MAX_VERTICAL_LAYOUT_UNITS) {
+      break;
+    }
+  }
+  if (totalUnits <= MAX_VERTICAL_LAYOUT_UNITS) {
+    return false;
+  }
+
+  auto sourceWords = std::move(words);
+  auto sourceStyles = std::move(wordStyles);
+  auto sourceContinues = std::move(wordContinues);
+  auto sourceRubyTexts = std::move(rubyTexts);
+  Chunk current;
+
+  auto finishChunk = [&]() {
+    if (current.words.empty()) {
+      return;
+    }
+
+    words = std::move(current.words);
+    wordStyles = std::move(current.styles);
+    wordContinues = std::move(current.continues);
+    wordIsFocusSuffix.assign(words.size(), false);
+    rubyTexts = std::move(current.rubyTexts);
+    current = Chunk();
+    layoutAndExtractVerticalColumns(renderer, fontId, columnHeight, processColumn);
+  };
+
+  auto addSegment = [&](const std::string& word, const size_t start, const size_t end, const EpdFontFamily::Style style,
+                        const bool attachToPrevious, const size_t unitCount, const std::string& ruby) {
+    if (start >= end) {
+      return;
+    }
+    const bool wholeWord = start == 0 && end == word.size();
+    current.words.emplace_back(word.substr(start, end - start));
+    current.styles.push_back(style);
+    current.continues.push_back(current.words.size() > 1 && attachToPrevious);
+    if (!ruby.empty() || !current.rubyTexts.empty()) {
+      if (current.rubyTexts.size() + 1 < current.words.size()) {
+        current.rubyTexts.resize(current.words.size() - 1);
+      }
+      current.rubyTexts.push_back(wholeWord ? ruby : std::string());
+    }
+    current.units += unitCount;
+  };
+
+  for (size_t wordIndex = 0; wordIndex < sourceWords.size(); ++wordIndex) {
+    const std::string& word = sourceWords[wordIndex];
+    const std::string emptyRuby;
+    const std::string& ruby =
+        (!sourceRubyTexts.empty() && wordIndex < sourceRubyTexts.size()) ? sourceRubyTexts[wordIndex] : emptyRuby;
+    size_t segmentStart = 0;
+    size_t segmentUnits = 0;
+
+    for (size_t offset = 0; offset < word.size();) {
+      const auto* ptr = reinterpret_cast<const unsigned char*>(word.c_str() + offset);
+      const uint32_t cp = utf8NextCodepoint(&ptr);
+      if (cp == 0) {
+        break;
+      }
+      const size_t nextOffset = static_cast<size_t>(reinterpret_cast<const char*>(ptr) - word.c_str());
+      ++segmentUnits;
+
+      const size_t prospectiveUnits = current.units + segmentUnits;
+      const bool preferredBoundary =
+          prospectiveUnits >= VERTICAL_LAYOUT_CHUNK_TARGET_UNITS && !VerticalTextUtils::isKinsokuTail(cp);
+      const bool forcedBoundary = prospectiveUnits >= MAX_VERTICAL_LAYOUT_UNITS;
+      if (preferredBoundary || forcedBoundary) {
+        addSegment(word, segmentStart, nextOffset, sourceStyles[wordIndex],
+                   segmentStart > 0 || sourceContinues[wordIndex], segmentUnits, ruby);
+        finishChunk();
+        segmentStart = nextOffset;
+        segmentUnits = 0;
+      }
+
+      offset = nextOffset;
+    }
+
+    if (segmentStart < word.size()) {
+      addSegment(word, segmentStart, word.size(), sourceStyles[wordIndex],
+                 segmentStart > 0 || sourceContinues[wordIndex], segmentUnits, ruby);
+    }
+  }
+  finishChunk();
+
+  words.clear();
+  wordStyles.clear();
+  wordContinues.clear();
+  wordIsFocusSuffix.clear();
+  rubyTexts.clear();
+  return true;
+}
+
 bool ParsedText::shouldUseCjkWrapper() const {
   size_t cjkCount = 0;
   size_t otherLetterCount = 0;
@@ -822,9 +941,9 @@ bool ParsedText::shouldUseCjkWrapper() const {
   return cjkCount >= 8 && cjkCount >= otherLetterCount;
 }
 
-bool ParsedText::layoutAndExtractChunkedCjkLines(const GfxRenderer& renderer, const int fontId, const int pageWidth,
-                                                 const std::function<void(std::shared_ptr<TextBlock>)>& processLine,
-                                                 const bool includeLastLine) {
+bool ParsedText::layoutAndExtractChunkedYokogakiCjkLines(
+    const GfxRenderer& renderer, const int fontId, const int pageWidth,
+    const std::function<void(std::shared_ptr<TextBlock>)>& processLine, const bool includeLastLine) {
   struct Chunk {
     std::vector<std::string> words;
     std::vector<EpdFontFamily::Style> styles;
@@ -1003,7 +1122,7 @@ bool ParsedText::layoutAndExtractCjkLines(const GfxRenderer& renderer, const int
   if (estimatedUnits > MAX_CJK_LAYOUT_UNITS || ESP.getFreeHeap() < MIN_FREE_HEAP_FOR_CJK_LAYOUT ||
       ESP.getMaxAllocHeap() < estimatedBytes) {
     if (estimatedUnits > MAX_CJK_LAYOUT_UNITS &&
-        layoutAndExtractChunkedCjkLines(renderer, fontId, pageWidth, processLine, includeLastLine)) {
+        layoutAndExtractChunkedYokogakiCjkLines(renderer, fontId, pageWidth, processLine, includeLastLine)) {
       return true;
     }
     return false;
