@@ -997,7 +997,8 @@ void XMLCALL ChapterHtmlSlimParser::characterData(void* userData, const XML_Char
                                         : self->viewportWidth;
     self->currentTextBlock->layoutAndExtractLines(
         self->renderer, self->fontId, effectiveWidth,
-        [self](const std::shared_ptr<TextBlock>& textBlock) { self->addLineToPage(textBlock); }, false);
+        [self](const std::shared_ptr<TextBlock>& textBlock) { self->addLineToPage(textBlock); }, false,
+        self->sdAdvancePrewarmed);
   }
 }
 
@@ -1402,7 +1403,7 @@ void ChapterHtmlSlimParser::makePages() {
 
     currentTextBlock->layoutAndExtractVerticalColumns(
         renderer, fontId, effectiveHeight,
-        [this](const std::shared_ptr<TextBlock>& textBlock) { addColumnToPage(textBlock); });
+        [this](const std::shared_ptr<TextBlock>& textBlock) { addColumnToPage(textBlock); }, sdAdvancePrewarmed);
 
     if (!pendingFootnotes.empty() && currentPage) {
       for (const auto& [idx, fn] : pendingFootnotes) {
@@ -1434,7 +1435,7 @@ void ChapterHtmlSlimParser::makePages() {
 
   currentTextBlock->layoutAndExtractLines(
       renderer, fontId, effectiveWidth,
-      [this](const std::shared_ptr<TextBlock>& textBlock) { addLineToPage(textBlock); });
+      [this](const std::shared_ptr<TextBlock>& textBlock) { addLineToPage(textBlock); }, true, sdAdvancePrewarmed);
 
   // Fallback: transfer any remaining pending footnotes to current page.
   // Normally addLineToPage handles this via word-index tracking, but this catches

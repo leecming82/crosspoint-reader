@@ -38,12 +38,13 @@ class ParsedText {
   bool shouldUseCjkWrapper() const;
   bool layoutAndExtractCjkLines(const GfxRenderer& renderer, int fontId, int pageWidth,
                                 const std::function<void(std::shared_ptr<TextBlock>)>& processLine,
-                                bool includeLastLine = true);
+                                bool includeLastLine = true, bool sdAdvancePrewarmed = false);
   bool layoutAndExtractChunkedYokogakiCjkLines(const GfxRenderer& renderer, int fontId, int pageWidth,
                                                const std::function<void(std::shared_ptr<TextBlock>)>& processLine,
-                                               bool includeLastLine = true);
+                                               bool includeLastLine = true, bool sdAdvancePrewarmed = false);
   bool layoutAndExtractChunkedTategakiColumns(const GfxRenderer& renderer, int fontId, uint16_t columnHeight,
-                                              const std::function<void(std::shared_ptr<TextBlock>)>& processColumn);
+                                              const std::function<void(std::shared_ptr<TextBlock>)>& processColumn,
+                                              bool sdAdvancePrewarmed = false);
 
  public:
   explicit ParsedText(const bool extraParagraphSpacing, const bool hyphenationEnabled = false,
@@ -63,9 +64,10 @@ class ParsedText {
   bool isEmpty() const { return words.empty(); }
   void layoutAndExtractLines(const GfxRenderer& renderer, int fontId, uint16_t viewportWidth,
                              const std::function<void(std::shared_ptr<TextBlock>)>& processLine,
-                             bool includeLastLine = true);
+                             bool includeLastLine = true, bool sdAdvancePrewarmed = false);
   void layoutAndExtractVerticalColumns(const GfxRenderer& renderer, int fontId, uint16_t columnHeight,
-                                       const std::function<void(std::shared_ptr<TextBlock>)>& processColumn);
+                                       const std::function<void(std::shared_ptr<TextBlock>)>& processColumn,
+                                       bool sdAdvancePrewarmed = false);
 };
 
 // Returns true for CJK unified ideographs (kanji) only.

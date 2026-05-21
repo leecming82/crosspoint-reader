@@ -546,7 +546,7 @@ void ParsedText::addRubyWord(std::string word, std::string ruby, const EpdFontFa
 // Consumes data to minimize memory usage
 void ParsedText::layoutAndExtractLines(const GfxRenderer& renderer, const int fontId, const uint16_t viewportWidth,
                                        const std::function<void(std::shared_ptr<TextBlock>)>& processLine,
-                                       const bool includeLastLine) {
+                                       const bool includeLastLine, const bool sdAdvancePrewarmed) {
   if (words.empty()) {
     return;
   }
@@ -570,15 +570,17 @@ void ParsedText::layoutAndExtractLines(const GfxRenderer& renderer, const int fo
       styleMask |= static_cast<uint8_t>(1u << (static_cast<uint8_t>(s) & 0x03));
     }
     if (styleMask == 0) styleMask = 0x01;  // defensive: regular only
-    renderer.ensureSdCardFontReady(fontId, words, hyphenationEnabled, styleMask);
-    if (useCjkWrapper) {
-      renderer.ensureSdCardFontReady(fontId, "\xe6\x97\xa5\xe3\x81\x82", styleMask);  // 日あ
+    if (!sdAdvancePrewarmed) {
+      renderer.ensureSdCardFontReady(fontId, words, hyphenationEnabled, styleMask);
+      if (useCjkWrapper) {
+        renderer.ensureSdCardFontReady(fontId, "\xe6\x97\xa5\xe3\x81\x82", styleMask);  // 日あ
+      }
     }
   }
 
   const int pageWidth = viewportWidth;
   if (useCjkWrapper) {
-    if (layoutAndExtractCjkLines(renderer, fontId, pageWidth, processLine, includeLastLine)) {
+    if (layoutAndExtractCjkLines(renderer, fontId, pageWidth, processLine, includeLastLine, sdAdvancePrewarmed)) {
       return;
     }
   }
@@ -614,12 +616,13 @@ void ParsedText::layoutAndExtractLines(const GfxRenderer& renderer, const int fo
 
 void ParsedText::layoutAndExtractVerticalColumns(const GfxRenderer& renderer, const int fontId,
                                                  const uint16_t columnHeight,
-                                                 const std::function<void(std::shared_ptr<TextBlock>)>& processColumn) {
+                                                 const std::function<void(std::shared_ptr<TextBlock>)>& processColumn,
+                                                 const bool sdAdvancePrewarmed) {
   if (words.empty()) {
     return;
   }
 
-  if (layoutAndExtractChunkedTategakiColumns(renderer, fontId, columnHeight, processColumn)) {
+  if (layoutAndExtractChunkedTategakiColumns(renderer, fontId, columnHeight, processColumn, sdAdvancePrewarmed)) {
     return;
   }
 
@@ -629,7 +632,9 @@ void ParsedText::layoutAndExtractVerticalColumns(const GfxRenderer& renderer, co
       styleMask |= static_cast<uint8_t>(1u << (static_cast<uint8_t>(style) & 0x03));
     }
     if (styleMask == 0) styleMask = 0x01;
-    renderer.ensureSdCardFontReady(fontId, words, /*includeHyphenGlyph=*/false, styleMask);
+    if (!sdAdvancePrewarmed) {
+      renderer.ensureSdCardFontReady(fontId, words, /*includeHyphenGlyph=*/false, styleMask);
+    }
   }
 
   const int lineHeight = std::max(1, renderer.getLineHeight(fontId));
@@ -712,7 +717,6 @@ void ParsedText::layoutAndExtractVerticalColumns(const GfxRenderer& renderer, co
       firstUnitInWord = false;
     }
   }
-
   if (units.empty()) {
     words.clear();
     wordStyles.clear();
@@ -809,7 +813,7 @@ void ParsedText::layoutAndExtractVerticalColumns(const GfxRenderer& renderer, co
 
 bool ParsedText::layoutAndExtractChunkedTategakiColumns(
     const GfxRenderer& renderer, const int fontId, const uint16_t columnHeight,
-    const std::function<void(std::shared_ptr<TextBlock>)>& processColumn) {
+    const std::function<void(std::shared_ptr<TextBlock>)>& processColumn, const bool sdAdvancePrewarmed) {
   struct Chunk {
     std::vector<std::string> words;
     std::vector<EpdFontFamily::Style> styles;
@@ -852,7 +856,7 @@ bool ParsedText::layoutAndExtractChunkedTategakiColumns(
     wordIsFocusSuffix.assign(words.size(), false);
     rubyTexts = std::move(current.rubyTexts);
     current = Chunk();
-    layoutAndExtractVerticalColumns(renderer, fontId, columnHeight, processColumn);
+    layoutAndExtractVerticalColumns(renderer, fontId, columnHeight, processColumn, sdAdvancePrewarmed);
   };
 
   auto addSegment = [&](const std::string& word, const size_t start, const size_t end, const EpdFontFamily::Style style,
@@ -943,7 +947,8 @@ bool ParsedText::shouldUseCjkWrapper() const {
 
 bool ParsedText::layoutAndExtractChunkedYokogakiCjkLines(
     const GfxRenderer& renderer, const int fontId, const int pageWidth,
-    const std::function<void(std::shared_ptr<TextBlock>)>& processLine, const bool includeLastLine) {
+    const std::function<void(std::shared_ptr<TextBlock>)>& processLine, const bool includeLastLine,
+    const bool sdAdvancePrewarmed) {
   struct Chunk {
     std::vector<std::string> words;
     std::vector<EpdFontFamily::Style> styles;
@@ -1089,7 +1094,8 @@ bool ParsedText::layoutAndExtractChunkedYokogakiCjkLines(
     chunkText.wordIsFocusSuffix.assign(chunkText.words.size(), false);
     chunkText.rubyTexts = std::move(chunks[i].rubyTexts);
     const bool chunkIncludeLastLine = includeLastLine && i + 1 == chunks.size();
-    if (!chunkText.layoutAndExtractCjkLines(renderer, fontId, pageWidth, processLine, chunkIncludeLastLine)) {
+    if (!chunkText.layoutAndExtractCjkLines(renderer, fontId, pageWidth, processLine, chunkIncludeLastLine,
+                                            sdAdvancePrewarmed)) {
       return false;
     }
     if (!chunkIncludeLastLine) {
@@ -1111,7 +1117,7 @@ bool ParsedText::layoutAndExtractChunkedYokogakiCjkLines(
 
 bool ParsedText::layoutAndExtractCjkLines(const GfxRenderer& renderer, const int fontId, const int pageWidth,
                                           const std::function<void(std::shared_ptr<TextBlock>)>& processLine,
-                                          const bool includeLastLine) {
+                                          const bool includeLastLine, const bool sdAdvancePrewarmed) {
   std::vector<CjkUnit> units;
   size_t byteCount = 0;
   for (const auto& word : words) {
@@ -1122,7 +1128,8 @@ bool ParsedText::layoutAndExtractCjkLines(const GfxRenderer& renderer, const int
   if (estimatedUnits > MAX_CJK_LAYOUT_UNITS || ESP.getFreeHeap() < MIN_FREE_HEAP_FOR_CJK_LAYOUT ||
       ESP.getMaxAllocHeap() < estimatedBytes) {
     if (estimatedUnits > MAX_CJK_LAYOUT_UNITS &&
-        layoutAndExtractChunkedYokogakiCjkLines(renderer, fontId, pageWidth, processLine, includeLastLine)) {
+        layoutAndExtractChunkedYokogakiCjkLines(renderer, fontId, pageWidth, processLine, includeLastLine,
+                                                sdAdvancePrewarmed)) {
       return true;
     }
     return false;
@@ -1214,7 +1221,6 @@ bool ParsedText::layoutAndExtractCjkLines(const GfxRenderer& renderer, const int
       firstUnitInWord = false;
     }
   }
-
   if (units.empty()) {
     words.clear();
     wordStyles.clear();
@@ -1407,7 +1413,6 @@ bool ParsedText::layoutAndExtractCjkLines(const GfxRenderer& renderer, const int
     lineStart = lineEnd;
     isFirstLine = false;
   }
-
   const size_t lineCount = includeLastLine ? lineRanges.size() : lineRanges.size() - 1;
   for (size_t i = 0; i < lineCount; ++i) {
     emitLine(lineRanges[i].start, lineRanges[i].end, lineRanges[i].width, lineRanges[i].isFirstLine);

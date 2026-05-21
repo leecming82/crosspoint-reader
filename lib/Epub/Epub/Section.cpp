@@ -1,8 +1,17 @@
 #include "Section.h"
 
+#include <GfxRenderer.h>
 #include <HalStorage.h>
 #include <Logging.h>
+#include <SdCardFont.h>
 #include <Serialization.h>
+#include <Utf8.h>
+#include <expat.h>
+
+#include <algorithm>
+#include <climits>
+#include <cstring>
+#include <string_view>
 
 #include "Epub/DebugStyleConfig.h"
 #include "Epub/WritingMode.h"
@@ -17,12 +26,127 @@ constexpr uint32_t HEADER_SIZE = sizeof(uint8_t) + sizeof(int) + sizeof(float) +
                                  sizeof(uint16_t) + sizeof(uint16_t) + sizeof(uint16_t) + sizeof(bool) + sizeof(bool) +
                                  sizeof(uint8_t) + sizeof(bool) + sizeof(uint8_t) + sizeof(uint8_t) + sizeof(uint32_t) +
                                  sizeof(uint32_t) + sizeof(uint32_t) + sizeof(uint32_t);
+constexpr uint32_t SECTION_ADVANCE_CODEPOINT_LIMIT = 2048;
 
 struct PageLutEntry {
   uint32_t fileOffset;
   uint16_t paragraphIndex;
   uint16_t listItemIndex;
 };
+
+bool addUniqueCodepoint(std::vector<uint32_t>& codepoints, const uint32_t cp, const uint32_t limit = UINT32_MAX,
+                        bool* hitCap = nullptr) {
+  if (cp == 0 || cp == 0x00AD || cp < 0x20) {
+    return false;
+  }
+  auto pos = std::lower_bound(codepoints.begin(), codepoints.end(), cp);
+  if (pos != codepoints.end() && *pos == cp) {
+    return false;
+  }
+  if (codepoints.size() >= limit) {
+    if (hitCap) {
+      *hitCap = true;
+    }
+    return false;
+  }
+  codepoints.insert(pos, cp);
+  return true;
+}
+
+struct SectionAdvanceScan {
+  std::vector<uint32_t> codepoints;
+  int depth = 0;
+  int skipUntilDepth = INT_MAX;
+  bool hitCodepointCap = false;
+
+  static void XMLCALL startElement(void* userData, const XML_Char* name, const XML_Char**) {
+    auto* self = static_cast<SectionAdvanceScan*>(userData);
+    if (self->skipUntilDepth < self->depth) {
+      self->depth++;
+      return;
+    }
+    if (strcmp(name, "head") == 0 || strcmp(name, "script") == 0 || strcmp(name, "style") == 0) {
+      self->skipUntilDepth = self->depth;
+    }
+    self->depth++;
+  }
+
+  static void XMLCALL endElement(void* userData, const XML_Char*) {
+    auto* self = static_cast<SectionAdvanceScan*>(userData);
+    self->depth--;
+    if (self->skipUntilDepth == self->depth) {
+      self->skipUntilDepth = INT_MAX;
+    }
+  }
+
+  static void XMLCALL characterData(void* userData, const XML_Char* s, const int len) {
+    auto* self = static_cast<SectionAdvanceScan*>(userData);
+    if (self->skipUntilDepth < INT_MAX || self->hitCodepointCap || len <= 0) {
+      return;
+    }
+    const std::string_view text(s, static_cast<size_t>(len));
+    const auto* ptr = reinterpret_cast<const unsigned char*>(text.data());
+    const auto* end = ptr + text.size();
+    while (ptr < end && !self->hitCodepointCap) {
+      const uint32_t cp = utf8NextCodepoint(&ptr);
+      if (cp == 0) break;
+      addUniqueCodepoint(self->codepoints, cp, SECTION_ADVANCE_CODEPOINT_LIMIT, &self->hitCodepointCap);
+    }
+  }
+};
+
+void destroyXmlParser(XML_Parser parser) {
+  if (parser) {
+    XML_ParserFree(parser);
+  }
+}
+
+bool scanSectionAdvanceCodepoints(const std::string& tmpHtmlPath, std::vector<uint32_t>& codepoints, bool& hitCap) {
+  XML_Parser parser = XML_ParserCreate(nullptr);
+  if (!parser) {
+    LOG_ERR("SCT", "Could not allocate advance scan parser");
+    return false;
+  }
+
+  SectionAdvanceScan scan;
+  XML_SetUserData(parser, &scan);
+  XML_SetElementHandler(parser, SectionAdvanceScan::startElement, SectionAdvanceScan::endElement);
+  XML_SetCharacterDataHandler(parser, SectionAdvanceScan::characterData);
+
+  FsFile file;
+  if (!Storage.openFileForRead("SCT", tmpHtmlPath, file)) {
+    destroyXmlParser(parser);
+    return false;
+  }
+
+  constexpr size_t SCAN_BUFFER_SIZE = 4096;
+  int done = 0;
+  do {
+    void* const buf = XML_GetBuffer(parser, SCAN_BUFFER_SIZE);
+    if (!buf) {
+      LOG_ERR("SCT", "Could not allocate advance scan XML buffer");
+      file.close();
+      destroyXmlParser(parser);
+      return false;
+    }
+    const size_t len = file.read(buf, SCAN_BUFFER_SIZE);
+    done = file.available() == 0;
+    if (XML_ParseBuffer(parser, static_cast<int>(len), done) == XML_STATUS_ERROR) {
+      LOG_ERR("SCT", "Advance scan parse error at line %lu: %s", XML_GetCurrentLineNumber(parser),
+              XML_ErrorString(XML_GetErrorCode(parser)));
+      file.close();
+      destroyXmlParser(parser);
+      return false;
+    }
+  } while (!done);
+
+  file.close();
+  destroyXmlParser(parser);
+  hitCap = scan.hitCodepointCap;
+  codepoints = std::move(scan.codepoints);
+  return true;
+}
+
 }  // namespace
 
 uint32_t Section::onPageComplete(std::unique_ptr<Page> page) {
@@ -213,6 +337,40 @@ bool Section::createSectionFile(const int fontId, const float lineCompression, c
 
   LOG_DBG("SCT", "Streamed temp HTML to %s (%d bytes)", tmpHtmlPath.c_str(), fileSize);
 
+  bool sdAdvancePrewarmed = false;
+  if (renderer.isSdCardFont(fontId)) {
+    std::vector<uint32_t> sectionCodepoints;
+    bool hitCodepointCap = false;
+    if (scanSectionAdvanceCodepoints(tmpHtmlPath, sectionCodepoints, hitCodepointCap)) {
+      if (hitCodepointCap) {
+        LOG_DBG("SCT", "Section advance prewarm skipped: codepoint cap hit");
+      } else {
+        addUniqueCodepoint(sectionCodepoints, ' ');
+        if (hyphenationEnabled) {
+          addUniqueCodepoint(sectionCodepoints, '-');
+        }
+        addUniqueCodepoint(sectionCodepoints, 0x65E5);  // 日
+        addUniqueCodepoint(sectionCodepoints, 0x3042);  // あ
+
+        const bool includeVerticalSubstitutions =
+            static_cast<EpubWritingMode>(writingMode) != EpubWritingMode::HorizontalTb;
+        const auto& sdFonts = renderer.getSdCardFonts();
+        auto fontIt = sdFonts.find(fontId);
+        if (fontIt != sdFonts.end() && fontIt->second) {
+          const int missed = fontIt->second->buildAdvanceTableFromCodepoints(
+              sectionCodepoints.data(), static_cast<uint32_t>(sectionCodepoints.size()), 0x0F,
+              includeVerticalSubstitutions);
+          sdAdvancePrewarmed = missed >= 0;
+          if (missed > 0) {
+            LOG_DBG("SCT", "Section advance prewarm: %d codepoint(s) not found", missed);
+          }
+        }
+      }
+    } else {
+      LOG_ERR("SCT", "Section advance prewarm scan failed; falling back to block prewarm");
+    }
+  }
+
   if (!Storage.openFileForWrite("SCT", filePath, file)) {
     return false;
   }
@@ -244,7 +402,8 @@ bool Section::createSectionFile(const int fontId, const float lineCompression, c
         lut.push_back({this->onPageComplete(std::move(page)), paragraphIndex, listItemIndex});
       },
       applyEmbeddedStyle, contentBase, imageBasePath, imageRendering, progressFn, cssParser,
-      spineItem.sourceStartOffset, spineItem.sourceEndOffset, static_cast<EpubWritingMode>(writingMode));
+      spineItem.sourceStartOffset, spineItem.sourceEndOffset, static_cast<EpubWritingMode>(writingMode),
+      sdAdvancePrewarmed);
   Hyphenator::setPreferredLanguage(epub->getLanguage());
   success = visitor.parseAndBuildPages();
 
