@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <cstring>
 #include <deque>
+#include <vector>
 
 #include "FsHelpers.h"
 
@@ -55,13 +56,14 @@ std::string normaliseRelativeHref(const std::string& baseHref, const std::string
   return FsHelpers::normalisePath(FsHelpers::decodePercentEscapes(baseDir + href));
 }
 
-bool anchorListContains(const std::deque<std::string>& anchors, const std::string& anchor) {
+template <typename Container>
+bool anchorListContains(const Container& anchors, const std::string& anchor) {
   return std::find(anchors.begin(), anchors.end(), anchor) != anchors.end();
 }
 
 class SpineSplitScanner final : public Print {
  public:
-  explicit SpineSplitScanner(const std::string& currentHref, std::deque<std::string>& targetAnchors)
+  explicit SpineSplitScanner(const std::string& currentHref, std::vector<std::string>& targetAnchors)
       : currentHref(currentHref), targetAnchors(targetAnchors) {}
 
   size_t write(uint8_t b) override {
@@ -115,8 +117,8 @@ class SpineSplitScanner final : public Print {
     return ranges.size() > 1 ? ranges : std::deque<SourceRange>{};
   }
 
-  const std::deque<AnchorOffset>& getAnchors() const { return anchors; }
-  const std::deque<HrefTarget>& getHrefTargets() const { return hrefTargets; }
+  const std::vector<AnchorOffset>& getAnchors() const { return anchors; }
+  const std::vector<HrefTarget>& getHrefTargets() const { return hrefTargets; }
 
  private:
   bool inTag = false;
@@ -140,10 +142,10 @@ class SpineSplitScanner final : public Print {
   bool invalidRootWrapper = false;
   bool inAsciiWord = false;
   std::string currentHref;
-  std::deque<std::string>& targetAnchors;
+  std::vector<std::string>& targetAnchors;
   std::deque<SourceRange> ranges;
-  std::deque<AnchorOffset> anchors;
-  std::deque<HrefTarget> hrefTargets;
+  std::vector<AnchorOffset> anchors;
+  std::vector<HrefTarget> hrefTargets;
 
   static bool isAsciiWhitespace(const char c) { return c == ' ' || c == '\r' || c == '\n' || c == '\t'; }
   static bool isAsciiWordByte(const char c) { return std::isalnum(static_cast<unsigned char>(c)) != 0; }
@@ -487,15 +489,6 @@ bool BookMetadataCache::buildBookBin(const std::string& epubPath, const BookMeta
   }
 
   const uint16_t physicalSpineCount = spineCount;
-  std::deque<std::deque<std::string>> physicalTocAnchors(physicalSpineCount);
-  for (const auto& tocEntry : tocEntries) {
-    if (tocEntry.spineIndex >= 0 && tocEntry.spineIndex < physicalSpineCount && !tocEntry.anchor.empty()) {
-      const auto anchor = lowercase(tocEntry.anchor);
-      if (!anchorListContains(physicalTocAnchors[tocEntry.spineIndex], anchor)) {
-        physicalTocAnchors[tocEntry.spineIndex].push_back(anchor);
-      }
-    }
-  }
 
   // Build physical spineIndex->tocIndex mapping in one pass.
   std::deque<int16_t> physicalSpineToTocIndex(physicalSpineCount, -1);
@@ -553,9 +546,33 @@ bool BookMetadataCache::buildBookBin(const std::string& epubPath, const BookMeta
     }
   }
 
+  bool hasSplittableSpines = false;
+  for (int i = 0; i < physicalSpineCount; i++) {
+    if (physicalSpineSizes[i] >= SPLIT_SOURCE_SIZE_THRESHOLD) {
+      hasSplittableSpines = true;
+      break;
+    }
+  }
+
+  std::vector<std::vector<std::string>> physicalTocAnchors;
+  std::vector<std::vector<AnchorOffset>> physicalAnchorOffsets;
+  if (hasSplittableSpines) {
+    physicalTocAnchors.resize(physicalSpineCount);
+    physicalAnchorOffsets.resize(physicalSpineCount);
+    for (const auto& tocEntry : tocEntries) {
+      if (tocEntry.spineIndex >= 0 && tocEntry.spineIndex < physicalSpineCount && !tocEntry.anchor.empty()) {
+        const auto anchor = lowercase(tocEntry.anchor);
+        if (!anchorListContains(physicalTocAnchors[tocEntry.spineIndex], anchor)) {
+          physicalTocAnchors[tocEntry.spineIndex].push_back(anchor);
+        }
+      }
+    }
+  } else {
+    LOG_DBG("BMC", "No large spine items; skipping virtual split anchor scan");
+  }
+
   std::deque<SpineEntry> readerSpines;
   std::deque<int16_t> physicalSpineToFirstReaderIndex(physicalSpineCount, -1);
-  std::deque<std::deque<AnchorOffset>> physicalAnchorOffsets(physicalSpineCount);
   int16_t lastSpineTocIndex = -1;
   uint32_t cumulativeSize = 0;
 
@@ -571,7 +588,7 @@ bool BookMetadataCache::buildBookBin(const std::string& epubPath, const BookMeta
 
     std::deque<SourceRange> ranges;
     const auto itemSize = physicalSpineSizes[i];
-    if (itemSize >= SPLIT_SOURCE_SIZE_THRESHOLD) {
+    if (hasSplittableSpines && itemSize >= SPLIT_SOURCE_SIZE_THRESHOLD) {
       const std::string path = FsHelpers::normalisePath(baseEntry.href);
       SpineSplitScanner scanner(baseEntry.href, physicalTocAnchors[i]);
       if (zip.readFileToStream(path.c_str(), scanner, 1024)) {
@@ -623,7 +640,7 @@ bool BookMetadataCache::buildBookBin(const std::string& epubPath, const BookMeta
     if (tocEntry.spineIndex >= 0 && tocEntry.spineIndex < physicalSpineCount) {
       const auto physicalIndex = tocEntry.spineIndex;
       tocEntry.spineIndex = physicalSpineToFirstReaderIndex[physicalIndex];
-      if (!tocEntry.anchor.empty() && !physicalAnchorOffsets[physicalIndex].empty()) {
+      if (hasSplittableSpines && !tocEntry.anchor.empty() && !physicalAnchorOffsets[physicalIndex].empty()) {
         auto targetAnchor = lowercase(tocEntry.anchor);
         for (const auto& anchor : physicalAnchorOffsets[physicalIndex]) {
           if (anchor.id != targetAnchor) continue;
@@ -642,24 +659,26 @@ bool BookMetadataCache::buildBookBin(const std::string& epubPath, const BookMeta
   }
 
   std::deque<AnchorEntry> anchorEntries;
-  for (int physicalIndex = 0; physicalIndex < physicalSpineCount; physicalIndex++) {
-    if (physicalTocAnchors[physicalIndex].empty() || physicalAnchorOffsets[physicalIndex].empty()) {
-      continue;
-    }
-    for (const auto& anchor : physicalAnchorOffsets[physicalIndex]) {
-      if (!anchorListContains(physicalTocAnchors[physicalIndex], anchor.id)) {
+  if (hasSplittableSpines) {
+    for (int physicalIndex = 0; physicalIndex < physicalSpineCount; physicalIndex++) {
+      if (physicalTocAnchors[physicalIndex].empty() || physicalAnchorOffsets[physicalIndex].empty()) {
         continue;
       }
-      int16_t targetReaderSpineIndex = physicalSpineToFirstReaderIndex[physicalIndex];
-      for (int i = targetReaderSpineIndex; i < static_cast<int>(readerSpines.size()); i++) {
-        const auto& readerSpine = readerSpines[i];
-        if (readerSpine.physicalSpineIndex != physicalIndex) break;
-        if (anchor.offset >= readerSpine.sourceStartOffset && anchor.offset < readerSpine.sourceEndOffset) {
-          targetReaderSpineIndex = static_cast<int16_t>(i);
-          break;
+      for (const auto& anchor : physicalAnchorOffsets[physicalIndex]) {
+        if (!anchorListContains(physicalTocAnchors[physicalIndex], anchor.id)) {
+          continue;
         }
+        int16_t targetReaderSpineIndex = physicalSpineToFirstReaderIndex[physicalIndex];
+        for (int i = targetReaderSpineIndex; i < static_cast<int>(readerSpines.size()); i++) {
+          const auto& readerSpine = readerSpines[i];
+          if (readerSpine.physicalSpineIndex != physicalIndex) break;
+          if (anchor.offset >= readerSpine.sourceStartOffset && anchor.offset < readerSpine.sourceEndOffset) {
+            targetReaderSpineIndex = static_cast<int16_t>(i);
+            break;
+          }
+        }
+        anchorEntries.push_back({physicalSpines[physicalIndex].href, anchor.id, targetReaderSpineIndex});
       }
-      anchorEntries.push_back({physicalSpines[physicalIndex].href, anchor.id, targetReaderSpineIndex});
     }
   }
 
