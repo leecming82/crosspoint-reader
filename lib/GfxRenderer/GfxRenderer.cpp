@@ -78,6 +78,27 @@ int measureUiTextWithCjkFallback(const EpdFontFamily& font, const int fontId, co
 uint8_t resolveSdCardStyle(const SdCardFont& font, const EpdFontFamily::Style style) {
   return font.resolveStyle(static_cast<uint8_t>(style));
 }
+
+uint32_t standardVerticalPresentationForm(const uint32_t cp) {
+  switch (cp) {
+    case 0x002D:      // hyphen-minus
+    case 0x2010:      // hyphen
+    case 0x2011:      // non-breaking hyphen
+    case 0xFF0D:      // fullwidth hyphen-minus
+      return 0xFE63;  // small hyphen-minus
+    case 0x2013:      // en dash
+      return 0xFE32;  // presentation form for vertical en dash
+    case 0x2014:      // em dash
+    case 0x2015:      // horizontal bar
+      return 0xFE31;  // presentation form for vertical em dash
+    case 0x2025:      // two dot leader
+      return 0xFE30;  // presentation form for vertical two dot leader
+    case 0x2026:      // horizontal ellipsis
+      return 0xFE19;  // presentation form for vertical horizontal ellipsis
+    default:
+      return cp;
+  }
+}
 }  // namespace
 
 const uint8_t* GfxRenderer::getGlyphBitmap(const EpdFontData* fontData, const EpdGlyph* glyph) const {
@@ -1333,7 +1354,18 @@ uint32_t GfxRenderer::getVerticalSubstitution(const int fontId, const uint32_t c
                                               const EpdFontFamily::Style style) const {
   const auto fontIt = fontMap.find(fontId);
   if (fontIt == fontMap.end()) return cp;
-  return fontIt->second.applyVerticalSubstitution(cp, style);
+  const uint32_t fontSubstitution = fontIt->second.applyVerticalSubstitution(cp, style);
+  if (fontSubstitution != cp) return fontSubstitution;
+
+  const uint32_t presentationForm = standardVerticalPresentationForm(cp);
+  if (presentationForm != cp) {
+    const EpdGlyph* glyph = fontIt->second.getGlyph(presentationForm, style);
+    const EpdGlyph* replacement = fontIt->second.getGlyph(REPLACEMENT_GLYPH, style);
+    if (glyph && (!replacement || glyph != replacement)) {
+      return presentationForm;
+    }
+  }
+  return cp;
 }
 
 int GfxRenderer::getTextAdvanceX(const int fontId, const char* text, EpdFontFamily::Style style) const {
@@ -1517,7 +1549,7 @@ void GfxRenderer::drawTextVertical(const int fontId, const int x, int y, const c
   while (*p != '\0') {
     const auto* cpStart = p;
     const uint32_t sourceCp = utf8NextCodepoint(&p);
-    const uint32_t verticalCp = hasFont ? fontIt->second.applyVerticalSubstitution(sourceCp, style) : sourceCp;
+    const uint32_t verticalCp = hasFont ? getVerticalSubstitution(fontId, sourceCp, style) : sourceCp;
     const std::string glyph = verticalCp == sourceCp ? std::string(reinterpret_cast<const char*>(cpStart), p - cpStart)
                                                      : utf8FromCodepoint(verticalCp);
     drawText(fontId, x, y, glyph.c_str(), black, style);

@@ -20,11 +20,6 @@ constexpr int NOTOSANS_14_FONT_ID = -1589315735;
 constexpr int NOTOSANS_16_FONT_ID = 1669013660;
 constexpr int NOTOSANS_18_FONT_ID = 37077304;
 
-// Device-tuned draw offsets. They move ruby within its reserved space without
-// changing page layout, cache geometry, or cursor hit boxes.
-constexpr int HORIZONTAL_RUBY_Y_BIAS = 11;
-constexpr int VERTICAL_RUBY_Y_BIAS = 6;
-
 size_t utf8CodepointCount(const std::string& text) {
   size_t count = 0;
   const auto* ptr = reinterpret_cast<const unsigned char*>(text.c_str());
@@ -83,6 +78,10 @@ int rubyReservedHeight(const GfxRenderer& renderer, const int rubyFontId) {
   return std::max(1, lineHeight - std::max(2, lineHeight / 8));
 }
 
+int horizontalRubyYBias(const GfxRenderer& renderer, const int rubyFontId) {
+  return std::max(1, std::max(1, renderer.getLineHeight(rubyFontId)) / 4);
+}
+
 void drawHorizontalRuby(const GfxRenderer& renderer, const int bodyFontId, const int wordX, const int baseY,
                         const std::string& base, const std::string& ruby, const EpdFontFamily::Style style) {
   if (ruby.empty()) return;
@@ -92,7 +91,8 @@ void drawHorizontalRuby(const GfxRenderer& renderer, const int bodyFontId, const
   const int rubyWidth = renderer.getTextWidth(rubyFontId, ruby.c_str(), EpdFontFamily::REGULAR);
   const int rubyX = wordX + (baseWidth - rubyWidth) / 2;
   const int rubyYOffset = std::max(0, renderer.getLineHeight(rubyFontId) - renderer.getFontAscenderSize(rubyFontId));
-  const int rubyY = baseY - rubyReservedHeight(renderer, rubyFontId) + rubyYOffset + HORIZONTAL_RUBY_Y_BIAS;
+  const int rubyY =
+      baseY - rubyReservedHeight(renderer, rubyFontId) + rubyYOffset + horizontalRubyYBias(renderer, rubyFontId);
   renderer.drawText(rubyFontId, rubyX, rubyY, ruby.c_str(), true, EpdFontFamily::REGULAR);
 }
 
@@ -102,10 +102,10 @@ void drawVerticalRuby(const GfxRenderer& renderer, const int bodyFontId, const i
   const int rubyFontId = drawableRubyFontId(renderer, bodyFontId, ruby);
   if (rubyFontId == 0) return;
   const int rubyLineHeight = std::max(1, renderer.getLineHeight(rubyFontId));
-  const int rubyX = wordX + std::max(0, columnWidth - rubyLineHeight);
+  const int rubyX = wordX + std::max(0, columnWidth - rubyLineHeight * 4 / 5) + std::max(1, rubyLineHeight / 12);
   const int rubyAdvance = std::max(1, renderer.getTextAdvanceX(rubyFontId, ruby.c_str(), EpdFontFamily::REGULAR));
   const int span = std::max(1, baseAdvance);
-  const int rubyY = wordY + (rubyAdvance <= span ? (span - rubyAdvance) / 2 : 1) + VERTICAL_RUBY_Y_BIAS;
+  const int rubyY = wordY + (rubyAdvance <= span ? (span - rubyAdvance) / 2 : 0);
   renderer.drawTextVertical(rubyFontId, rubyX, rubyY, ruby.c_str(), true, EpdFontFamily::REGULAR, 0);
 }
 }  // namespace

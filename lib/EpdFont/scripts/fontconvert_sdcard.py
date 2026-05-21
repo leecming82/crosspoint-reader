@@ -79,6 +79,7 @@ INTERVAL_PRESETS = {
 
 # Regex for parsing unnamed hex range intervals: (0xSTART-0xEND)
 _HEX_RANGE_PATTERN = re.compile(r'^\(0x([0-9a-fA-F]+)-0x([0-9a-fA-F]+)\)$')
+SYNTHETIC_VERTICAL_BASE = 0xF0000
 
 def parse_hex_range(s: str) -> tuple[int, int] | None:
     match = _HEX_RANGE_PATTERN.fullmatch(s)
@@ -521,9 +522,10 @@ def extract_ligatures_fonttools(font_path, codepoints):
 def extract_vertical_substitutions_fonttools(font_path, codepoints):
     """Extract single-codepoint GSUB vert/vrt2 substitutions.
 
-    Returns sorted (source_cp, replacement_cp) pairs. The v5 cpfont runtime
-    stores codepoint replacements, so substitutions whose destination glyph has
-    no cmap codepoint are reported and skipped for now.
+    Returns (substitutions, synthetic_glyphs). Substitutions are sorted
+    (source_cp, replacement_cp) pairs. synthetic_glyphs maps private-use
+    replacement codepoints to glyph IDs for vertical alternates that have no
+    cmap codepoint of their own.
     """
     from fontTools.ttLib import TTFont
 
@@ -534,8 +536,33 @@ def extract_vertical_substitutions_fonttools(font_path, codepoints):
         glyph_to_cps.setdefault(gname, []).append(cp)
     glyph_to_cp = {gname: min(cps) for gname, cps in glyph_to_cps.items()}
     codepoints_set = set(codepoints)
+    used_codepoints = set(codepoints_set)
     substitutions = {}
-    skipped_no_cmap = 0
+    synthetic_glyphs = {}
+    synthetic_cp_by_glyph = {}
+    next_synthetic_cp = SYNTHETIC_VERTICAL_BASE
+
+    def allocate_synthetic_cp(glyph_name):
+        nonlocal next_synthetic_cp
+        if glyph_name in synthetic_cp_by_glyph:
+            return synthetic_cp_by_glyph[glyph_name]
+        while next_synthetic_cp in used_codepoints:
+            next_synthetic_cp += 1
+        cp = next_synthetic_cp
+        next_synthetic_cp += 1
+        used_codepoints.add(cp)
+        synthetic_cp_by_glyph[glyph_name] = cp
+        synthetic_glyphs[cp] = font.getGlyphID(glyph_name)
+        return cp
+
+    def add_substitution(src_cp, dst_glyph):
+        if src_cp not in codepoints_set:
+            return
+        dst_cp = glyph_to_cp.get(dst_glyph)
+        if dst_cp in codepoints_set:
+            substitutions[src_cp] = dst_cp
+        elif dst_glyph in font.getGlyphOrder():
+            substitutions[src_cp] = allocate_synthetic_cp(dst_glyph)
 
     if 'GSUB' in font:
         gsub = font['GSUB'].table
@@ -555,21 +582,32 @@ def extract_vertical_substitutions_fonttools(font_path, codepoints):
                 for src_glyph, dst_glyph in mapping.items():
                     if src_glyph not in glyph_to_cp:
                         continue
-                    src_cp = glyph_to_cp[src_glyph]
-                    if src_cp not in codepoints_set:
-                        continue
-                    if dst_glyph not in glyph_to_cp:
-                        skipped_no_cmap += 1
-                        continue
-                    dst_cp = glyph_to_cp[dst_glyph]
-                    if dst_cp in codepoints_set:
-                        substitutions[src_cp] = dst_cp
+                    add_substitution(glyph_to_cp[src_glyph], dst_glyph)
+
+    # Some Japanese fonts do not expose GSUB rules for common dash-like
+    # punctuation, but they do include the Unicode vertical presentation forms.
+    # Add those as conservative fallbacks when both source and destination are
+    # present in the generated glyph set.
+    fallback_forms = {
+        0x002D: 0xFE63,  # hyphen-minus -> small hyphen-minus
+        0x2010: 0xFE63,  # hyphen -> small hyphen-minus
+        0x2011: 0xFE63,  # non-breaking hyphen -> small hyphen-minus
+        0x2013: 0xFE32,  # en dash -> vertical en dash
+        0x2014: 0xFE31,  # em dash -> vertical em dash
+        0x2015: 0xFE31,  # horizontal bar -> vertical em dash
+        0x2025: 0xFE30,  # two dot leader -> vertical two dot leader
+        0x2026: 0xFE19,  # ellipsis -> vertical horizontal ellipsis
+        0xFF0D: 0xFE63,  # fullwidth hyphen-minus -> small hyphen-minus
+    }
+    for src_cp, dst_cp in fallback_forms.items():
+        if src_cp in codepoints_set and dst_cp in codepoints_set:
+            substitutions.setdefault(src_cp, dst_cp)
 
     font.close()
-    if skipped_no_cmap:
-        print(f"  vert: skipped {skipped_no_cmap} substitution(s) whose replacement glyph has no cmap codepoint",
+    if synthetic_glyphs:
+        print(f"  vert: retained {len(synthetic_glyphs)} glyph-only substitution glyph(s) as private-use codepoints",
               file=sys.stderr)
-    return sorted(substitutions.items())
+    return sorted(substitutions.items()), sorted(synthetic_glyphs.items())
 
 
 def rasterize_font_style(fontfile, size, intervals, style_id=0, force_autohint=False):
@@ -590,12 +628,96 @@ def rasterize_font_style(fontfile, size, intervals, style_id=0, force_autohint=F
     if force_autohint:
         load_flags |= freetype.FT_LOAD_FORCE_AUTOHINT
 
-    def load_glyph(code_point):
-        glyph_index = face.get_char_index(code_point)
+    def load_glyph_index(glyph_index):
         if glyph_index > 0:
             face.load_glyph(glyph_index, load_flags)
             return face
         return None
+
+    def load_glyph(code_point):
+        return load_glyph_index(face.get_char_index(code_point))
+
+    def append_loaded_glyph(code_point, f):
+        nonlocal total_bitmap_size
+        if f is None:
+            glyph = GlyphProps(0, 0, 0, 0, 0, 0, total_bitmap_size, code_point)
+            all_glyphs.append((glyph, b''))
+            return
+
+        bitmap = f.glyph.bitmap
+
+        # Build 4-bit greyscale bitmap (same logic as fontconvert.py).
+        #
+        # FreeType returns the buffer with bitmap.pitch as the row stride
+        # in bytes, which can be negative when the bitmap is stored
+        # bottom-up. Iterating bitmap.buffer linearly assumes
+        # pitch == width and a top-down layout — that holds in the common
+        # case but breaks on padded or flipped bitmaps and corrupts the
+        # output. Walk by (row, col) using the real pitch instead.
+        #
+        # Cache bitmap.buffer in a local — ctypes struct field access
+        # creates a new Python wrapper object each time, so re-evaluating
+        # it per pixel is catastrophically slow.
+        pixels4g = []
+        px = 0
+        buf = bitmap.buffer
+        abs_pitch = abs(bitmap.pitch)
+        for y in range(bitmap.rows):
+            row_offset = y * abs_pitch if bitmap.pitch >= 0 else (bitmap.rows - 1 - y) * abs_pitch
+            for x in range(bitmap.width):
+                v = buf[row_offset + x]
+                if x % 2 == 0:
+                    px = (v >> 4)
+                else:
+                    px = px | (v & 0xF0)
+                    pixels4g.append(px)
+                    px = 0
+            if bitmap.width % 2 > 0:
+                pixels4g.append(px)
+                px = 0
+
+        # Downsample to 2-bit bitmap
+        pixels2b = []
+        px = 0
+        pitch = (bitmap.width // 2) + (bitmap.width % 2)
+        for y in range(bitmap.rows):
+            for x in range(bitmap.width):
+                px = px << 2
+                bm = pixels4g[y * pitch + (x // 2)]
+                bm = (bm >> ((x % 2) * 4)) & 0xF
+
+                if bm >= 12:
+                    px += 3
+                elif bm >= 8:
+                    px += 2
+                elif bm >= 4:
+                    px += 1
+
+                if (y * bitmap.width + x) % 4 == 3:
+                    pixels2b.append(px)
+                    px = 0
+        if (bitmap.width * bitmap.rows) % 4 != 0:
+            # Outer parens are for clarity: in Python `*` binds tighter
+            # than `<<`, so the original `px << (4 - … % 4) * 2` already
+            # evaluates as `px << ((4 - … % 4) * 2)`. Match the explicit
+            # bracketing here so the shift width is obvious at a glance,
+            # mirroring the inner-loop style in fontconvert.py.
+            px = px << ((4 - (bitmap.width * bitmap.rows) % 4) * 2)
+            pixels2b.append(px)
+
+        packed = bytes(pixels2b)
+        glyph = GlyphProps(
+            width=bitmap.width,
+            height=bitmap.rows,
+            advance_x=fp4_from_ft16_16(f.glyph.linearHoriAdvance),
+            left=f.glyph.bitmap_left,
+            top=f.glyph.bitmap_top,
+            data_length=len(packed),
+            data_offset=total_bitmap_size,
+            code_point=code_point,
+        )
+        total_bitmap_size += len(packed)
+        all_glyphs.append((glyph, packed))
 
     # Validate intervals: remove codepoints not present in the font.
     # Only check glyph existence via get_char_index — do NOT call
@@ -623,86 +745,34 @@ def rasterize_font_style(fontfile, size, intervals, style_id=0, force_autohint=F
 
     for i_start, i_end in intervals:
         for code_point in range(i_start, i_end + 1):
-            f = load_glyph(code_point)
-            if f is None:
-                glyph = GlyphProps(0, 0, 0, 0, 0, 0, total_bitmap_size, code_point)
-                all_glyphs.append((glyph, b''))
-                continue
+            append_loaded_glyph(code_point, load_glyph(code_point))
 
-            bitmap = f.glyph.bitmap
+    base_cps = set(g.code_point for g, _ in all_glyphs)
+    vertical_substitutions, synthetic_vertical_glyphs = extract_vertical_substitutions_fonttools(fontfile, base_cps)
+    for synthetic_cp, glyph_index in synthetic_vertical_glyphs:
+        append_loaded_glyph(synthetic_cp, load_glyph_index(glyph_index))
 
-            # Build 4-bit greyscale bitmap (same logic as fontconvert.py).
-            #
-            # FreeType returns the buffer with bitmap.pitch as the row stride
-            # in bytes, which can be negative when the bitmap is stored
-            # bottom-up. Iterating bitmap.buffer linearly assumes
-            # pitch == width and a top-down layout — that holds in the common
-            # case but breaks on padded or flipped bitmaps and corrupts the
-            # output. Walk by (row, col) using the real pitch instead.
-            #
-            # Cache bitmap.buffer in a local — ctypes struct field access
-            # creates a new Python wrapper object each time, so re-evaluating
-            # it per pixel is catastrophically slow.
-            pixels4g = []
-            px = 0
-            buf = bitmap.buffer
-            abs_pitch = abs(bitmap.pitch)
-            for y in range(bitmap.rows):
-                row_offset = y * abs_pitch if bitmap.pitch >= 0 else (bitmap.rows - 1 - y) * abs_pitch
-                for x in range(bitmap.width):
-                    v = buf[row_offset + x]
-                    if x % 2 == 0:
-                        px = (v >> 4)
-                    else:
-                        px = px | (v & 0xF0)
-                        pixels4g.append(px)
-                        px = 0
-                if bitmap.width % 2 > 0:
-                    pixels4g.append(px)
-                    px = 0
-
-            # Downsample to 2-bit bitmap
-            pixels2b = []
-            px = 0
-            pitch = (bitmap.width // 2) + (bitmap.width % 2)
-            for y in range(bitmap.rows):
-                for x in range(bitmap.width):
-                    px = px << 2
-                    bm = pixels4g[y * pitch + (x // 2)]
-                    bm = (bm >> ((x % 2) * 4)) & 0xF
-
-                    if bm >= 12:
-                        px += 3
-                    elif bm >= 8:
-                        px += 2
-                    elif bm >= 4:
-                        px += 1
-
-                    if (y * bitmap.width + x) % 4 == 3:
-                        pixels2b.append(px)
-                        px = 0
-            if (bitmap.width * bitmap.rows) % 4 != 0:
-                # Outer parens are for clarity: in Python `*` binds tighter
-                # than `<<`, so the original `px << (4 - … % 4) * 2` already
-                # evaluates as `px << ((4 - … % 4) * 2)`. Match the explicit
-                # bracketing here so the shift width is obvious at a glance,
-                # mirroring the inner-loop style in fontconvert.py.
-                px = px << ((4 - (bitmap.width * bitmap.rows) % 4) * 2)
-                pixels2b.append(px)
-
-            packed = bytes(pixels2b)
-            glyph = GlyphProps(
-                width=bitmap.width,
-                height=bitmap.rows,
-                advance_x=fp4_from_ft16_16(f.glyph.linearHoriAdvance),
-                left=f.glyph.bitmap_left,
-                top=f.glyph.bitmap_top,
-                data_length=len(packed),
-                data_offset=total_bitmap_size,
-                code_point=code_point,
-            )
+    if synthetic_vertical_glyphs:
+        all_glyphs.sort(key=lambda item: item[0].code_point)
+        intervals = []
+        range_start = None
+        previous_cp = None
+        for glyph, _ in all_glyphs:
+            cp = glyph.code_point
+            if range_start is None:
+                range_start = cp
+            elif cp != previous_cp + 1:
+                intervals.append((range_start, previous_cp))
+                range_start = cp
+            previous_cp = cp
+        if range_start is not None:
+            intervals.append((range_start, previous_cp))
+        rebuilt_glyphs = []
+        total_bitmap_size = 0
+        for glyph, packed in all_glyphs:
+            rebuilt_glyphs.append((glyph._replace(data_offset=total_bitmap_size), packed))
             total_bitmap_size += len(packed)
-            all_glyphs.append((glyph, packed))
+        all_glyphs = rebuilt_glyphs
 
     # Get font metrics from pipe character (same heuristic as fontconvert.py)
     load_glyph(ord('|'))
@@ -744,7 +814,6 @@ def rasterize_font_style(fontfile, size, intervals, style_id=0, force_autohint=F
         ligature_pairs = ligature_pairs[:255]
     print(f"  [{style_label}] Ligatures: {len(ligature_pairs)} pairs", file=sys.stderr)
 
-    vertical_substitutions = extract_vertical_substitutions_fonttools(fontfile, all_cps)
     print(f"  [{style_label}] Vertical substitutions: {len(vertical_substitutions)} pairs", file=sys.stderr)
 
     return StyleRasterData(

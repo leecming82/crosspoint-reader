@@ -1312,13 +1312,15 @@ bool ChapterHtmlSlimParser::parseAndBuildPages() {
 
 void ChapterHtmlSlimParser::addLineToPage(std::shared_ptr<TextBlock> line) {
   const int lineHeight = renderer.getLineHeight(fontId) * lineCompression;
+  const int rubyTopPadding = line->rubyTopPadding(renderer, fontId);
+  const int lineAdvance = lineHeight + rubyTopPadding;
 
   if (!currentPage) {
     currentPage.reset(new Page());
     currentPageNextY = 0;
   }
 
-  if (currentPageNextY + lineHeight > viewportHeight) {
+  if (currentPageNextY + lineAdvance > viewportHeight) {
     completePageFn(std::move(currentPage), xpathParagraphIndex, xpathListItemIndex);
     completedPageCount++;
     currentPage.reset(new Page());
@@ -1336,8 +1338,9 @@ void ChapterHtmlSlimParser::addLineToPage(std::shared_ptr<TextBlock> line) {
 
   // Apply horizontal left inset (margin + padding) as x position offset
   const int16_t xOffset = line->getBlockStyle().leftInset();
-  currentPage->elements.push_back(std::make_shared<PageLine>(line, xOffset, currentPageNextY));
-  currentPageNextY += lineHeight;
+  currentPage->elements.push_back(
+      std::make_shared<PageLine>(line, xOffset, static_cast<int16_t>(currentPageNextY + rubyTopPadding)));
+  currentPageNextY += lineAdvance;
 }
 
 void ChapterHtmlSlimParser::addColumnToPage(std::shared_ptr<TextBlock> column) {

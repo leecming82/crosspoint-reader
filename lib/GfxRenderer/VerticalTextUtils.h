@@ -26,10 +26,16 @@ inline bool isCjkCodepoint(const uint32_t cp) {
 inline bool isUprightInVertical(const uint32_t cp) {
   if (isCjkCodepoint(cp)) return true;
   switch (cp) {
+    case 0x002D:  // hyphen-minus
+    case 0x2010:  // hyphen
+    case 0x2011:  // non-breaking hyphen
+    case 0x2013:  // en dash
     case 0x2014:  // em dash
     case 0x2015:  // horizontal bar
+    case 0x2025:  // two dot leader
     case 0x2026:  // ellipsis
     case 0x30FC:  // katakana-hiragana prolonged sound mark
+    case 0xFF0D:  // fullwidth hyphen-minus
       return true;
     default:
       return false;
