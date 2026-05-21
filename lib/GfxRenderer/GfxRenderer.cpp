@@ -1478,6 +1478,41 @@ void GfxRenderer::drawTextRotated90CW(const int fontId, const int x, const int y
   }
 }
 
+void GfxRenderer::drawTextVertical(const int fontId, const int x, int y, const char* text, const bool black,
+                                   const EpdFontFamily::Style style, const int charSpacing) const {
+  if (text == nullptr || *text == '\0') {
+    return;
+  }
+  if (fontCacheManager_ && fontCacheManager_->isScanning()) {
+    fontCacheManager_->recordText(text, fontId, style);
+    return;
+  }
+
+  const int fallbackAdvance = std::max(1, getLineHeight(fontId));
+  const auto* p = reinterpret_cast<const unsigned char*>(text);
+  while (*p != '\0') {
+    const auto* cpStart = p;
+    utf8NextCodepoint(&p);
+    std::string glyph(reinterpret_cast<const char*>(cpStart), p - cpStart);
+    drawText(fontId, x, y, glyph.c_str(), black, style);
+    const int measured = getTextAdvanceX(fontId, glyph.c_str(), style);
+    y += (measured > 0 ? measured : fallbackAdvance) + charSpacing;
+  }
+}
+
+void GfxRenderer::drawTextSideways(const int fontId, const int x, const int y, const char* text, const bool black,
+                                   const EpdFontFamily::Style style, const int columnWidth) const {
+  const int drawX = columnWidth > 0 ? x + (columnWidth - getLineHeight(fontId)) / 2 : x;
+  drawTextRotated90CW(fontId, drawX, y + getTextAdvanceX(fontId, text, style), text, black, style);
+}
+
+void GfxRenderer::drawTextTateChuYoko(const int fontId, const int x, const int y, const char* text, const bool black,
+                                      const EpdFontFamily::Style style, const int columnWidth) const {
+  const int textWidth = getTextAdvanceX(fontId, text, style);
+  const int drawX = columnWidth > 0 ? x + (columnWidth - textWidth) / 2 : x;
+  drawText(fontId, drawX, y, text, black, style);
+}
+
 uint8_t* GfxRenderer::getFrameBuffer() const { return frameBuffer; }
 
 size_t GfxRenderer::getBufferSize() const { return frameBufferSize; }

@@ -542,7 +542,7 @@ void EpubReaderActivity::loop() {
     }
   }
 
-  // Kanji cursor mode: active only in tategaki (LandscapeCounterClockwise) orientation.
+  // Kanji cursor mode: active only for resolved tategaki content.
   if (kanjiCursorActive) {
     if (RenderLock::peek()) {
       return;
@@ -590,7 +590,7 @@ void EpubReaderActivity::loop() {
   }
 
   // Long-press Confirm (600ms) in tategaki orientation enters cursor mode.
-  if (effectiveReadingLayout == CrossPointSettings::READING_LAYOUT_VERTICAL_RL && section &&
+  if (effectiveWritingMode != EpubWritingMode::HorizontalTb && section &&
       mappedInput.isPressed(MappedInputManager::Button::Confirm) && mappedInput.getHeldTime() >= CURSOR_ENTER_MS) {
     if (RenderLock::peek()) {
       return;
@@ -1141,10 +1141,12 @@ void EpubReaderActivity::render(RenderLock&& lock) {
     LOG_DBG("ERS", "Loading file: %s, index: %d", filepath.c_str(), currentSpineIndex);
     section = std::unique_ptr<Section>(new Section(epub, currentSpineIndex, renderer));
 
-    if (!section->loadSectionFile(effectiveReaderFontId(), SETTINGS.getReaderLineCompression(),
-                                  SETTINGS.extraParagraphSpacing, SETTINGS.paragraphAlignment, viewportWidth,
-                                  viewportHeight, SETTINGS.hyphenationEnabled, SETTINGS.embeddedStyle,
-                                  SETTINGS.imageRendering, SETTINGS.focusReadingEnabled, effectiveReadingLayout)) {
+    const bool sectionCacheHit = section->loadSectionFile(
+        effectiveReaderFontId(), SETTINGS.getReaderLineCompression(), SETTINGS.extraParagraphSpacing,
+        SETTINGS.paragraphAlignment, viewportWidth, viewportHeight, SETTINGS.hyphenationEnabled, SETTINGS.embeddedStyle,
+        SETTINGS.imageRendering, SETTINGS.focusReadingEnabled, effectiveReadingLayout,
+        static_cast<uint8_t>(effectiveWritingMode));
+    if (!sectionCacheHit) {
       LOG_DBG("ERS", "Cache not found, building...");
 
       {
@@ -1156,7 +1158,8 @@ void EpubReaderActivity::render(RenderLock&& lock) {
       if (!section->createSectionFile(effectiveReaderFontId(), SETTINGS.getReaderLineCompression(),
                                       SETTINGS.extraParagraphSpacing, SETTINGS.paragraphAlignment, viewportWidth,
                                       viewportHeight, SETTINGS.hyphenationEnabled, SETTINGS.embeddedStyle,
-                                      SETTINGS.imageRendering, SETTINGS.focusReadingEnabled, effectiveReadingLayout)) {
+                                      SETTINGS.imageRendering, SETTINGS.focusReadingEnabled, effectiveReadingLayout,
+                                      static_cast<uint8_t>(effectiveWritingMode))) {
         LOG_ERR("ERS", "Failed to persist page data to SD");
         section.reset();
         showPendingSyncSaveError();
@@ -1306,7 +1309,8 @@ void EpubReaderActivity::silentIndexNextChapterIfNeeded(const uint16_t viewportW
   if (nextSection.loadSectionFile(effectiveReaderFontId(), SETTINGS.getReaderLineCompression(),
                                   SETTINGS.extraParagraphSpacing, SETTINGS.paragraphAlignment, viewportWidth,
                                   viewportHeight, SETTINGS.hyphenationEnabled, SETTINGS.embeddedStyle,
-                                  SETTINGS.imageRendering, SETTINGS.focusReadingEnabled, effectiveReadingLayout)) {
+                                  SETTINGS.imageRendering, SETTINGS.focusReadingEnabled, effectiveReadingLayout,
+                                  static_cast<uint8_t>(effectiveWritingMode))) {
     return;
   }
 
@@ -1314,7 +1318,8 @@ void EpubReaderActivity::silentIndexNextChapterIfNeeded(const uint16_t viewportW
   if (!nextSection.createSectionFile(effectiveReaderFontId(), SETTINGS.getReaderLineCompression(),
                                      SETTINGS.extraParagraphSpacing, SETTINGS.paragraphAlignment, viewportWidth,
                                      viewportHeight, SETTINGS.hyphenationEnabled, SETTINGS.embeddedStyle,
-                                     SETTINGS.imageRendering, SETTINGS.focusReadingEnabled, effectiveReadingLayout)) {
+                                     SETTINGS.imageRendering, SETTINGS.focusReadingEnabled, effectiveReadingLayout,
+                                     static_cast<uint8_t>(effectiveWritingMode))) {
     LOG_ERR("ERS", "Failed silent indexing for chapter: %d", nextSpineIndex);
   }
   if (auto* fcm = renderer.getFontCacheManager()) {
@@ -1327,9 +1332,10 @@ bool EpubReaderActivity::saveProgress(int spineIndex, int currentPage, int pageC
 }
 
 void EpubReaderActivity::resolveReadingProfile() {
+  effectiveWritingMode = epub ? epub->getResolvedWritingMode() : EpubWritingMode::HorizontalTb;
   effectiveReadingLayout = SETTINGS.readingLayout;
   if (effectiveReadingLayout == CrossPointSettings::READING_LAYOUT_AUTO) {
-    effectiveReadingLayout = (epub && isJapaneseLanguageCode(epub->getLanguage()))
+    effectiveReadingLayout = (effectiveWritingMode != EpubWritingMode::HorizontalTb)
                                  ? CrossPointSettings::READING_LAYOUT_VERTICAL_RL
                                  : CrossPointSettings::READING_LAYOUT_HORIZONTAL_PORTRAIT;
   }
@@ -1360,7 +1366,8 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
   const auto tPrewarm = millis();
 
   // Force special handling for pages with images when anti-aliasing is on
-  bool imagePageWithAA = page->hasImages() && SETTINGS.textAntiAliasing;
+  const bool pageHasImages = page->hasImages();
+  bool imagePageWithAA = pageHasImages && SETTINGS.textAntiAliasing;
 
   page->render(renderer, effectiveReaderFontId(), orientedMarginLeft, orientedMarginTop);
   renderStatusBar();

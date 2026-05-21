@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "Epub/BookMetadataCache.h"
+#include "Epub/WritingMode.h"
 #include "Epub/css/CssParser.h"
 
 class ZipFile;
@@ -29,6 +30,7 @@ class Epub {
   std::unique_ptr<CssParser> cssParser;
   // CSS files
   std::vector<std::string> cssFiles;
+  EpubWritingMode resolvedWritingMode = EpubWritingMode::HorizontalTb;
 
   bool findContentOpfFile(std::string* contentOpfFile) const;
   bool parseContentOpf(BookMetadataCache::BookMetadata& bookMetadata);
@@ -51,6 +53,8 @@ class Epub {
   const std::string& getTitle() const;
   const std::string& getAuthor() const;
   const std::string& getLanguage() const;
+  bool isPageProgressionRtl() const;
+  EpubWritingMode getResolvedWritingMode() const { return resolvedWritingMode; }
   std::string getCoverBmpPath(bool cropped = false) const;
   bool generateCoverBmp(bool cropped = false) const;
   std::string getThumbBmpPath() const;

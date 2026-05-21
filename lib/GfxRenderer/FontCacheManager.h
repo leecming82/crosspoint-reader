@@ -51,8 +51,10 @@ class FontCacheManager {
   FontDecompressor* fontDecompressor_ = nullptr;
 
   enum class ScanMode : uint8_t { None, Scanning };
+  struct ScanFontRecord {
+    std::string text;
+    uint32_t styleCounts[4] = {};
+  };
   ScanMode scanMode_ = ScanMode::None;
-  std::string scanText_;
-  uint32_t scanStyleCounts_[4] = {};
-  int scanFontId_ = -1;
+  std::map<int, ScanFontRecord> scanFonts_;
 };

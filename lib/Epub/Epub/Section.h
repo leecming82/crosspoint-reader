@@ -20,7 +20,7 @@ class Section {
   void writeSectionFileHeader(int fontId, float lineCompression, bool extraParagraphSpacing, uint8_t paragraphAlignment,
                               uint16_t viewportWidth, uint16_t viewportHeight, bool hyphenationEnabled,
                               bool embeddedStyle, uint8_t imageRendering, bool focusReadingEnabled,
-                              uint8_t readingLayout);
+                              uint8_t readingLayout, uint8_t writingMode);
   uint32_t onPageComplete(std::unique_ptr<Page> page);
 
  public:
@@ -35,11 +35,11 @@ class Section {
   ~Section() = default;
   bool loadSectionFile(int fontId, float lineCompression, bool extraParagraphSpacing, uint8_t paragraphAlignment,
                        uint16_t viewportWidth, uint16_t viewportHeight, bool hyphenationEnabled, bool embeddedStyle,
-                       uint8_t imageRendering, bool focusReadingEnabled, uint8_t readingLayout);
+                       uint8_t imageRendering, bool focusReadingEnabled, uint8_t readingLayout, uint8_t writingMode);
   bool clearCache() const;
   bool createSectionFile(int fontId, float lineCompression, bool extraParagraphSpacing, uint8_t paragraphAlignment,
                          uint16_t viewportWidth, uint16_t viewportHeight, bool hyphenationEnabled, bool embeddedStyle,
-                         uint8_t imageRendering, bool focusReadingEnabled, uint8_t readingLayout,
+                         uint8_t imageRendering, bool focusReadingEnabled, uint8_t readingLayout, uint8_t writingMode,
                          const std::function<void(size_t, size_t)>& progressFn = nullptr);
   std::unique_ptr<Page> loadPageFromSectionFile();
 

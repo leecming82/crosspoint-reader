@@ -4,8 +4,6 @@
 #include <Logging.h>
 #include <SdCardFont.h>
 
-#include <cstring>
-
 FontCacheManager::FontCacheManager(const std::map<int, EpdFontFamily>& fontMap,
                                    const std::map<int, SdCardFont*>& sdCardFonts)
     : fontMap_(fontMap), sdCardFonts_(sdCardFonts) {}
@@ -69,8 +67,11 @@ void FontCacheManager::resetStats() {
 bool FontCacheManager::isScanning() const { return scanMode_ == ScanMode::Scanning; }
 
 void FontCacheManager::recordText(const char* text, int fontId, EpdFontFamily::Style style) {
-  scanText_ += text;
-  if (scanFontId_ < 0) scanFontId_ = fontId;
+  auto& record = scanFonts_[fontId];
+  if (record.text.empty()) {
+    record.text.reserve(1024);
+  }
+  record.text += text;
   const uint8_t baseStyle = static_cast<uint8_t>(style) & 0x03;
   const unsigned char* p = reinterpret_cast<const unsigned char*>(text);
   uint32_t cpCount = 0;
@@ -78,7 +79,7 @@ void FontCacheManager::recordText(const char* text, int fontId, EpdFontFamily::S
     if ((*p & 0xC0) != 0x80) cpCount++;
     p++;
   }
-  scanStyleCounts_[baseStyle] += cpCount;
+  record.styleCounts[baseStyle] += cpCount;
 }
 
 // --- PrewarmScope implementation ---
@@ -87,33 +88,33 @@ FontCacheManager::PrewarmScope::PrewarmScope(FontCacheManager& manager) : manage
   manager_->scanMode_ = ScanMode::Scanning;
   manager_->clearCache();
   manager_->resetStats();
-  manager_->scanText_.clear();
-  manager_->scanText_.reserve(2048);  // Pre-allocate to avoid heap fragmentation from repeated concat
-  memset(manager_->scanStyleCounts_, 0, sizeof(manager_->scanStyleCounts_));
-  manager_->scanFontId_ = -1;
+  manager_->scanFonts_.clear();
 }
 
 void FontCacheManager::PrewarmScope::endScanAndPrewarm() {
   manager_->scanMode_ = ScanMode::None;
-  if (manager_->scanText_.empty()) return;
+  if (manager_->scanFonts_.empty()) return;
 
-  // Build style bitmask from all styles that appeared during the scan
-  uint8_t styleMask = 0;
-  for (uint8_t i = 0; i < 4; i++) {
-    if (manager_->scanStyleCounts_[i] > 0) styleMask |= (1 << i);
+  for (auto& [fontId, record] : manager_->scanFonts_) {
+    if (record.text.empty()) continue;
+
+    // Build style bitmask from all styles that appeared during the scan for this font.
+    uint8_t styleMask = 0;
+    for (uint8_t i = 0; i < 4; i++) {
+      if (record.styleCounts[i] > 0) styleMask |= (1 << i);
+    }
+    if (styleMask == 0) styleMask = 1;  // default to regular
+
+    manager_->prewarmCache(fontId, record.text.c_str(), styleMask);
   }
-  if (styleMask == 0) styleMask = 1;  // default to regular
 
-  manager_->prewarmCache(manager_->scanFontId_, manager_->scanText_.c_str(), styleMask);
-
-  // Free scan string memory
-  manager_->scanText_.clear();
-  manager_->scanText_.shrink_to_fit();
+  // Free scan string memory.
+  manager_->scanFonts_.clear();
 }
 
 FontCacheManager::PrewarmScope::~PrewarmScope() {
   if (active_) {
-    endScanAndPrewarm();  // no-op if already called (scanText_ is empty)
+    endScanAndPrewarm();  // no-op if already called (scanFonts_ is empty)
     manager_->clearCache();
   }
 }

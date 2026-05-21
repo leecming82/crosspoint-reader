@@ -13,6 +13,20 @@
 #include "Epub/parsers/TocNavParser.h"
 #include "Epub/parsers/TocNcxParser.h"
 
+namespace {
+EpubWritingMode writingModeFromCss(const CssWritingMode mode) {
+  switch (mode) {
+    case CssWritingMode::VerticalRl:
+      return EpubWritingMode::VerticalRl;
+    case CssWritingMode::VerticalLr:
+      return EpubWritingMode::VerticalLr;
+    case CssWritingMode::HorizontalTb:
+    default:
+      return EpubWritingMode::HorizontalTb;
+  }
+}
+}  // namespace
+
 bool Epub::findContentOpfFile(std::string* contentOpfFile) const {
   const auto containerPath = "META-INF/container.xml";
   size_t containerSize;
@@ -78,6 +92,7 @@ bool Epub::parseContentOpf(BookMetadataCache::BookMetadata& bookMetadata) {
   bookMetadata.author = opfParser.author;
   bookMetadata.language = opfParser.language;
   bookMetadata.coverItemHref = opfParser.coverItemHref;
+  bookMetadata.pageProgressionRtl = opfParser.pageProgressionRtl;
 
   // Guide-based cover fallback: if no cover found via metadata/properties,
   // try extracting the image reference from the guide's cover page XHTML
@@ -341,6 +356,10 @@ void Epub::parseCssFiles() const {
   LOG_DBG("EBP", "Loaded %zu CSS style rules from %zu files", cssParser->ruleCount(), cssFiles.size());
 }
 
+bool Epub::isPageProgressionRtl() const {
+  return bookMetadataCache && bookMetadataCache->coreMetadata.pageProgressionRtl;
+}
+
 // load in the meta data for the epub file
 bool Epub::load(const bool buildIfMissing, const bool skipLoadingCss) {
   LOG_DBG("EBP", "Loading ePub: %s", filepath.c_str());
@@ -366,6 +385,13 @@ bool Epub::load(const bool buildIfMissing, const bool skipLoadingCss) {
         // Invalidate section caches so they are rebuilt with the new CSS
         Storage.removeDir((cachePath + "/sections").c_str());
       }
+    }
+    if (cssParser && cssParser->hasVerticalWritingMode()) {
+      resolvedWritingMode = writingModeFromCss(cssParser->preferredWritingMode());
+    } else if (bookMetadataCache->coreMetadata.pageProgressionRtl) {
+      resolvedWritingMode = EpubWritingMode::VerticalRl;
+    } else {
+      resolvedWritingMode = EpubWritingMode::HorizontalTb;
     }
     LOG_DBG("EBP", "Loaded ePub: %s", filepath.c_str());
     return true;
@@ -469,6 +495,14 @@ bool Epub::load(const bool buildIfMissing, const bool skipLoadingCss) {
     // Parse CSS files after cache reload
     parseCssFiles();
     Storage.removeDir((cachePath + "/sections").c_str());
+  }
+
+  if (cssParser && cssParser->hasVerticalWritingMode()) {
+    resolvedWritingMode = writingModeFromCss(cssParser->preferredWritingMode());
+  } else if (bookMetadataCache->coreMetadata.pageProgressionRtl) {
+    resolvedWritingMode = EpubWritingMode::VerticalRl;
+  } else {
+    resolvedWritingMode = EpubWritingMode::HorizontalTb;
   }
 
   LOG_DBG("EBP", "Loaded ePub: %s", filepath.c_str());

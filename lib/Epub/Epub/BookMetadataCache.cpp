@@ -12,7 +12,7 @@
 #include "FsHelpers.h"
 
 namespace {
-constexpr uint8_t BOOK_CACHE_VERSION = 10;
+constexpr uint8_t BOOK_CACHE_VERSION = 11;
 constexpr char bookBinFile[] = "/book.bin";
 constexpr char tmpSpineBinFile[] = "/spine.bin.tmp";
 constexpr char tmpTocBinFile[] = "/toc.bin.tmp";
@@ -677,7 +677,7 @@ bool BookMetadataCache::buildBookBin(const std::string& epubPath, const BookMeta
                                    sizeof(tocCount) + sizeof(anchorCount);
   const uint32_t metadataSize = metadata.title.size() + metadata.author.size() + metadata.language.size() +
                                 metadata.coverItemHref.size() + metadata.textReferenceHref.size() +
-                                sizeof(uint32_t) * 5;
+                                sizeof(uint32_t) * 5 + sizeof(metadata.pageProgressionRtl);
   const uint32_t lutSize = sizeof(uint32_t) * spineCount + sizeof(uint32_t) * tocCount + sizeof(uint32_t) * anchorCount;
   const uint32_t lutOffset = headerASize + metadataSize;
 
@@ -693,6 +693,7 @@ bool BookMetadataCache::buildBookBin(const std::string& epubPath, const BookMeta
   serialization::writeString(bookFile, metadata.language);
   serialization::writeString(bookFile, metadata.coverItemHref);
   serialization::writeString(bookFile, metadata.textReferenceHref);
+  serialization::writePod(bookFile, metadata.pageProgressionRtl);
 
   std::deque<uint32_t> spineEntryPositions;
   spineEntryPositions.resize(spineCount);
@@ -872,6 +873,7 @@ bool BookMetadataCache::load() {
   serialization::readString(bookFile, coreMetadata.language);
   serialization::readString(bookFile, coreMetadata.coverItemHref);
   serialization::readString(bookFile, coreMetadata.textReferenceHref);
+  serialization::readPod(bookFile, coreMetadata.pageProgressionRtl);
 
   loaded = true;
   LOG_DBG("BMC", "Loaded cache data: %d spine, %d TOC, %d anchor entries", spineCount, tocCount, anchorCount);

@@ -4,6 +4,7 @@
 #include <Epub/FootnoteEntry.h>
 #include <Epub/Page.h>
 #include <Epub/Section.h>
+#include <Epub/WritingMode.h>
 #include <JapaneseDictionary.h>
 
 #include <optional>
@@ -40,6 +41,7 @@ class EpubReaderActivity final : public Activity {
   unsigned long pendingPageTurnIntentAt = 0UL;
   uint8_t effectiveReadingLayout = CrossPointSettings::READING_LAYOUT_HORIZONTAL_PORTRAIT;
   uint8_t effectiveReaderOrientation = CrossPointSettings::PORTRAIT;
+  EpubWritingMode effectiveWritingMode = EpubWritingMode::HorizontalTb;
 
   // Kanji cursor overlay (tategaki dictionary lookup, Phase 1)
   struct KanjiEntry {
