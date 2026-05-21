@@ -39,8 +39,6 @@ class EpubReaderActivity final : public Activity {
   enum class PendingPageTurnIntent : uint8_t { None, Prev, Next };
   PendingPageTurnIntent pendingPageTurnIntent = PendingPageTurnIntent::None;
   unsigned long pendingPageTurnIntentAt = 0UL;
-  uint8_t effectiveReadingLayout = CrossPointSettings::READING_LAYOUT_HORIZONTAL_PORTRAIT;
-  uint8_t effectiveReaderOrientation = CrossPointSettings::PORTRAIT;
   EpubWritingMode effectiveWritingMode = EpubWritingMode::HorizontalTb;
 
   // Kanji cursor overlay (tategaki dictionary lookup, Phase 1)
@@ -118,8 +116,8 @@ class EpubReaderActivity final : public Activity {
   // Jump to a percentage of the book (0-100), mapping it to spine and page.
   void jumpToPercent(int percent);
   void onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction action);
-  void applyReadingLayout(uint8_t readingLayout);
   void applyOrientation(uint8_t orientation);
+  void applyWritingModePreference(uint8_t writingModePreference);
   void toggleAutoPageTurn(uint8_t selectedPageTurnOption);
   void pageTurn(bool isForwardTurn);
   void latchPageTurnIntentWhileBusy();

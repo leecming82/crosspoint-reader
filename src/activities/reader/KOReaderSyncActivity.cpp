@@ -285,7 +285,7 @@ void KOReaderSyncActivity::performUpload() {
 void KOReaderSyncActivity::onEnter() {
   Activity::onEnter();
   previousRendererOrientation = renderer.getOrientation();
-  renderer.setOrientation(ReaderUtils::menuOrientationForReadingLayout(effectiveReadingLayout));
+  ReaderUtils::applyOrientation(renderer, SETTINGS.orientation);
 
   // Check for credentials first
   if (!KOREADER_STORE.hasCredentials()) {

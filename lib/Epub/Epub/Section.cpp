@@ -5,13 +5,14 @@
 #include <Serialization.h>
 
 #include "Epub/DebugStyleConfig.h"
+#include "Epub/WritingMode.h"
 #include "Epub/css/CssParser.h"
 #include "Page.h"
 #include "hyphenation/Hyphenator.h"
 #include "parsers/ChapterHtmlSlimParser.h"
 
 namespace {
-constexpr uint8_t SECTION_FILE_VERSION = 26;
+constexpr uint8_t SECTION_FILE_VERSION = 27;
 constexpr uint32_t HEADER_SIZE = sizeof(uint8_t) + sizeof(int) + sizeof(float) + sizeof(bool) + sizeof(uint8_t) +
                                  sizeof(uint16_t) + sizeof(uint16_t) + sizeof(uint16_t) + sizeof(bool) + sizeof(bool) +
                                  sizeof(uint8_t) + sizeof(bool) + sizeof(uint8_t) + sizeof(uint8_t) + sizeof(uint32_t) +
@@ -243,7 +244,7 @@ bool Section::createSectionFile(const int fontId, const float lineCompression, c
         lut.push_back({this->onPageComplete(std::move(page)), paragraphIndex, listItemIndex});
       },
       applyEmbeddedStyle, contentBase, imageBasePath, imageRendering, progressFn, cssParser,
-      spineItem.sourceStartOffset, spineItem.sourceEndOffset);
+      spineItem.sourceStartOffset, spineItem.sourceEndOffset, static_cast<EpubWritingMode>(writingMode));
   Hyphenator::setPreferredLanguage(epub->getLanguage());
   success = visitor.parseAndBuildPages();
 

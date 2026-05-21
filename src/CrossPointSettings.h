@@ -72,14 +72,11 @@ class CrossPointSettings {
     ORIENTATION_COUNT
   };
 
-  enum READING_LAYOUT {
-    READING_LAYOUT_AUTO = 0,
-    READING_LAYOUT_HORIZONTAL_PORTRAIT = 1,
-    READING_LAYOUT_HORIZONTAL_LANDSCAPE_CW = 2,
-    READING_LAYOUT_HORIZONTAL_INVERTED = 3,
-    READING_LAYOUT_HORIZONTAL_LANDSCAPE_CCW = 4,
-    READING_LAYOUT_VERTICAL_RL = 5,
-    READING_LAYOUT_COUNT
+  enum WRITING_MODE_PREFERENCE {
+    WRITING_MODE_BOOK_DEFAULT = 0,
+    WRITING_MODE_HORIZONTAL = 1,
+    WRITING_MODE_VERTICAL_RL = 2,
+    WRITING_MODE_PREFERENCE_COUNT
   };
 
   // Front button layout options (legacy)
@@ -206,9 +203,8 @@ class CrossPointSettings {
   // EPUB reading orientation settings
   // 0 = portrait (default), 1 = landscape clockwise, 2 = inverted, 3 = landscape counter-clockwise
   uint8_t orientation = PORTRAIT;
-  // EPUB reading layout. This is the user-facing reading posture; orientation
-  // is retained below for legacy settings migration and older internal flows.
-  uint8_t readingLayout = READING_LAYOUT_AUTO;
+  // EPUB writing-mode preference. Physical screen orientation is controlled by orientation above.
+  uint8_t writingModePreference = WRITING_MODE_BOOK_DEFAULT;
   // Button layouts (front layout retained for migration only)
   uint8_t frontButtonLayout = BACK_CONFIRM_LEFT_RIGHT;
   uint8_t sideButtonLayout = PREV_NEXT;

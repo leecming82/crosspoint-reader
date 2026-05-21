@@ -62,6 +62,8 @@ class ParsedText {
   void layoutAndExtractLines(const GfxRenderer& renderer, int fontId, uint16_t viewportWidth,
                              const std::function<void(std::shared_ptr<TextBlock>)>& processLine,
                              bool includeLastLine = true);
+  void layoutAndExtractVerticalColumns(const GfxRenderer& renderer, int fontId, uint16_t columnHeight,
+                                       const std::function<void(std::shared_ptr<TextBlock>)>& processColumn);
 };
 
 // Returns true for CJK unified ideographs (kanji) only.

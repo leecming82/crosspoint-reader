@@ -18,6 +18,7 @@ class EpubReaderMenuActivity final : public Activity {
     GO_TO_PERCENT,
     AUTO_PAGE_TURN,
     ROTATE_SCREEN,
+    WRITING_MODE,
     SCREENSHOT,
     DISPLAY_QR,
     GO_HOME,
@@ -27,8 +28,7 @@ class EpubReaderMenuActivity final : public Activity {
 
   explicit EpubReaderMenuActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, const std::string& title,
                                   const int currentPage, const int totalPages, const int bookProgressPercent,
-                                  const uint8_t configuredReadingLayout, const uint8_t resolvedReadingLayout,
-                                  const bool hasFootnotes);
+                                  uint8_t orientation, uint8_t writingModePreference, bool hasFootnotes);
 
   void onEnter() override;
   void onExit() override;
@@ -42,9 +42,8 @@ class EpubReaderMenuActivity final : public Activity {
   };
 
   static std::vector<MenuItem> buildMenuItems(bool hasFootnotes);
-  uint8_t normalizeReadingLayout(uint8_t readingLayout) const;
-  uint8_t menuLayoutForPending() const;
-  void applyMenuOrientation();
+  uint8_t normalizeOrientation(uint8_t orientation) const;
+  uint8_t normalizeWritingModePreference(uint8_t writingModePreference) const;
 
   // Fixed menu layout
   const std::vector<MenuItem> menuItems;
@@ -53,18 +52,14 @@ class EpubReaderMenuActivity final : public Activity {
 
   ButtonNavigator buttonNavigator;
   std::string title = "Reader Menu";
-  uint8_t pendingReadingLayout = 0;
-  uint8_t effectiveReadingLayout = CrossPointSettings::READING_LAYOUT_HORIZONTAL_PORTRAIT;
+  uint8_t pendingOrientation = CrossPointSettings::PORTRAIT;
+  uint8_t pendingWritingModePreference = CrossPointSettings::WRITING_MODE_BOOK_DEFAULT;
   uint8_t selectedPageTurnOption = 0;
   GfxRenderer::Orientation previousRendererOrientation = GfxRenderer::Orientation::Portrait;
-  const std::vector<StrId> readingLayoutLabels = {
-      StrId::STR_READING_LAYOUT_AUTO,
-      StrId::STR_READING_LAYOUT_HORIZONTAL_PORTRAIT,
-      StrId::STR_READING_LAYOUT_HORIZONTAL_LANDSCAPE_CW,
-      StrId::STR_READING_LAYOUT_HORIZONTAL_INVERTED,
-      StrId::STR_READING_LAYOUT_HORIZONTAL_LANDSCAPE_CCW,
-      StrId::STR_READING_LAYOUT_VERTICAL_RL,
-  };
+  const std::vector<StrId> orientationLabels = {StrId::STR_PORTRAIT, StrId::STR_LANDSCAPE_CW, StrId::STR_INVERTED,
+                                                StrId::STR_LANDSCAPE_CCW};
+  const std::vector<StrId> writingModeLabels = {StrId::STR_BOOK_S_STYLE, StrId::STR_READING_LAYOUT_HORIZONTAL_PORTRAIT,
+                                                StrId::STR_READING_LAYOUT_VERTICAL_RL};
   const std::vector<const char*> pageTurnLabels = {I18N.get(StrId::STR_STATE_OFF), "1", "3", "6", "12"};
   int currentPage = 0;
   int totalPages = 0;

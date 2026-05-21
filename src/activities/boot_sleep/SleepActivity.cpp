@@ -16,30 +16,6 @@
 #include "images/Logo120.h"
 #include "images/MoonIcon.h"
 
-namespace {
-
-uint8_t sleepPopupReadingLayout() {
-  if (SETTINGS.readingLayout != CrossPointSettings::READING_LAYOUT_AUTO) {
-    return SETTINGS.readingLayout;
-  }
-
-  switch (SETTINGS.orientation) {
-    case CrossPointSettings::LANDSCAPE_CW:
-      return CrossPointSettings::READING_LAYOUT_HORIZONTAL_LANDSCAPE_CW;
-    case CrossPointSettings::INVERTED:
-      return CrossPointSettings::READING_LAYOUT_HORIZONTAL_INVERTED;
-    case CrossPointSettings::LANDSCAPE_CCW:
-      // Auto resolves Japanese tategaki to this content orientation. Sleep is
-      // outside the reader, so use the held-device UI posture for this case.
-      return CrossPointSettings::READING_LAYOUT_VERTICAL_RL;
-    case CrossPointSettings::PORTRAIT:
-    default:
-      return CrossPointSettings::READING_LAYOUT_HORIZONTAL_PORTRAIT;
-  }
-}
-
-}  // namespace
-
 void SleepActivity::onEnter() {
   Activity::onEnter();
 
@@ -54,7 +30,7 @@ void SleepActivity::onEnter() {
 
   // Show popup with reader orientation only when going to sleep from reader
   if (APP_STATE.lastSleepFromReader) {
-    renderer.setOrientation(ReaderUtils::menuOrientationForReadingLayout(sleepPopupReadingLayout()));
+    ReaderUtils::applyOrientation(renderer, SETTINGS.orientation);
     GUI.drawPopup(renderer, tr(STR_ENTERING_SLEEP));
     renderer.setOrientation(GfxRenderer::Orientation::Portrait);
   } else {

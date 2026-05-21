@@ -10,31 +10,26 @@
 
 EpubReaderMenuActivity::EpubReaderMenuActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,
                                                const std::string& title, const int currentPage, const int totalPages,
-                                               const int bookProgressPercent, const uint8_t configuredReadingLayout,
-                                               const uint8_t resolvedReadingLayout, const bool hasFootnotes)
+                                               const int bookProgressPercent, const uint8_t orientation,
+                                               const uint8_t writingModePreference, const bool hasFootnotes)
     : Activity("EpubReaderMenu", renderer, mappedInput),
       menuItems(buildMenuItems(hasFootnotes)),
       title(title),
-      pendingReadingLayout(configuredReadingLayout),
-      effectiveReadingLayout(resolvedReadingLayout),
+      pendingOrientation(normalizeOrientation(orientation)),
+      pendingWritingModePreference(normalizeWritingModePreference(writingModePreference)),
       currentPage(currentPage),
       totalPages(totalPages),
-      bookProgressPercent(bookProgressPercent) {
-  pendingReadingLayout = normalizeReadingLayout(pendingReadingLayout);
-  effectiveReadingLayout = normalizeReadingLayout(effectiveReadingLayout);
-  if (effectiveReadingLayout == CrossPointSettings::READING_LAYOUT_AUTO) {
-    effectiveReadingLayout = CrossPointSettings::READING_LAYOUT_HORIZONTAL_PORTRAIT;
-  }
-}
+      bookProgressPercent(bookProgressPercent) {}
 
 std::vector<EpubReaderMenuActivity::MenuItem> EpubReaderMenuActivity::buildMenuItems(bool hasFootnotes) {
   std::vector<MenuItem> items;
-  items.reserve(10);
+  items.reserve(11);
   items.push_back({MenuAction::SELECT_CHAPTER, StrId::STR_SELECT_CHAPTER});
   if (hasFootnotes) {
     items.push_back({MenuAction::FOOTNOTES, StrId::STR_FOOTNOTES});
   }
-  items.push_back({MenuAction::ROTATE_SCREEN, StrId::STR_READING_LAYOUT});
+  items.push_back({MenuAction::ROTATE_SCREEN, StrId::STR_ORIENTATION});
+  items.push_back({MenuAction::WRITING_MODE, StrId::STR_READING_LAYOUT});
   items.push_back({MenuAction::AUTO_PAGE_TURN, StrId::STR_AUTO_TURN_PAGES_PER_MIN});
   items.push_back({MenuAction::GO_TO_PERCENT, StrId::STR_GO_TO_PERCENT});
   items.push_back({MenuAction::SCREENSHOT, StrId::STR_SCREENSHOT_BUTTON});
@@ -45,26 +40,19 @@ std::vector<EpubReaderMenuActivity::MenuItem> EpubReaderMenuActivity::buildMenuI
   return items;
 }
 
-uint8_t EpubReaderMenuActivity::normalizeReadingLayout(const uint8_t readingLayout) const {
-  return readingLayout < readingLayoutLabels.size() ? readingLayout : CrossPointSettings::READING_LAYOUT_AUTO;
+uint8_t EpubReaderMenuActivity::normalizeOrientation(const uint8_t orientation) const {
+  return orientation < orientationLabels.size() ? orientation : CrossPointSettings::PORTRAIT;
 }
 
-uint8_t EpubReaderMenuActivity::menuLayoutForPending() const {
-  const uint8_t pending = normalizeReadingLayout(pendingReadingLayout);
-  if (pending == CrossPointSettings::READING_LAYOUT_AUTO) {
-    return effectiveReadingLayout;
-  }
-  return pending;
-}
-
-void EpubReaderMenuActivity::applyMenuOrientation() {
-  renderer.setOrientation(ReaderUtils::menuOrientationForReadingLayout(menuLayoutForPending()));
+uint8_t EpubReaderMenuActivity::normalizeWritingModePreference(const uint8_t writingModePreference) const {
+  return writingModePreference < writingModeLabels.size() ? writingModePreference
+                                                          : CrossPointSettings::WRITING_MODE_BOOK_DEFAULT;
 }
 
 void EpubReaderMenuActivity::onEnter() {
   Activity::onEnter();
   previousRendererOrientation = renderer.getOrientation();
-  applyMenuOrientation();
+  ReaderUtils::applyOrientation(renderer, pendingOrientation);
   requestUpdate();
 }
 
@@ -88,9 +76,9 @@ void EpubReaderMenuActivity::loop() {
   if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
     const auto selectedAction = menuItems[selectedIndex].action;
     if (selectedAction == MenuAction::ROTATE_SCREEN) {
-      // Cycle layout preview locally; actual layout change happens on menu exit.
-      pendingReadingLayout = (pendingReadingLayout + 1) % readingLayoutLabels.size();
-      applyMenuOrientation();
+      // Cycle orientation preview locally; actual orientation change happens on menu exit.
+      pendingOrientation = (pendingOrientation + 1) % orientationLabels.size();
+      ReaderUtils::applyOrientation(renderer, pendingOrientation);
       requestUpdate();
       return;
     }
@@ -101,13 +89,20 @@ void EpubReaderMenuActivity::loop() {
       return;
     }
 
-    setResult(MenuResult{static_cast<int>(selectedAction), pendingReadingLayout, selectedPageTurnOption});
+    if (selectedAction == MenuAction::WRITING_MODE) {
+      pendingWritingModePreference = (pendingWritingModePreference + 1) % writingModeLabels.size();
+      requestUpdate();
+      return;
+    }
+
+    setResult(MenuResult{static_cast<int>(selectedAction), pendingOrientation, pendingWritingModePreference,
+                         selectedPageTurnOption});
     finish();
     return;
   } else if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
     ActivityResult result;
     result.isCancelled = true;
-    result.data = MenuResult{-1, pendingReadingLayout, selectedPageTurnOption};
+    result.data = MenuResult{-1, pendingOrientation, pendingWritingModePreference, selectedPageTurnOption};
     setResult(std::move(result));
     finish();
     return;
@@ -145,7 +140,9 @@ void EpubReaderMenuActivity::render(RenderLock&&) {
       [this](int index) {
         const auto value = menuItems[index].action;
         if (value == MenuAction::ROTATE_SCREEN) {
-          return I18N.get(readingLayoutLabels[normalizeReadingLayout(pendingReadingLayout)]);
+          return I18N.get(orientationLabels[normalizeOrientation(pendingOrientation)]);
+        } else if (value == MenuAction::WRITING_MODE) {
+          return I18N.get(writingModeLabels[normalizeWritingModePreference(pendingWritingModePreference)]);
         } else if (value == MenuAction::AUTO_PAGE_TURN) {
           return pageTurnLabels[selectedPageTurnOption];
         } else {

@@ -19,7 +19,8 @@ struct KeyboardResult {
 
 struct MenuResult {
   int action = -1;
-  uint8_t readingLayout = 0;
+  uint8_t orientation = 0;
+  uint8_t writingModePreference = 0;
   uint8_t pageTurnOption = 0;
 };
 

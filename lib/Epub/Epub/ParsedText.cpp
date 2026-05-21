@@ -3,6 +3,7 @@
 #include <Arduino.h>
 #include <GfxRenderer.h>
 #include <Utf8.h>
+#include <VerticalTextUtils.h>
 
 #include <algorithm>
 #include <cmath>
@@ -33,6 +34,17 @@ struct CjkUnit {
   bool noGapBefore;
   bool noBreakBefore;
   bool isCjk;
+  EpdFontFamily::Style style;
+};
+
+struct VerticalUnit {
+  size_t wordIndex;
+  size_t startByte;
+  size_t endByte;
+  uint32_t firstCp;
+  uint32_t lastCp;
+  uint16_t advance;
+  bool noBreakBefore;
   EpdFontFamily::Style style;
 };
 
@@ -595,6 +607,189 @@ void ParsedText::layoutAndExtractLines(const GfxRenderer& renderer, const int fo
       rubyTexts.erase(rubyTexts.begin(), rubyTexts.begin() + rubyConsumed);
     }
   }
+}
+
+void ParsedText::layoutAndExtractVerticalColumns(const GfxRenderer& renderer, const int fontId,
+                                                 const uint16_t columnHeight,
+                                                 const std::function<void(std::shared_ptr<TextBlock>)>& processColumn) {
+  if (words.empty()) {
+    return;
+  }
+
+  if (renderer.isSdCardFont(fontId)) {
+    uint8_t styleMask = 0;
+    for (auto style : wordStyles) {
+      styleMask |= static_cast<uint8_t>(1u << (static_cast<uint8_t>(style) & 0x03));
+    }
+    if (styleMask == 0) styleMask = 0x01;
+    renderer.ensureSdCardFontReady(fontId, words, /*includeHyphenGlyph=*/false, styleMask);
+  }
+
+  const int columnAdvance = std::max(1, renderer.getLineHeight(fontId));
+  std::vector<VerticalUnit> units;
+  units.reserve(words.size() * 2);
+
+  auto pushUnit = [&](const size_t wordIndex, const size_t start, const size_t end, const uint32_t firstCp,
+                      const uint32_t lastCp, const int advance, const bool noBreakBefore) {
+    units.push_back({wordIndex, start, end, firstCp, lastCp, static_cast<uint16_t>(std::max(1, advance)), noBreakBefore,
+                     wordStyles[wordIndex]});
+  };
+
+  for (size_t wordIndex = 0; wordIndex < words.size(); ++wordIndex) {
+    const std::string& word = words[wordIndex];
+    const bool wordHasRuby = !rubyTexts.empty() && wordIndex < rubyTexts.size() && !rubyTexts[wordIndex].empty();
+
+    if (wordHasRuby) {
+      const uint32_t firstCp = firstCodepoint(word);
+      const uint32_t lastCp = lastCodepoint(word);
+      size_t cpCount = 0;
+      const auto* countPtr = reinterpret_cast<const unsigned char*>(word.c_str());
+      while (utf8NextCodepoint(&countPtr)) ++cpCount;
+      const int measured = renderer.getTextAdvanceX(fontId, word.c_str(), wordStyles[wordIndex]);
+      const int advance = std::max(columnAdvance * static_cast<int>(std::max<size_t>(cpCount, 1)), measured);
+      pushUnit(wordIndex, 0, word.size(), firstCp, lastCp, advance, false);
+      continue;
+    }
+
+    size_t offset = 0;
+    bool firstUnitInWord = true;
+    while (offset < word.size()) {
+      const auto* ptr = reinterpret_cast<const unsigned char*>(word.c_str() + offset);
+      const uint32_t cp = utf8NextCodepoint(&ptr);
+      if (cp == 0) break;
+      const size_t nextOffset = static_cast<size_t>(reinterpret_cast<const char*>(ptr) - word.c_str());
+
+      if (VerticalTextUtils::isAsciiDigit(cp)) {
+        size_t runEnd = nextOffset;
+        uint32_t lastCpInRun = cp;
+        size_t digitCount = 1;
+        while (runEnd < word.size() && digitCount < 2) {
+          const auto* lookaheadPtr = reinterpret_cast<const unsigned char*>(word.c_str() + runEnd);
+          const uint32_t lookaheadCp = utf8NextCodepoint(&lookaheadPtr);
+          if (!VerticalTextUtils::isAsciiDigit(lookaheadCp)) break;
+          lastCpInRun = lookaheadCp;
+          runEnd = static_cast<size_t>(reinterpret_cast<const char*>(lookaheadPtr) - word.c_str());
+          ++digitCount;
+        }
+        pushUnit(wordIndex, offset, runEnd, cp, lastCpInRun, columnAdvance,
+                 firstUnitInWord && wordContinues[wordIndex]);
+        offset = runEnd;
+        firstUnitInWord = false;
+        continue;
+      }
+
+      if (!VerticalTextUtils::isUprightInVertical(cp)) {
+        size_t runEnd = nextOffset;
+        uint32_t lastCpInRun = cp;
+        while (runEnd < word.size()) {
+          const auto* lookaheadPtr = reinterpret_cast<const unsigned char*>(word.c_str() + runEnd);
+          const uint32_t lookaheadCp = utf8NextCodepoint(&lookaheadPtr);
+          if (lookaheadCp == 0 || VerticalTextUtils::isUprightInVertical(lookaheadCp) ||
+              VerticalTextUtils::isAsciiDigit(lookaheadCp)) {
+            break;
+          }
+          lastCpInRun = lookaheadCp;
+          runEnd = static_cast<size_t>(reinterpret_cast<const char*>(lookaheadPtr) - word.c_str());
+        }
+        const std::string run = word.substr(offset, runEnd - offset);
+        pushUnit(wordIndex, offset, runEnd, cp, lastCpInRun,
+                 measureRunWidth(renderer, fontId, run, wordStyles[wordIndex]),
+                 firstUnitInWord && wordContinues[wordIndex]);
+        offset = runEnd;
+        firstUnitInWord = false;
+        continue;
+      }
+
+      char cpText[5] = {};
+      const size_t cpBytes = nextOffset - offset;
+      for (size_t i = 0; i < cpBytes && i < 4; ++i) cpText[i] = word[offset + i];
+      const int measured = renderer.getTextAdvanceX(fontId, cpText, wordStyles[wordIndex]);
+      pushUnit(wordIndex, offset, nextOffset, cp, cp, std::max(columnAdvance, measured),
+               firstUnitInWord && wordContinues[wordIndex]);
+      offset = nextOffset;
+      firstUnitInWord = false;
+    }
+  }
+
+  if (units.empty()) {
+    words.clear();
+    wordStyles.clear();
+    wordContinues.clear();
+    wordIsFocusSuffix.clear();
+    rubyTexts.clear();
+    return;
+  }
+
+  auto canBreakAfter = [&units](const size_t index) {
+    if (index + 1 >= units.size()) return true;
+    if (units[index + 1].noBreakBefore) return false;
+    return !VerticalTextUtils::isKinsokuTail(units[index].lastCp) &&
+           !VerticalTextUtils::isKinsokuHead(units[index + 1].firstCp);
+  };
+
+  auto emitColumn = [&](const size_t start, const size_t end) {
+    std::vector<std::string> columnWords;
+    std::vector<int16_t> columnXPos;
+    std::vector<int16_t> columnYPos;
+    std::vector<EpdFontFamily::Style> columnStyles;
+    std::vector<std::string> columnRubyTexts;
+    const bool hasRubyInSource = !rubyTexts.empty();
+    columnWords.reserve(end - start);
+    columnXPos.reserve(end - start);
+    columnYPos.reserve(end - start);
+    columnStyles.reserve(end - start);
+    if (hasRubyInSource) columnRubyTexts.reserve(end - start);
+
+    int ypos = 0;
+    for (size_t i = start; i < end; ++i) {
+      const VerticalUnit& unit = units[i];
+      const std::string& source = words[unit.wordIndex];
+      columnWords.emplace_back(source, unit.startByte, unit.endByte - unit.startByte);
+      columnXPos.push_back(0);
+      columnYPos.push_back(static_cast<int16_t>(ypos));
+      columnStyles.push_back(unit.style);
+      if (hasRubyInSource) {
+        const bool wholeSourceWord = unit.startByte == 0 && unit.endByte == source.size();
+        columnRubyTexts.push_back(wholeSourceWord && unit.wordIndex < rubyTexts.size() ? rubyTexts[unit.wordIndex]
+                                                                                       : std::string());
+      }
+      ypos += unit.advance;
+    }
+
+    processColumn(std::make_shared<TextBlock>(std::move(columnWords), std::move(columnXPos), std::move(columnStyles),
+                                              std::vector<uint8_t>{}, std::vector<uint16_t>{}, blockStyle,
+                                              std::move(columnRubyTexts), std::move(columnYPos), true));
+  };
+
+  size_t columnStart = 0;
+  while (columnStart < units.size()) {
+    int columnUsed = 0;
+    size_t bestBreak = columnStart;
+    size_t i = columnStart;
+    for (; i < units.size(); ++i) {
+      const int candidate = columnUsed + units[i].advance;
+      if (candidate > columnHeight && i > columnStart) {
+        break;
+      }
+      columnUsed = candidate;
+      if (canBreakAfter(i)) {
+        bestBreak = i + 1;
+      }
+    }
+
+    size_t columnEnd = i >= units.size() ? units.size() : bestBreak;
+    if (columnEnd <= columnStart) {
+      columnEnd = columnStart + 1;
+    }
+    emitColumn(columnStart, columnEnd);
+    columnStart = columnEnd;
+  }
+
+  words.clear();
+  wordStyles.clear();
+  wordContinues.clear();
+  wordIsFocusSuffix.clear();
+  rubyTexts.clear();
 }
 
 bool ParsedText::shouldUseCjkWrapper() const {

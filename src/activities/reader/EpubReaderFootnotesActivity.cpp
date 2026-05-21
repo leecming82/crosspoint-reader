@@ -13,7 +13,7 @@
 void EpubReaderFootnotesActivity::onEnter() {
   Activity::onEnter();
   previousRendererOrientation = renderer.getOrientation();
-  renderer.setOrientation(ReaderUtils::menuOrientationForReadingLayout(effectiveReadingLayout));
+  ReaderUtils::applyOrientation(renderer, SETTINGS.orientation);
   selectedIndex = 0;
   requestUpdate();
 }

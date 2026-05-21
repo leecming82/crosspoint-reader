@@ -37,8 +37,12 @@ without merging the whole fork.
   - OPF `page-progression-direction="rtl"` is parsed.
   - EPUBs resolve to a reader writing mode separate from device/system UI orientation.
 - Reader profile plumbing is split from physical orientation:
-  - Auto layout selects vertical reader layout for resolved vertical EPUBs.
-  - Menu/status/system UI orientation remains governed by reader/device orientation.
+  - The normal Orientation setting is again the physical reader/menu/status-bar orientation, matching the master approach.
+  - Writing Mode is a separate preference: Book's Style, Horizontal, or Vertical RL.
+  - Book's Style uses the EPUB's resolved writing mode; the explicit modes override the book for testing or preference.
+  - The reader menu exposes both Orientation and Writing Mode; both currently update global reader settings, not per-book
+    overrides.
+  - Menu/status/system UI orientation is not inferred from Japanese/vertical writing mode.
   - Dictionary cursor activation is gated by resolved writing mode instead of orientation alone.
 - Section cache plumbing includes writing mode:
   - The section cache version was bumped.
@@ -49,6 +53,17 @@ without merging the whole fork.
   - `GfxRenderer` has proof-level vertical, sideways, and tate-chu-yoko text drawing helpers.
 - Multi-font page prewarm now tracks scanned text per font id, so ruby/small-font text cannot steal the body CJK font
   prewarm slot.
+- Initial native vertical column layout is implemented:
+  - `ParsedText` has a vertical sibling layout path that emits top-to-bottom column blocks.
+  - `TextBlock` can carry vertical `wordYpos` geometry and render upright CJK, sideways Latin, and tate-chu-yoko digits.
+  - The chapter parser paginates vertical columns right-to-left for resolved vertical writing mode.
+  - Section cache version was bumped for vertical `TextBlock` geometry.
+- The short-lived combined Reading Layout/Auto orientation infrastructure has been removed:
+  - Reader menu rotation, status bar drawing, sleep popups, chapter/footnote/percent/QR/sync sub-activities, and section
+    viewport sizing use the explicit physical orientation.
+  - Existing settings with the old combined `readingLayout` key are migrated into explicit `orientation` plus
+    `writingModePreference` where possible.
+  - Temporary page-render timing telemetry was removed after the BW/AA performance fix was validated on device.
 
 ## Still Pending
 
@@ -77,11 +92,10 @@ orientation or rotated horizontal lines pretending to be columns.
     and per-word/per-unit vertical behavior where needed.
   - Keep ruby readings as sidecar data parallel to logical body words; do not flatten ruby back into dictionary text.
   - Keep horizontal `wordXpos` behavior unchanged for non-vertical blocks.
-- Add true vertical column layout:
-  - Add a `ParsedText` vertical layout path that measures column height, emits columns, and flows columns right-to-left.
-  - Apply vertical kinsoku at column breaks.
-  - Handle vertical spacing and tate-chu-yoko as layout measurements, not renderer-only hacks.
-  - Keep chunked CJK layout/fallback memory behavior in mind for large Japanese paragraphs.
+- Continue hardening native vertical column layout:
+  - Rework image placement and mixed block spacing for vertical pages.
+  - Tighten vertical kinsoku at column breaks after device testing.
+  - Keep chunked CJK layout/fallback memory behavior in mind for very large Japanese paragraphs.
 - Add renderer support:
   - Add native `drawTextVertical`/sideways/tate-chu-yoko rendering instead of rotating whole lines.
   - Draw vertical punctuation and ruby based on the resolved per-unit behavior.
@@ -103,7 +117,7 @@ orientation or rotated horizontal lines pretending to be columns.
 1. Keep ruby data infrastructure as its own standalone commit.
 2. Done: add writing-mode detection/cache plumbing and split writing mode from device orientation.
 3. Done: add vertical primitives and renderer proof drawing.
-4. Add vertical column layout and RTL page flow.
+4. Done: add initial vertical column layout and RTL column flow.
 5. Rework cursor/dictionary geometry for native vertical blocks.
 6. Polish ruby-in-vertical, small font selection, and optional OpenType `vert` support.
 
@@ -115,10 +129,13 @@ These slices should stay small enough to test from the reader UI, with serial lo
    - Change:
      - Parse OPF `page-progression-direction` and CSS `writing-mode`/`-epub-writing-mode`.
      - Resolve and store a per-book/per-spine writing-mode decision.
+     - Keep physical orientation as an independent user setting.
    - Visible/manual tests:
      - Open a known English horizontal EPUB and confirm it is still horizontal.
-     - Open a known Japanese vertical EPUB and confirm auto layout selects the vertical reader profile.
-     - Open the reader menu/status bar and confirm UI orientation is unchanged by the detected writing mode.
+     - Open a known Japanese vertical EPUB with Writing Mode = Book's Style and confirm native vertical columns are used.
+     - Open the reader menu/status bar and confirm UI orientation follows Settings -> Display -> Orientation, not the
+       detected writing mode.
+     - From the reader menu, cycle Writing Mode and confirm it shows the same three values as the Settings entry.
 
 2. Done: cache-key plumbing.
    - Change:
@@ -127,8 +144,9 @@ These slices should stay small enough to test from the reader UI, with serial lo
    - Visible/manual tests:
      - Open an English EPUB twice; second open should use cache and look unchanged.
      - Open a Japanese vertical EPUB; cache should rebuild once after the version bump.
-     - If a temporary setting/debug override is used to force horizontal vs vertical, switching modes should rebuild the
-       section instead of reusing stale pages.
+     - Switching Writing Mode between Book's Style, Horizontal, and Vertical RL should rebuild the section instead of
+       reusing stale pages.
+     - Switching Writing Mode from the reader menu should behave the same as switching it from Settings.
 
 3. Done: vertical primitive proof drawing.
    - Change:
@@ -138,9 +156,9 @@ These slices should stay small enough to test from the reader UI, with serial lo
    - Visible/manual tests:
      - A simple Japanese test page shows characters upright top-to-bottom, not as a rotated horizontal line.
      - Latin words render sideways and 1-2 digit numbers render as tate-chu-yoko.
-     - Menus/status bar still follow device orientation, not text writing mode.
+     - Menus/status bar still follow the explicit Orientation setting, not text writing mode.
 
-4. Native vertical column layout.
+4. Done: native vertical column layout.
    - Change:
      - Add a sibling vertical layout path in `ParsedText`, sharing CJK/kana/punctuation helpers where practical.
      - Emit `TextBlock` vertical geometry (`wordYpos`, `isVertical`, behavior metadata) while leaving horizontal `wordXpos`
@@ -148,6 +166,10 @@ These slices should stay small enough to test from the reader UI, with serial lo
      - Lay out columns right-to-left for vertical-rl books.
    - Visible/manual tests:
      - Japanese text flows top-to-bottom in columns, then right-to-left across columns.
+     - Changing Orientation rotates the whole reader UI/content view in the master-style way.
+     - Changing Writing Mode changes horizontal versus vertical EPUB layout without changing menu/status-bar policy.
+     - The reader menu's Writing Mode row changes layout only after leaving the menu, preserving approximate page position
+       across the reflow.
      - Page turns advance in the expected Japanese direction.
      - English EPUBs still paginate and hyphenate as before.
      - Long Japanese paragraphs do not crash or visibly truncate.

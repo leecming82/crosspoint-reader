@@ -19,7 +19,7 @@ void EpubReaderChapterSelectionActivity::buildNavigationEntries() {
 void EpubReaderChapterSelectionActivity::onEnter() {
   Activity::onEnter();
   previousRendererOrientation = renderer.getOrientation();
-  renderer.setOrientation(ReaderUtils::menuOrientationForReadingLayout(effectiveReadingLayout));
+  ReaderUtils::applyOrientation(renderer, SETTINGS.orientation);
 
   if (!epub) {
     return;

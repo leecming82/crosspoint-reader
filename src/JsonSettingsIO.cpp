@@ -223,6 +223,45 @@ bool JsonSettingsIO::loadSettings(CrossPointSettings& s, const char* json, bool*
     }
   }
 
+  // Migrate the short-lived combined reading layout setting into the split
+  // physical orientation + writing-mode preference settings.
+  if (doc["writingModePreference"].isNull() && !doc["readingLayout"].isNull()) {
+    constexpr uint8_t LEGACY_LAYOUT_HORIZONTAL_PORTRAIT = 1;
+    constexpr uint8_t LEGACY_LAYOUT_HORIZONTAL_LANDSCAPE_CW = 2;
+    constexpr uint8_t LEGACY_LAYOUT_HORIZONTAL_INVERTED = 3;
+    constexpr uint8_t LEGACY_LAYOUT_HORIZONTAL_LANDSCAPE_CCW = 4;
+    constexpr uint8_t LEGACY_LAYOUT_VERTICAL_RL = 5;
+
+    const uint8_t legacyReadingLayout = doc["readingLayout"] | static_cast<uint8_t>(0);
+    if (legacyReadingLayout == LEGACY_LAYOUT_VERTICAL_RL) {
+      s.writingModePreference = CrossPointSettings::WRITING_MODE_VERTICAL_RL;
+    } else if (legacyReadingLayout >= LEGACY_LAYOUT_HORIZONTAL_PORTRAIT &&
+               legacyReadingLayout <= LEGACY_LAYOUT_HORIZONTAL_LANDSCAPE_CCW) {
+      s.writingModePreference = CrossPointSettings::WRITING_MODE_HORIZONTAL;
+    }
+
+    if (doc["orientation"].isNull()) {
+      switch (legacyReadingLayout) {
+        case LEGACY_LAYOUT_HORIZONTAL_LANDSCAPE_CW:
+          s.orientation = CrossPointSettings::LANDSCAPE_CW;
+          break;
+        case LEGACY_LAYOUT_HORIZONTAL_INVERTED:
+          s.orientation = CrossPointSettings::INVERTED;
+          break;
+        case LEGACY_LAYOUT_HORIZONTAL_LANDSCAPE_CCW:
+        case LEGACY_LAYOUT_VERTICAL_RL:
+          s.orientation = CrossPointSettings::LANDSCAPE_CCW;
+          break;
+        case LEGACY_LAYOUT_HORIZONTAL_PORTRAIT:
+        default:
+          s.orientation = CrossPointSettings::PORTRAIT;
+          break;
+      }
+    }
+
+    if (needsResave) *needsResave = true;
+  }
+
   // Front button remap — managed by RemapFrontButtons sub-activity, not in SettingsList.
   using S = CrossPointSettings;
   s.frontButtonBack =

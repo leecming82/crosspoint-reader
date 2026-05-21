@@ -12,7 +12,7 @@
 void QrDisplayActivity::onEnter() {
   Activity::onEnter();
   previousRendererOrientation = renderer.getOrientation();
-  renderer.setOrientation(ReaderUtils::menuOrientationForReadingLayout(effectiveReadingLayout));
+  ReaderUtils::applyOrientation(renderer, SETTINGS.orientation);
   requestUpdate();
 }
 

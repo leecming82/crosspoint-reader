@@ -11,6 +11,7 @@
 
 #include "Epub/FootnoteEntry.h"
 #include "Epub/ParsedText.h"
+#include "Epub/WritingMode.h"
 #include "Epub/blocks/ImageBlock.h"
 #include "Epub/blocks/TextBlock.h"
 #include "Epub/css/CssParser.h"
@@ -41,6 +42,7 @@ class ChapterHtmlSlimParser {
   std::unique_ptr<ParsedText> currentTextBlock = nullptr;
   std::unique_ptr<Page> currentPage = nullptr;
   int16_t currentPageNextY = 0;
+  int16_t currentPageNextX = 0;
   int fontId;
   float lineCompression;
   bool extraParagraphSpacing;
@@ -56,6 +58,7 @@ class ChapterHtmlSlimParser {
   std::string imageBasePath;
   uint32_t sourceStartOffset = 0;
   uint32_t sourceEndOffset = 0;
+  EpubWritingMode writingMode = EpubWritingMode::HorizontalTb;
   int imageCounter = 0;
 
   // Style tracking (replaces depth-based approach)
@@ -104,6 +107,8 @@ class ChapterHtmlSlimParser {
   void flushPartWordBuffer();
   void commitPendingAnchor();
   void makePages();
+  void addColumnToPage(std::shared_ptr<TextBlock> column);
+  bool isVerticalWritingMode() const { return writingMode != EpubWritingMode::HorizontalTb; }
   // XML callbacks
   static void XMLCALL startElement(void* userData, const XML_Char* name, const XML_Char** atts);
   static void XMLCALL characterData(void* userData, const XML_Char* s, int len);
@@ -121,7 +126,8 @@ class ChapterHtmlSlimParser {
                                  const std::string& imageBasePath, const uint8_t imageRendering = 0,
                                  const std::function<void(size_t, size_t)>& progressFn = nullptr,
                                  const CssParser* cssParser = nullptr, const uint32_t sourceStartOffset = 0,
-                                 const uint32_t sourceEndOffset = 0)
+                                 const uint32_t sourceEndOffset = 0,
+                                 const EpubWritingMode writingMode = EpubWritingMode::HorizontalTb)
 
       : epub(epub),
         filepath(filepath),
@@ -142,7 +148,8 @@ class ChapterHtmlSlimParser {
         contentBase(contentBase),
         imageBasePath(imageBasePath),
         sourceStartOffset(sourceStartOffset),
-        sourceEndOffset(sourceEndOffset) {}
+        sourceEndOffset(sourceEndOffset),
+        writingMode(writingMode) {}
 
   ~ChapterHtmlSlimParser() = default;
   bool parseAndBuildPages();

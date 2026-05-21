@@ -1341,6 +1341,35 @@ void ChapterHtmlSlimParser::addLineToPage(std::shared_ptr<TextBlock> line) {
   currentPageNextY += lineHeight;
 }
 
+void ChapterHtmlSlimParser::addColumnToPage(std::shared_ptr<TextBlock> column) {
+  const int columnWidth = renderer.getLineHeight(fontId) * lineCompression;
+
+  if (!currentPage) {
+    currentPage.reset(new Page());
+    currentPageNextX = static_cast<int16_t>(std::max(0, viewportWidth - columnWidth));
+    currentPageNextY = 0;
+  }
+
+  if (currentPageNextX < 0) {
+    completePageFn(std::move(currentPage), xpathParagraphIndex, xpathListItemIndex);
+    completedPageCount++;
+    currentPage.reset(new Page());
+    currentPageNextX = static_cast<int16_t>(std::max(0, viewportWidth - columnWidth));
+    currentPageNextY = 0;
+  }
+
+  wordsExtractedInBlock += column->wordCount();
+  auto footnoteIt = pendingFootnotes.begin();
+  while (footnoteIt != pendingFootnotes.end() && footnoteIt->first <= wordsExtractedInBlock) {
+    currentPage->addFootnote(footnoteIt->second.number, footnoteIt->second.href);
+    ++footnoteIt;
+  }
+  pendingFootnotes.erase(pendingFootnotes.begin(), footnoteIt);
+
+  currentPage->elements.push_back(std::make_shared<PageLine>(column, currentPageNextX, 0));
+  currentPageNextX -= static_cast<int16_t>(columnWidth);
+}
+
 void ChapterHtmlSlimParser::makePages() {
   if (!currentTextBlock) {
     LOG_ERR("EHP", "!! No text block to make pages for !!");
@@ -1353,6 +1382,37 @@ void ChapterHtmlSlimParser::makePages() {
   }
 
   const int lineHeight = renderer.getLineHeight(fontId) * lineCompression;
+
+  if (isVerticalWritingMode()) {
+    const BlockStyle& blockStyle = currentTextBlock->getBlockStyle();
+    if (!currentPage) {
+      currentPage.reset(new Page());
+      currentPageNextX = static_cast<int16_t>(std::max(0, viewportWidth - lineHeight));
+      currentPageNextY = 0;
+    }
+
+    currentPageNextX -= static_cast<int16_t>(std::max(0, blockStyle.marginTop + blockStyle.paddingTop));
+    const int verticalInset = blockStyle.totalHorizontalInset();
+    const uint16_t effectiveHeight =
+        (verticalInset < viewportHeight) ? static_cast<uint16_t>(viewportHeight - verticalInset) : viewportHeight;
+
+    currentTextBlock->layoutAndExtractVerticalColumns(
+        renderer, fontId, effectiveHeight,
+        [this](const std::shared_ptr<TextBlock>& textBlock) { addColumnToPage(textBlock); });
+
+    if (!pendingFootnotes.empty() && currentPage) {
+      for (const auto& [idx, fn] : pendingFootnotes) {
+        currentPage->addFootnote(fn.number, fn.href);
+      }
+      pendingFootnotes.clear();
+    }
+
+    currentPageNextX -= static_cast<int16_t>(std::max(0, blockStyle.marginBottom + blockStyle.paddingBottom));
+    if (extraParagraphSpacing) {
+      currentPageNextX -= static_cast<int16_t>(lineHeight / 2);
+    }
+    return;
+  }
 
   // Apply top spacing before the paragraph (stored in pixels)
   const BlockStyle& blockStyle = currentTextBlock->getBlockStyle();

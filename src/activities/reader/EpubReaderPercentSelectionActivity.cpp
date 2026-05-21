@@ -17,7 +17,7 @@ constexpr int kLargeStep = 10;
 void EpubReaderPercentSelectionActivity::onEnter() {
   Activity::onEnter();
   previousRendererOrientation = renderer.getOrientation();
-  renderer.setOrientation(ReaderUtils::menuOrientationForReadingLayout(effectiveReadingLayout));
+  ReaderUtils::applyOrientation(renderer, SETTINGS.orientation);
   // Set up rendering task and mark first frame dirty.
   requestUpdate();
 }

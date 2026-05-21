@@ -3,12 +3,37 @@
 #include <GfxRenderer.h>
 #include <Logging.h>
 #include <Serialization.h>
+#include <Utf8.h>
+#include <VerticalTextUtils.h>
 
 #include <cstring>
 
 namespace {
 constexpr int SMALL_FONT_ID = 674098198;
+
+size_t utf8CodepointCount(const std::string& text) {
+  size_t count = 0;
+  const auto* ptr = reinterpret_cast<const unsigned char*>(text.c_str());
+  while (utf8NextCodepoint(&ptr)) {
+    ++count;
+  }
+  return count;
 }
+
+uint32_t firstCodepoint(const std::string& text) {
+  const auto* ptr = reinterpret_cast<const unsigned char*>(text.c_str());
+  return utf8NextCodepoint(&ptr);
+}
+
+bool isAsciiDigitString(const std::string& text) {
+  if (text.empty()) return false;
+  const auto* ptr = reinterpret_cast<const unsigned char*>(text.c_str());
+  while (const uint32_t cp = utf8NextCodepoint(&ptr)) {
+    if (!VerticalTextUtils::isAsciiDigit(cp)) return false;
+  }
+  return true;
+}
+}  // namespace
 
 bool TextBlock::hasRuby() const {
   for (const auto& ruby : rubyTexts) {
@@ -24,6 +49,35 @@ int TextBlock::rubyTopPadding(const GfxRenderer& renderer) const {
 }
 
 void TextBlock::render(const GfxRenderer& renderer, const int fontId, const int x, const int y) const {
+  if (vertical) {
+    if (words.size() != wordYpos.size() || words.size() != wordStyles.size() ||
+        (!wordXpos.empty() && words.size() != wordXpos.size())) {
+      LOG_ERR("TXB", "Vertical render skipped: size mismatch (words=%u, xpos=%u, ypos=%u, styles=%u)\n",
+              (uint32_t)words.size(), (uint32_t)wordXpos.size(), (uint32_t)wordYpos.size(),
+              (uint32_t)wordStyles.size());
+      return;
+    }
+
+    const int columnWidth = renderer.getLineHeight(fontId);
+    for (size_t i = 0; i < words.size(); ++i) {
+      const int wordX = x + (wordXpos.empty() ? 0 : wordXpos[i]);
+      const int wordY = y + wordYpos[i];
+      const auto style = wordStyles[i];
+      const std::string& word = words[i];
+      const uint32_t firstCp = firstCodepoint(word);
+      const size_t cpCount = utf8CodepointCount(word);
+
+      if (isAsciiDigitString(word) && cpCount <= 2) {
+        renderer.drawTextTateChuYoko(fontId, wordX, wordY, word.c_str(), true, style, columnWidth);
+      } else if (cpCount > 1 && !VerticalTextUtils::isUprightInVertical(firstCp)) {
+        renderer.drawTextSideways(fontId, wordX, wordY, word.c_str(), true, style, columnWidth);
+      } else {
+        renderer.drawTextVertical(fontId, wordX, wordY, word.c_str(), true, style, 0);
+      }
+    }
+    return;
+  }
+
   // Focus annotations are optional: empty vectors mean no word in this block has a split.
   // When present, they must be sized in lockstep with words[].
   const bool hasFocus = !wordFocusBoundary.empty();
@@ -129,6 +183,14 @@ bool TextBlock::serialize(FsFile& file) const {
     }
   }
 
+  serialization::writePod(file, static_cast<uint8_t>(vertical ? 1 : 0));
+  if (vertical) {
+    for (size_t i = 0; i < words.size(); ++i) {
+      const int16_t ypos = i < wordYpos.size() ? wordYpos[i] : 0;
+      serialization::writePod(file, ypos);
+    }
+  }
+
   // Style (alignment + margins/padding/indent)
   serialization::writePod(file, blockStyle.alignment);
   serialization::writePod(file, blockStyle.textAlignDefined);
@@ -188,6 +250,13 @@ std::unique_ptr<TextBlock> TextBlock::deserialize(FsFile& file) {
     rubyTexts.resize(wc);
     for (auto& ruby : rubyTexts) serialization::readString(file, ruby);
   }
+  uint8_t vertical = 0;
+  serialization::readPod(file, vertical);
+  std::vector<int16_t> wordYpos;
+  if (vertical) {
+    wordYpos.resize(wc);
+    for (auto& y : wordYpos) serialization::readPod(file, y);
+  }
 
   // Style (alignment + margins/padding/indent)
   serialization::readPod(file, blockStyle.alignment);
@@ -205,5 +274,5 @@ std::unique_ptr<TextBlock> TextBlock::deserialize(FsFile& file) {
 
   return std::unique_ptr<TextBlock>(new TextBlock(std::move(words), std::move(wordXpos), std::move(wordStyles),
                                                   std::move(wordFocusBoundary), std::move(wordFocusSuffixX), blockStyle,
-                                                  std::move(rubyTexts)));
+                                                  std::move(rubyTexts), std::move(wordYpos), vertical != 0));
 }

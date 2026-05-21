@@ -14,6 +14,7 @@ class TextBlock final : public Block {
  private:
   std::vector<std::string> words;
   std::vector<int16_t> wordXpos;
+  std::vector<int16_t> wordYpos;
   std::vector<EpdFontFamily::Style> wordStyles;
   // Per-word focus boundary: N > 0 means the first N bytes of words[i] are rendered bold,
   // the remainder in the base style. 0 means no split (whole word uses wordStyles[i]).
@@ -28,26 +29,32 @@ class TextBlock final : public Block {
   std::vector<uint16_t> wordFocusSuffixX;
   std::vector<std::string> rubyTexts;
   BlockStyle blockStyle;
+  bool vertical = false;
 
  public:
   explicit TextBlock(std::vector<std::string> words, std::vector<int16_t> word_xpos,
                      std::vector<EpdFontFamily::Style> word_styles, std::vector<uint8_t> focus_boundary,
                      std::vector<uint16_t> focus_suffix_x, const BlockStyle& blockStyle = BlockStyle(),
-                     std::vector<std::string> ruby_texts = {})
+                     std::vector<std::string> ruby_texts = {}, std::vector<int16_t> word_ypos = {},
+                     bool vertical = false)
       : words(std::move(words)),
         wordXpos(std::move(word_xpos)),
+        wordYpos(std::move(word_ypos)),
         wordStyles(std::move(word_styles)),
         wordFocusBoundary(std::move(focus_boundary)),
         wordFocusSuffixX(std::move(focus_suffix_x)),
         rubyTexts(std::move(ruby_texts)),
-        blockStyle(blockStyle) {}
+        blockStyle(blockStyle),
+        vertical(vertical) {}
   ~TextBlock() override = default;
   void setBlockStyle(const BlockStyle& blockStyle) { this->blockStyle = blockStyle; }
   const BlockStyle& getBlockStyle() const { return blockStyle; }
   const std::vector<std::string>& getWords() const { return words; }
   const std::vector<int16_t>& getWordXpos() const { return wordXpos; }
+  const std::vector<int16_t>& getWordYpos() const { return wordYpos; }
   const std::vector<EpdFontFamily::Style>& getWordStyles() const { return wordStyles; }
   const std::vector<std::string>& getRubyTexts() const { return rubyTexts; }
+  bool isVertical() const { return vertical; }
   bool hasRuby() const;
   int rubyTopPadding(const GfxRenderer& renderer) const;
   bool isEmpty() override { return words.empty(); }

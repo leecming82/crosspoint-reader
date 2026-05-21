@@ -15,7 +15,6 @@ class EpubReaderChapterSelectionActivity final : public Activity {
   ButtonNavigator buttonNavigator;
   int currentSpineIndex = 0;
   int selectorIndex = 0;
-  uint8_t effectiveReadingLayout = CrossPointSettings::READING_LAYOUT_HORIZONTAL_PORTRAIT;
   GfxRenderer::Orientation previousRendererOrientation = GfxRenderer::Orientation::Portrait;
 
   std::vector<EpubReaderNavigation::Entry> navigationEntries;
@@ -31,12 +30,11 @@ class EpubReaderChapterSelectionActivity final : public Activity {
  public:
   explicit EpubReaderChapterSelectionActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,
                                               const std::shared_ptr<Epub>& epub, const std::string& epubPath,
-                                              const int currentSpineIndex, const uint8_t effectiveReadingLayout)
+                                              const int currentSpineIndex)
       : Activity("EpubReaderChapterSelection", renderer, mappedInput),
         epub(epub),
         epubPath(epubPath),
-        currentSpineIndex(currentSpineIndex),
-        effectiveReadingLayout(effectiveReadingLayout) {}
+        currentSpineIndex(currentSpineIndex) {}
   void onEnter() override;
   void onExit() override;
   void loop() override;
