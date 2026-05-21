@@ -580,9 +580,10 @@ def extract_vertical_substitutions_fonttools(font_path, codepoints):
                 if not mapping:
                     continue
                 for src_glyph, dst_glyph in mapping.items():
-                    if src_glyph not in glyph_to_cp:
+                    if src_glyph not in glyph_to_cps:
                         continue
-                    add_substitution(glyph_to_cp[src_glyph], dst_glyph)
+                    for src_cp in glyph_to_cps[src_glyph]:
+                        add_substitution(src_cp, dst_glyph)
 
     # Some Japanese fonts do not expose GSUB rules for common dash-like
     # punctuation, but they do include the Unicode vertical presentation forms.
@@ -597,6 +598,8 @@ def extract_vertical_substitutions_fonttools(font_path, codepoints):
         0x2015: 0xFE31,  # horizontal bar -> vertical em dash
         0x2025: 0xFE30,  # two dot leader -> vertical two dot leader
         0x2026: 0xFE19,  # ellipsis -> vertical horizontal ellipsis
+        0x3008: 0xFE3F,  # left angle bracket -> vertical left angle bracket
+        0x3009: 0xFE40,  # right angle bracket -> vertical right angle bracket
         0xFF0D: 0xFE63,  # fullwidth hyphen-minus -> small hyphen-minus
     }
     for src_cp, dst_cp in fallback_forms.items():

@@ -96,6 +96,10 @@ uint32_t standardVerticalPresentationForm(const uint32_t cp) {
       return 0xFE30;  // presentation form for vertical two dot leader
     case 0x2026:      // horizontal ellipsis
       return 0xFE19;  // presentation form for vertical horizontal ellipsis
+    case 0x3008:      // left angle bracket
+      return 0xFE3F;  // presentation form for vertical left angle bracket
+    case 0x3009:      // right angle bracket
+      return 0xFE40;  // presentation form for vertical right angle bracket
     case 0x2500:      // box drawings light horizontal
       return 0x2502;  // box drawings light vertical
     case 0x2501:      // box drawings heavy horizontal
