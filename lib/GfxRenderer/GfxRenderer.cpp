@@ -18,6 +18,7 @@ constexpr uint32_t COMPRESSED_BW_BACKUP_CAP = 32 * 1024;
 constexpr int UI_10_FONT_ID = 22918846;
 constexpr int UI_12_FONT_ID = 1635686837;
 constexpr int SMALL_FONT_ID = 674098198;
+constexpr uint32_t CJK_UI_VERTICAL_PROLONGED_SOUND_MARK = 0xE000;
 
 bool isUiFontId(const int fontId) {
   return fontId == UI_10_FONT_ID || fontId == UI_12_FONT_ID || fontId == SMALL_FONT_ID;
@@ -95,9 +96,20 @@ uint32_t standardVerticalPresentationForm(const uint32_t cp) {
       return 0xFE30;  // presentation form for vertical two dot leader
     case 0x2026:      // horizontal ellipsis
       return 0xFE19;  // presentation form for vertical horizontal ellipsis
+    case 0x2500:      // box drawings light horizontal
+      return 0x2502;  // box drawings light vertical
+    case 0x2501:      // box drawings heavy horizontal
+      return 0x2503;  // box drawings heavy vertical
     default:
       return cp;
   }
+}
+
+bool isTallVerticalDash(const uint32_t cp) {
+  return cp == 0xFE31 ||  // presentation form for vertical em dash
+         cp == 0xFE32 ||  // presentation form for vertical en dash
+         cp == 0x2502 ||  // box drawings light vertical
+         cp == 0x2503;    // box drawings heavy vertical
 }
 }  // namespace
 
@@ -1357,11 +1369,15 @@ uint32_t GfxRenderer::getVerticalSubstitution(const int fontId, const uint32_t c
   const uint32_t fontSubstitution = fontIt->second.applyVerticalSubstitution(cp, style);
   if (fontSubstitution != cp) return fontSubstitution;
 
+  if (cp == 0x30FC && shouldUseCjkUiFallback(fontId, CJK_UI_VERTICAL_PROLONGED_SOUND_MARK)) {
+    return CJK_UI_VERTICAL_PROLONGED_SOUND_MARK;
+  }
+
   const uint32_t presentationForm = standardVerticalPresentationForm(cp);
   if (presentationForm != cp) {
     const EpdGlyph* glyph = fontIt->second.getGlyph(presentationForm, style);
     const EpdGlyph* replacement = fontIt->second.getGlyph(REPLACEMENT_GLYPH, style);
-    if (glyph && (!replacement || glyph != replacement)) {
+    if ((glyph && (!replacement || glyph != replacement)) || shouldUseCjkUiFallback(fontId, presentationForm)) {
       return presentationForm;
     }
   }
@@ -1552,9 +1568,19 @@ void GfxRenderer::drawTextVertical(const int fontId, const int x, int y, const c
     const uint32_t verticalCp = hasFont ? getVerticalSubstitution(fontId, sourceCp, style) : sourceCp;
     const std::string glyph = verticalCp == sourceCp ? std::string(reinterpret_cast<const char*>(cpStart), p - cpStart)
                                                      : utf8FromCodepoint(verticalCp);
-    drawText(fontId, x, y, glyph.c_str(), black, style);
-    const int measured = getTextAdvanceX(fontId, glyph.c_str(), style);
-    y += (measured > 0 ? measured : fallbackAdvance) + charSpacing;
+    int measured = getTextAdvanceX(fontId, glyph.c_str(), style);
+    measured = measured > 0 ? measured : fallbackAdvance;
+    int drawY = y;
+    if (hasFont && isTallVerticalDash(verticalCp)) {
+      const EpdGlyph* dashGlyph = fontIt->second.getGlyph(verticalCp, style);
+      if (dashGlyph && dashGlyph->height > 0) {
+        const int ascender = getFontAscenderSize(fontId);
+        const int desiredTop = y + std::max(0, (measured - static_cast<int>(dashGlyph->height)) / 2);
+        drawY = desiredTop + dashGlyph->top - ascender;
+      }
+    }
+    drawText(fontId, x, drawY, glyph.c_str(), black, style);
+    y += measured + charSpacing;
   }
 }
 

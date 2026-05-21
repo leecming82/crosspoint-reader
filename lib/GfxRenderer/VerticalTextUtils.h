@@ -34,6 +34,8 @@ inline bool isUprightInVertical(const uint32_t cp) {
     case 0x2015:  // horizontal bar
     case 0x2025:  // two dot leader
     case 0x2026:  // ellipsis
+    case 0x2500:  // box drawings light horizontal
+    case 0x2501:  // box drawings heavy horizontal
     case 0x30FC:  // katakana-hiragana prolonged sound mark
     case 0xFF0D:  // fullwidth hyphen-minus
       return true;

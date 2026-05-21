@@ -27,7 +27,7 @@ except ImportError:
 # Base UI characters: ASCII, punctuation, kana
 # CJK characters are auto-extracted from translation YAML files at build time
 BASE_UI_CHARS = """
-!%&()*+,-./0123456789:;<=>?@，。！、：；？""''「」『』【】〈〉《》〔〕…—―─·•（）«»
+!%&()*+,-./0123456789:;<=>?@，。！、：；？""''「」『』【】〈〉《》〔〕…‥—―‐‑–－︙︰︱︲﹣─·•（）«»
 ・／□＆
 ABCDEFGHIJKLMNOPQRSTUVWXYZ[]{}_
 abcdefghijklmnopqrstuvwxyz|
@@ -43,6 +43,8 @@ abcdefghijklmnopqrstuvwxyz|
 一二三四五六七八九十百千万亿
 黎
 """
+
+CJK_UI_VERTICAL_PROLONGED_SOUND_MARK = 0xE000
 
 
 def extract_chars_from_translations(translations_dir):
@@ -109,6 +111,84 @@ def load_font_fitting_cell(font_path, pixel_size, variation_name=None):
         pt_size -= 1
     return None, None, None, None
 
+def find_vertical_alternate_glyph_id(font_path, source_cp):
+    """Return a glyph ID for source_cp's vert/vrt2 alternate, if any."""
+    from fontTools.ttLib import TTFont
+
+    font = TTFont(font_path)
+    try:
+        cmap = font.getBestCmap() or {}
+        source_glyph = cmap.get(source_cp)
+        if not source_glyph or "GSUB" not in font:
+            return None
+
+        gsub = font["GSUB"].table
+        lookup_indices = set()
+        if gsub.FeatureList:
+            for feature_record in gsub.FeatureList.FeatureRecord:
+                if feature_record.FeatureTag in ("vert", "vrt2"):
+                    lookup_indices.update(feature_record.Feature.LookupListIndex)
+
+        for lookup_index in lookup_indices:
+            lookup = gsub.LookupList.Lookup[lookup_index]
+            for subtable in lookup.SubTable:
+                actual = subtable.ExtSubTable if lookup.LookupType == 7 and hasattr(subtable, "ExtSubTable") else subtable
+                mapping = getattr(actual, "mapping", None)
+                if mapping and source_glyph in mapping:
+                    return font.getGlyphID(mapping[source_glyph])
+    finally:
+        font.close()
+    return None
+
+def rasterize_glyph_id(font_path, glyph_id, pixel_size, pt_size, baseline, variation_name=None):
+    """Rasterize a glyph ID into the same 1-bit cell format as normal UI glyphs."""
+    import freetype
+
+    face = freetype.Face(font_path)
+    try:
+        face.set_pixel_sizes(0, pt_size)
+        if variation_name:
+            try:
+                face.set_var_named_instance(variation_name)
+            except Exception:
+                pass
+        face.load_glyph(glyph_id, freetype.FT_LOAD_RENDER)
+        bitmap = face.glyph.bitmap
+        char_width = bitmap.width if bitmap.width > 0 else pixel_size // 2
+        x = 0 if char_width > pixel_size - 2 else 1
+        left = x + face.glyph.bitmap_left
+        top = baseline - face.glyph.bitmap_top
+
+        img = Image.new("1", (pixel_size, pixel_size), 0)
+        buf = bitmap.buffer
+        abs_pitch = abs(bitmap.pitch)
+        for row in range(bitmap.rows):
+            row_offset = row * abs_pitch if bitmap.pitch >= 0 else (bitmap.rows - 1 - row) * abs_pitch
+            for col in range(bitmap.width):
+                dst_x = left + col
+                dst_y = top + row
+                if 0 <= dst_x < pixel_size and 0 <= dst_y < pixel_size and buf[row_offset + col] > 0:
+                    img.putpixel((dst_x, dst_y), 1)
+
+        return img, pixel_size
+    finally:
+        face = None
+
+def bitmap_bytes_from_image(img, pixel_size):
+    bytes_per_row = (pixel_size + 7) // 8
+    bitmap_bytes = []
+    for row in range(pixel_size):
+        for byte_idx in range(bytes_per_row):
+            byte_val = 0
+            for bit in range(8):
+                px = byte_idx * 8 + bit
+                if px < pixel_size:
+                    pixel = img.getpixel((px, row))
+                    if pixel:
+                        byte_val |= (1 << (7 - bit))
+            bitmap_bytes.append(byte_val)
+    return bitmap_bytes
+
 def generate_font_header(font_path, pixel_size, output_path, translations_dir=None, codepoints_file=None,
                          variation_name=None):
     """Generate CJK UI font header file."""
@@ -163,19 +243,7 @@ def generate_font_header(font_path, pixel_size, output_path, translations_dir=No
             # Fallback for older Pillow: approximate baseline by shifting up
             draw.text((x, y - ascent), char, font=font, fill=1)
 
-        # Convert to bytes
-        bytes_per_row = (pixel_size + 7) // 8
-        bitmap_bytes = []
-        for row in range(pixel_size):
-            for byte_idx in range(bytes_per_row):
-                byte_val = 0
-                for bit in range(8):
-                    px = byte_idx * 8 + bit
-                    if px < pixel_size:
-                        pixel = img.getpixel((px, row))
-                        if pixel:
-                            byte_val |= (1 << (7 - bit))
-                bitmap_bytes.append(byte_val)
+        bitmap_bytes = bitmap_bytes_from_image(img, pixel_size)
 
         codepoints.append(cp)
         # Calculate advance width
@@ -186,6 +254,19 @@ def generate_font_header(font_path, pixel_size, output_path, translations_dir=No
             # CJK: use full width
             widths.append(pixel_size)
         bitmaps.append(bitmap_bytes)
+
+    glyph_id = find_vertical_alternate_glyph_id(font_path, 0x30FC)
+    if glyph_id is not None:
+        img, width = rasterize_glyph_id(font_path, glyph_id, pixel_size, pt_size, baseline, variation_name)
+        codepoints.append(CJK_UI_VERTICAL_PROLONGED_SOUND_MARK)
+        widths.append(width)
+        bitmaps.append(bitmap_bytes_from_image(img, pixel_size))
+        print(f"  Added U+{CJK_UI_VERTICAL_PROLONGED_SOUND_MARK:04X} vertical alternate for U+30FC")
+
+    glyph_entries = sorted(zip(codepoints, widths, bitmaps), key=lambda item: item[0])
+    codepoints = [entry[0] for entry in glyph_entries]
+    widths = [entry[1] for entry in glyph_entries]
+    bitmaps = [entry[2] for entry in glyph_entries]
 
     # Generate header file
     bytes_per_row = (pixel_size + 7) // 8
@@ -198,8 +279,8 @@ def generate_font_header(font_path, pixel_size, output_path, translations_dir=No
  * Variation: {variation_name or "default"}
  * Size: {pt_size}pt
  * Dimensions: {pixel_size}x{pixel_size}
- * Characters: {len(chars)}
- * Total size: {len(chars) * bytes_per_char} bytes ({len(chars) * bytes_per_char / 1024:.1f} KB)
+ * Characters: {len(codepoints)}
+ * Total size: {len(codepoints) * bytes_per_char} bytes ({len(codepoints) * bytes_per_char / 1024:.1f} KB)
  *
  * This is a sparse font containing only UI-required CJK characters.
  * Uses a lookup table for codepoint -> glyph index mapping.
@@ -216,7 +297,7 @@ static constexpr uint8_t CJK_UI_FONT_WIDTH = {pixel_size};
 static constexpr uint8_t CJK_UI_FONT_HEIGHT = {pixel_size};
 static constexpr uint8_t CJK_UI_FONT_BYTES_PER_ROW = {bytes_per_row};
 static constexpr uint8_t CJK_UI_FONT_BYTES_PER_CHAR = {bytes_per_char};
-static constexpr uint16_t CJK_UI_FONT_GLYPH_COUNT = {len(chars)};
+static constexpr uint16_t CJK_UI_FONT_GLYPH_COUNT = {len(codepoints)};
 
 // Codepoint lookup table (sorted for binary search)
 static const uint16_t CJK_UI_CODEPOINTS[] PROGMEM = {{
@@ -295,8 +376,8 @@ inline uint8_t getCjkUiGlyphWidth(uint32_t codepoint) {
 } // namespace CjkUiFont''' + str(pixel_size) + '\n')
 
     print(f"Generated: {output_path}")
-    print(f"  - {len(chars)} characters")
-    print(f"  - {len(chars) * bytes_per_char} bytes bitmap data")
+    print(f"  - {len(codepoints)} characters")
+    print(f"  - {len(codepoints) * bytes_per_char} bytes bitmap data")
     return True
 
 def main():
