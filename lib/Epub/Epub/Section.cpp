@@ -117,7 +117,8 @@ void destroyXmlParser(XML_Parser parser) {
 }
 
 bool scanSectionAdvanceCodepoints(const std::string& tmpHtmlPath, std::vector<uint32_t>& codepoints, bool& hitCap,
-                                  bool& hasCjk) {
+                                  bool& hasCjk, const uint32_t sourceStartOffset = 0,
+                                  const uint32_t sourceEndOffset = 0) {
   XML_Parser parser = XML_ParserCreate(nullptr);
   if (!parser) {
     LOG_ERR("SCT", "Could not allocate advance scan parser");
@@ -135,7 +136,26 @@ bool scanSectionAdvanceCodepoints(const std::string& tmpHtmlPath, std::vector<ui
     return false;
   }
 
+  const size_t fileSize = file.size();
+  const bool scanFragment = sourceStartOffset > 0 || (sourceEndOffset > 0 && sourceEndOffset < fileSize);
+  const size_t scanStart = scanFragment ? std::min<size_t>(sourceStartOffset, fileSize) : 0;
+  const size_t scanEnd =
+      scanFragment && sourceEndOffset > scanStart ? std::min<size_t>(sourceEndOffset, fileSize) : fileSize;
+  const size_t scanSize = scanEnd > scanStart ? scanEnd - scanStart : 0;
+
+  if (scanFragment) {
+    constexpr const char* fragmentPrefix = "<html><body>";
+    if (XML_Parse(parser, fragmentPrefix, static_cast<int>(strlen(fragmentPrefix)), XML_FALSE) == XML_STATUS_ERROR) {
+      LOG_ERR("SCT", "Advance scan parse error in fragment prefix: %s", XML_ErrorString(XML_GetErrorCode(parser)));
+      file.close();
+      destroyXmlParser(parser);
+      return false;
+    }
+    file.seek(scanStart);
+  }
+
   constexpr size_t SCAN_BUFFER_SIZE = 4096;
+  size_t bytesRead = 0;
   int done = 0;
   do {
     void* const buf = XML_GetBuffer(parser, SCAN_BUFFER_SIZE);
@@ -145,9 +165,21 @@ bool scanSectionAdvanceCodepoints(const std::string& tmpHtmlPath, std::vector<ui
       destroyXmlParser(parser);
       return false;
     }
-    const size_t len = file.read(buf, SCAN_BUFFER_SIZE);
-    done = file.available() == 0;
-    if (XML_ParseBuffer(parser, static_cast<int>(len), done) == XML_STATUS_ERROR) {
+
+    const size_t remaining = scanFragment ? scanSize - bytesRead : SCAN_BUFFER_SIZE;
+    const size_t wanted = scanFragment ? std::min<size_t>(SCAN_BUFFER_SIZE, remaining) : SCAN_BUFFER_SIZE;
+    const size_t len = wanted > 0 ? file.read(buf, wanted) : 0;
+    bytesRead += len;
+
+    if (len == 0 && (!scanFragment && file.available() > 0)) {
+      LOG_ERR("SCT", "Advance scan file read error");
+      file.close();
+      destroyXmlParser(parser);
+      return false;
+    }
+
+    done = scanFragment ? bytesRead >= scanSize : file.available() == 0;
+    if (XML_ParseBuffer(parser, static_cast<int>(len), done && !scanFragment) == XML_STATUS_ERROR) {
       LOG_ERR("SCT", "Advance scan parse error at line %lu: %s", XML_GetCurrentLineNumber(parser),
               XML_ErrorString(XML_GetErrorCode(parser)));
       file.close();
@@ -155,6 +187,17 @@ bool scanSectionAdvanceCodepoints(const std::string& tmpHtmlPath, std::vector<ui
       return false;
     }
   } while (!done);
+
+  if (scanFragment) {
+    constexpr const char* fragmentSuffix = "</body></html>";
+    if (XML_Parse(parser, fragmentSuffix, static_cast<int>(strlen(fragmentSuffix)), XML_TRUE) == XML_STATUS_ERROR) {
+      LOG_ERR("SCT", "Advance scan parse error in fragment suffix at line %lu: %s", XML_GetCurrentLineNumber(parser),
+              XML_ErrorString(XML_GetErrorCode(parser)));
+      file.close();
+      destroyXmlParser(parser);
+      return false;
+    }
+  }
 
   file.close();
   destroyXmlParser(parser);
@@ -355,11 +398,13 @@ bool Section::createSectionFile(const int fontId, const float lineCompression, c
   LOG_DBG("SCT", "Streamed temp HTML to %s (%d bytes)", tmpHtmlPath.c_str(), fileSize);
 
   bool sdAdvancePrewarmed = false;
+  // Preload SD-font advance metrics for this section so CJK layout avoids per-block glyph metadata reads.
   if (renderer.isSdCardFont(fontId)) {
     std::vector<uint32_t> sectionCodepoints;
     bool hitCodepointCap = false;
     bool hasCjk = false;
-    if (scanSectionAdvanceCodepoints(tmpHtmlPath, sectionCodepoints, hitCodepointCap, hasCjk)) {
+    if (scanSectionAdvanceCodepoints(tmpHtmlPath, sectionCodepoints, hitCodepointCap, hasCjk,
+                                     spineItem.sourceStartOffset, spineItem.sourceEndOffset)) {
       if (!hasCjk) {
         LOG_DBG("SCT", "Section advance prewarm skipped: no CJK text");
       } else if (hitCodepointCap) {
