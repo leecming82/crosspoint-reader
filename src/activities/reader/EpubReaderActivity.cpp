@@ -199,65 +199,6 @@ bool isNoiseDefinitionItem(const std::string& item) {
          item == "〕" || item == "()" || item == "[]" || item == "（）" || item == "forms";
 }
 
-void drawRotatedLine(const GfxRenderer& renderer, const int fontId, const int x, const int y, const std::string& text,
-                     const int maxWidth, const EpdFontFamily::Style style = EpdFontFamily::REGULAR) {
-  if (!hasVisibleDefinitionText(text)) return;
-  const std::string fitted = renderer.truncatedText(fontId, text.c_str(), maxWidth, style);
-  if (!hasVisibleDefinitionText(fitted)) return;
-  renderer.drawTextRotated90CW(fontId, x, y, fitted.c_str(), true, style);
-}
-
-int drawRotatedWrappedLines(const GfxRenderer& renderer, const int fontId, const int x, const int y,
-                            const std::string& text, const int maxWidth, const int maxLines, const int lineStep) {
-  const auto lines = renderer.wrappedText(fontId, text.c_str(), maxWidth, maxLines);
-  int drawX = x;
-  for (const auto& line : lines) {
-    if (!hasVisibleDefinitionText(line)) continue;
-    renderer.drawTextRotated90CW(fontId, drawX, y, line.c_str(), true);
-    drawX += lineStep;
-  }
-  return drawX;
-}
-
-void drawJapanesePopupLine(const GfxRenderer& renderer, const int fontId, const int x, const int y,
-                           const std::string& text, const int maxWidth) {
-  if (!hasVisibleDefinitionText(text)) return;
-  constexpr int physicalLeftPadding = 44;
-  constexpr int glyphGap = 2;
-
-  int drawY = y - physicalLeftPadding;
-  const int minY = y - maxWidth;
-  const int lineHeight = renderer.getLineHeight(fontId);
-  const int cjkCellAdvance = std::max(1, lineHeight * 9 / 10);
-  const int maxGlyphStep = std::max(lineHeight, cjkCellAdvance) + glyphGap;
-  const char* ellipsis = "\xe2\x80\xa6";
-  const int ellipsisAdvance =
-      std::min(std::max(renderer.getTextAdvanceX(fontId, ellipsis, EpdFontFamily::REGULAR), cjkCellAdvance) + glyphGap,
-               maxGlyphStep);
-  bool overflow = false;
-
-  const auto* p = reinterpret_cast<const unsigned char*>(text.c_str());
-  while (*p != '\0' && drawY > minY) {
-    const auto* cpStart = p;
-    utf8NextCodepoint(&p);
-    const std::string glyph(reinterpret_cast<const char*>(cpStart), p - cpStart);
-    const int measuredAdvance = renderer.getTextAdvanceX(fontId, glyph.c_str(), EpdFontFamily::REGULAR);
-    const int glyphAdvance = measuredAdvance > 0 ? measuredAdvance : cjkCellAdvance;
-    const int step = std::min(glyphAdvance + glyphGap, maxGlyphStep);
-    if (*p != '\0' && drawY - step <= minY && drawY - ellipsisAdvance > minY) {
-      renderer.drawText(fontId, x, drawY, ellipsis, true);
-      overflow = true;
-      break;
-    }
-    renderer.drawText(fontId, x, drawY, glyph.c_str(), true);
-    drawY -= step;
-  }
-
-  if (!overflow && *p != '\0' && drawY > minY) {
-    renderer.drawText(fontId, x, drawY, ellipsis, true);
-  }
-}
-
 struct PopupDefinition {
   std::string attributes;
   std::vector<std::string> glosses;
@@ -505,7 +446,7 @@ void EpubReaderActivity::loop() {
     }
   }
 
-  // Kanji cursor mode: active only for resolved tategaki content.
+  // Japanese dictionary cursor mode.
   if (kanjiCursorActive) {
     if (RenderLock::peek()) {
       return;
@@ -552,9 +493,9 @@ void EpubReaderActivity::loop() {
     return;  // Swallow all other input while cursor is active.
   }
 
-  // Long-press Confirm (600ms) in tategaki orientation enters cursor mode.
-  if (effectiveWritingMode != EpubWritingMode::HorizontalTb && section &&
-      mappedInput.isPressed(MappedInputManager::Button::Confirm) && mappedInput.getHeldTime() >= CURSOR_ENTER_MS) {
+  // Long-press Confirm (600ms) enters cursor mode for Japanese books in horizontal or vertical writing mode.
+  if (isJapaneseLanguageBook() && section && mappedInput.isPressed(MappedInputManager::Button::Confirm) &&
+      mappedInput.getHeldTime() >= CURSOR_ENTER_MS) {
     if (RenderLock::peek()) {
       return;
     }
@@ -1549,7 +1490,7 @@ void EpubReaderActivity::restoreSavedPosition() {
   requestUpdate();
 }
 
-// --- Kanji cursor overlay (Phase 1: tategaki dictionary lookup) ---
+// --- Japanese dictionary cursor overlay ---
 
 void EpubReaderActivity::enterKanjiCursorMode() {
   if (!section) return;
@@ -1682,15 +1623,18 @@ void EpubReaderActivity::moveKanjiCursorToLine(const int direction) {
   const auto& cur = kanjiIndex[kanjiIndexPos];
   if (cur.elementIdx >= static_cast<int16_t>(elements.size())) return;
   if (elements[cur.elementIdx]->getTag() != TAG_PageLine) return;
-  const int curYPos = static_cast<const PageLine&>(*elements[cur.elementIdx]).yPos;
+  const auto& curLine = static_cast<const PageLine&>(*elements[cur.elementIdx]);
+  const bool vertical = curLine.getBlock() && curLine.getBlock()->isVertical();
+  const int curAxisPos = vertical ? curLine.xPos : curLine.yPos;
 
-  // Scan in direction for the first kanji whose PageLine has a different yPos (= different column).
+  // Scan in direction for the first kanji whose PageLine is on a different line/column.
   int pos = kanjiIndexPos + direction;
   while (pos >= 0 && pos < static_cast<int>(kanjiIndex.size())) {
     const auto& e = kanjiIndex[pos];
     if (e.elementIdx < static_cast<int16_t>(elements.size()) && elements[e.elementIdx]->getTag() == TAG_PageLine) {
-      const int yPos = static_cast<const PageLine&>(*elements[e.elementIdx]).yPos;
-      if (yPos != curYPos) {
+      const auto& line = static_cast<const PageLine&>(*elements[e.elementIdx]);
+      const int axisPos = vertical ? line.xPos : line.yPos;
+      if (axisPos != curAxisPos) {
         kanjiIndexPos = pos;
         LOG_DBG("DICT", "Jump cursor dir=%d pos=%d/%d", direction, kanjiIndexPos + 1,
                 static_cast<int>(kanjiIndex.size()));
@@ -1706,23 +1650,45 @@ void EpubReaderActivity::moveKanjiCursorToLine(const int direction) {
   queueKanjiCursorRedraw();
 }
 
-bool EpubReaderActivity::drawKanjiCursor() {
-  if (!kanjiCursorActive || !kanjiCursorPage || kanjiIndex.empty()) return false;
-  if (kanjiIndexPos < 0 || kanjiIndexPos >= static_cast<int>(kanjiIndex.size())) return false;
+bool EpubReaderActivity::getSelectedKanjiBlock(const PageLine*& pageLine, const TextBlock*& textBlock,
+                                               KanjiEntry& entry) const {
+  if (!kanjiCursorPage || kanjiIndex.empty() || kanjiIndexPos < 0 ||
+      kanjiIndexPos >= static_cast<int>(kanjiIndex.size())) {
+    return false;
+  }
 
-  const auto& entry = kanjiIndex[kanjiIndexPos];
+  entry = kanjiIndex[kanjiIndexPos];
   const auto& elements = kanjiCursorPage->elements;
   if (entry.elementIdx >= static_cast<int16_t>(elements.size())) return false;
   if (elements[entry.elementIdx]->getTag() != TAG_PageLine) return false;
 
-  const auto& pl = static_cast<const PageLine&>(*elements[entry.elementIdx]);
-  const auto& tb = *pl.getBlock();
-  const auto& xposVec = tb.getWordXpos();
-  const auto& words = tb.getWords();
-  const auto& styles = tb.getWordStyles();
-  if (entry.wordIdx >= static_cast<int16_t>(xposVec.size())) return false;
-  if (entry.wordIdx >= static_cast<int16_t>(words.size()) || entry.wordIdx >= static_cast<int16_t>(styles.size()))
+  pageLine = &static_cast<const PageLine&>(*elements[entry.elementIdx]);
+  if (!pageLine->getBlock()) return false;
+  textBlock = pageLine->getBlock().get();
+  return true;
+}
+
+bool EpubReaderActivity::getKanjiCursorRect(const PageLine& pageLine, const TextBlock& textBlock,
+                                            const KanjiEntry& entry, KanjiCursorRect& rect) const {
+  const auto& words = textBlock.getWords();
+  const auto& xposVec = textBlock.getWordXpos();
+  const auto& yposVec = textBlock.getWordYpos();
+  const auto& styles = textBlock.getWordStyles();
+  if (entry.wordIdx >= static_cast<int16_t>(words.size()) || entry.wordIdx >= static_cast<int16_t>(styles.size()) ||
+      entry.wordIdx >= static_cast<int16_t>(xposVec.size())) {
     return false;
+  }
+  if (textBlock.isVertical() && entry.wordIdx >= static_cast<int16_t>(yposVec.size())) return false;
+
+  const int cellSize = renderer.getLineHeight(effectiveReaderFontId());
+  rect.width = cellSize;
+  rect.height = cellSize;
+
+  if (textBlock.isVertical()) {
+    rect.x = kanjiMarginLeft + pageLine.xPos + xposVec[entry.wordIdx];
+    rect.y = kanjiMarginTop + pageLine.yPos + yposVec[entry.wordIdx];
+    return true;
+  }
 
   int intraWordX = 0;
   if (entry.byteOffset > 0 && entry.byteOffset <= words[entry.wordIdx].size()) {
@@ -1730,19 +1696,30 @@ bool EpubReaderActivity::drawKanjiCursor() {
     intraWordX = renderer.getTextAdvanceX(effectiveReaderFontId(), prefix.c_str(), styles[entry.wordIdx]);
   }
 
-  const int cx = kanjiMarginLeft + pl.xPos + xposVec[entry.wordIdx] + intraWordX;
-  const int cy = kanjiMarginTop + pl.yPos;
-  const int cellSize = renderer.getLineHeight(effectiveReaderFontId());
+  rect.x = kanjiMarginLeft + pageLine.xPos + xposVec[entry.wordIdx] + intraWordX;
+  rect.y = kanjiMarginTop + pageLine.yPos + textBlock.rubyTopPadding(renderer);
+  return true;
+}
+
+bool EpubReaderActivity::drawKanjiCursor() {
+  if (!kanjiCursorActive || !kanjiCursorPage || kanjiIndex.empty()) return false;
+  const PageLine* pageLine = nullptr;
+  const TextBlock* textBlock = nullptr;
+  KanjiEntry entry;
+  if (!getSelectedKanjiBlock(pageLine, textBlock, entry)) return false;
+
+  KanjiCursorRect rect;
+  if (!getKanjiCursorRect(*pageLine, *textBlock, entry, rect)) return false;
 
   if (kanjiCursorRectValid) {
     renderer.drawRect(kanjiCursorRectX, kanjiCursorRectY, kanjiCursorRectSize, kanjiCursorRectSize, 2, false);
   }
 
-  renderer.drawRect(cx, cy, cellSize, cellSize, 2, true);
+  renderer.drawRect(rect.x, rect.y, rect.width, rect.height, 2, true);
   kanjiCursorRectValid = true;
-  kanjiCursorRectX = cx;
-  kanjiCursorRectY = cy;
-  kanjiCursorRectSize = cellSize;
+  kanjiCursorRectX = rect.x;
+  kanjiCursorRectY = rect.y;
+  kanjiCursorRectSize = rect.width;
   return true;
 }
 
@@ -1830,65 +1807,66 @@ void EpubReaderActivity::showKanjiPopup() {
 void EpubReaderActivity::drawKanjiPopup() {
   const bool hasMatch = !kanjiPopupMatches.empty();
 
-  // In landscape CCW orientation the device is held in portrait.
-  // Renderer X-axis = user's top-to-bottom; renderer Y-axis = user's right-to-left.
-  // A box that is wide in renderer-X and narrow in renderer-Y becomes a portrait
-  // box after the display's CCW rotation.
-  // Text drawn with drawTextRotated90CW rotates 90° CW in renderer space; the
-  // display's CCW transform cancels it, so text appears upright to the user.
-  const int sw = renderer.getScreenWidth();   // 800 in landscape CCW
-  const int sh = renderer.getScreenHeight();  // 480 in landscape CCW
+  const int sw = renderer.getScreenWidth();
+  const int sh = renderer.getScreenHeight();
   const int pad = 18;
+  const int popupW = sw * 17 / 20;
+  const int popupH = sh * 7 / 10;
+  const int popupX = (sw - popupW) / 2;
+  const int popupY = (sh - popupH) / 2;
+  const int maxTextWidth = popupW - pad * 2;
+  int textY = popupY + pad;
 
-  // Box: rdx = user portrait height (renderer X extent), rdy = user portrait width (renderer Y extent).
-  const int rdx = sw * 17 / 20;   // 85% of screen height after CCW display rotation
-  const int rdy = sh * 17 / 20;   // 85% of screen width after CCW display rotation
-  const int rx = (sw - rdx) / 2;  // center in renderer X
-  const int ry = (sh - rdy) / 2;  // center in renderer Y
+  renderer.fillRect(popupX, popupY, popupW, popupH, false);
+  renderer.drawRect(popupX, popupY, popupW, popupH, 2, true);
 
-  renderer.fillRect(rx, ry, rdx, rdy, false);    // white background
-  renderer.drawRect(rx, ry, rdx, rdy, 2, true);  // black border
-
-  // All text lines start from the user's left edge (= high renderer Y) and run right.
-  const int textY = ry + rdy - pad;
-  const int maxTextWidth = rdy - pad * 2;
-  const int termLineStep = renderer.getLineHeight(effectiveReaderFontId()) + 12;
-  const int uiLineStep = renderer.getLineHeight(UI_10_FONT_ID) + 8;
-
-  int lineX = rx + pad;
   if (hasMatch) {
     if (kanjiPopupMatchIndex >= kanjiPopupMatches.size()) kanjiPopupMatchIndex = 0;
     const auto& match = kanjiPopupMatches[kanjiPopupMatchIndex];
-    drawJapanesePopupLine(renderer, effectiveReaderFontId(), lineX, textY, match.term, maxTextWidth);
-    lineX += termLineStep;
+    const std::string term =
+        renderer.truncatedText(effectiveReaderFontId(), match.term.c_str(), maxTextWidth, EpdFontFamily::BOLD);
+    renderer.drawText(effectiveReaderFontId(), popupX + pad, textY, term.c_str(), true, EpdFontFamily::BOLD);
+    textY += renderer.getLineHeight(effectiveReaderFontId()) + 8;
+
     const std::string pronunciation = popupPronunciationLine(match);
     if (!pronunciation.empty()) {
-      drawJapanesePopupLine(renderer, effectiveReaderFontId(), lineX, textY, pronunciation, maxTextWidth);
-      lineX += termLineStep;
+      const std::string reading = renderer.truncatedText(effectiveReaderFontId(), pronunciation.c_str(), maxTextWidth);
+      renderer.drawText(effectiveReaderFontId(), popupX + pad, textY, reading.c_str(), true);
+      textY += renderer.getLineHeight(effectiveReaderFontId()) + 8;
     }
     if (match.sourceText != match.term) {
-      drawRotatedLine(renderer, UI_10_FONT_ID, lineX, textY, "from " + match.sourceText, maxTextWidth);
-      lineX += uiLineStep;
+      const std::string source =
+          renderer.truncatedText(UI_10_FONT_ID, ("from " + match.sourceText).c_str(), maxTextWidth);
+      renderer.drawText(UI_10_FONT_ID, popupX + pad, textY, source.c_str(), true);
+      textY += renderer.getLineHeight(UI_10_FONT_ID) + 6;
     }
+
     const PopupDefinition definition = popupDefinitionItems(match.definition, 6);
     if (hasVisibleDefinitionText(definition.attributes)) {
-      drawRotatedLine(renderer, UI_10_FONT_ID, lineX, textY, "(" + definition.attributes + ")", maxTextWidth,
-                      EpdFontFamily::BOLD);
-      lineX += uiLineStep;
+      const std::string attrs = renderer.truncatedText(UI_10_FONT_ID, ("(" + definition.attributes + ")").c_str(),
+                                                       maxTextWidth, EpdFontFamily::BOLD);
+      renderer.drawText(UI_10_FONT_ID, popupX + pad, textY, attrs.c_str(), true, EpdFontFamily::BOLD);
+      textY += renderer.getLineHeight(UI_10_FONT_ID) + 6;
     }
+    const int lineStep = renderer.getLineHeight(UI_10_FONT_ID) + 4;
     for (const auto& item : definition.glosses) {
-      const int remainingColumns = (rx + rdx - pad - lineX) / uiLineStep;
-      if (remainingColumns <= 3) break;
-      lineX = drawRotatedWrappedLines(renderer, UI_10_FONT_ID, lineX, textY, item, maxTextWidth, remainingColumns - 2,
-                                      uiLineStep);
+      const int remainingLines = (popupY + popupH - pad - textY) / lineStep;
+      if (remainingLines <= 1) break;
+      const auto lines = renderer.wrappedText(UI_10_FONT_ID, item.c_str(), maxTextWidth, remainingLines);
+      for (const auto& line : lines) {
+        renderer.drawText(UI_10_FONT_ID, popupX + pad, textY, line.c_str(), true);
+        textY += lineStep;
+        if (textY >= popupY + popupH - pad) break;
+      }
     }
     if (kanjiPopupMatches.size() > 1) {
       const std::string position =
           std::to_string(kanjiPopupMatchIndex + 1) + "/" + std::to_string(kanjiPopupMatches.size());
-      renderer.drawTextRotated90CW(UI_10_FONT_ID, rx + rdx - pad - 18, ry + pad + maxTextWidth, position.c_str(), true);
+      const int posWidth = renderer.getTextWidth(UI_10_FONT_ID, position.c_str());
+      renderer.drawText(UI_10_FONT_ID, popupX + popupW - pad - posWidth, popupY + pad, position.c_str(), true);
     }
   } else {
-    drawRotatedLine(renderer, UI_10_FONT_ID, lineX, textY, "No dictionary match", maxTextWidth);
+    renderer.drawText(UI_10_FONT_ID, popupX + pad, textY, "No dictionary match", true);
   }
 
   const bool hasMultipleMatches = kanjiPopupMatches.size() > 1;

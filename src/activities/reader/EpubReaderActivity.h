@@ -47,6 +47,12 @@ class EpubReaderActivity final : public Activity {
     int16_t wordIdx;
     uint16_t byteOffset;
   };
+  struct KanjiCursorRect {
+    int x = 0;
+    int y = 0;
+    int width = 0;
+    int height = 0;
+  };
   bool kanjiCursorActive = false;
   bool kanjiPopupActive = false;
   JapaneseDictionary kanjiDictionary;
@@ -79,6 +85,9 @@ class EpubReaderActivity final : public Activity {
   void exitKanjiCursorMode();
   void moveKanjiCursor(int direction);
   void moveKanjiCursorToLine(int direction);
+  bool getSelectedKanjiBlock(const PageLine*& pageLine, const TextBlock*& textBlock, KanjiEntry& entry) const;
+  bool getKanjiCursorRect(const PageLine& pageLine, const TextBlock& textBlock, const KanjiEntry& entry,
+                          KanjiCursorRect& rect) const;
   bool drawKanjiCursor();
   void queueKanjiCursorRedraw();
   void flushKanjiCursorRefresh();

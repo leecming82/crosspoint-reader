@@ -43,7 +43,8 @@ without merging the whole fork.
   - The reader menu exposes both Orientation and Writing Mode; both currently update global reader settings, not per-book
     overrides.
   - Menu/status/system UI orientation is not inferred from Japanese/vertical writing mode.
-  - Dictionary cursor activation is gated by resolved writing mode instead of orientation alone.
+  - Japanese dictionary cursor activation is gated by EPUB language metadata, not physical orientation; Japanese books can
+    use cursor lookup in horizontal and vertical writing modes.
 - Section cache plumbing includes writing mode:
   - The section cache version was bumped.
   - Section cache headers include resolved writing mode, preventing horizontal/vertical cache reuse.
@@ -71,6 +72,13 @@ without merging the whole fork.
   - Manual Vertical RL is guarded to Japanese-language or book-declared vertical EPUBs; non-Japanese horizontal EPUBs ignore
     a stale global Vertical RL setting and hide that choice in the book menu.
   - Section cache version was bumped for the revised vertical geometry.
+- Dictionary cursor geometry now uses the same page/block positions as rendering:
+  - Cursor rectangles are built from `PageLine` plus `TextBlock` coordinates, using `wordYpos` for vertical blocks and
+    horizontal prefix advances for horizontal blocks.
+  - Column/line jumps compare the relevant axis for the selected block: vertical columns by `PageLine::xPos`, horizontal
+    lines by `PageLine::yPos`.
+  - Lookup text still walks logical `TextBlock::words`, so ruby readings remain out of dictionary context.
+  - Dictionary popup presentation now follows normal UI orientation for both horizontal and vertical Japanese text.
 - The short-lived combined Reading Layout/Auto orientation infrastructure has been removed:
   - Reader menu rotation, status bar drawing, sleep popups, chapter/footnote/percent/QR/sync sub-activities, and section
     viewport sizing use the explicit physical orientation.
@@ -85,10 +93,8 @@ without merging the whole fork.
 - Replace current `SMALL_FONT_ID` proof rendering with a proper small reader/ruby font path.
 - Add vertical ruby placement after native vertical columns exist.
 - Add a user-facing ruby enable/disable setting only after font and vertical behavior are stable.
-- Re-test dictionary cursor, popup, selected text extraction, and lookup flow against ruby-heavy chapters.
-- Fix cursor rectangle placement on ruby-bearing lines if needed. Ruby readings are transparent to cursor indexing and
-  dictionary text because they are not stored in `TextBlock::words`, but the cursor box currently does not account for
-  the extra `rubyTopPadding()` used when drawing the shifted base text.
+- Re-test dictionary cursor, popup, selected text extraction, and lookup flow against ruby-heavy chapters in horizontal and
+  vertical writing modes.
 
 ### Native Vertical Text
 
@@ -132,7 +138,7 @@ orientation or rotated horizontal lines pretending to be columns.
 3. Done: add vertical primitives and renderer proof drawing.
 4. Done: add initial vertical column layout and RTL column flow.
 5. Done: vertical kinsoku and spacing first pass.
-6. Rework cursor/dictionary geometry for native vertical blocks.
+6. Done: dictionary cursor geometry for horizontal and vertical Japanese blocks.
 7. Polish ruby-in-vertical and glyph-id-only vertical alternates.
 
 ## Native Vertical Text Testable Slices
@@ -209,17 +215,23 @@ These slices should stay small enough to test from the reader UI, with serial lo
      - A Japanese vertical EPUB rebuilds cache once after the version bump, then reopens from cache.
      - Horizontal EPUB spacing is unchanged.
 
-6. Dictionary cursor geometry.
+6. Done: dictionary cursor geometry.
    - Change:
-     - Move dictionary/cursor activation from orientation assumptions to resolved writing mode.
-     - Build cursor rectangles from vertical layout geometry while lookup context still comes from logical
+     - Move dictionary/cursor activation from orientation assumptions to Japanese-language EPUBs.
+     - Build cursor rectangles from shared `PageLine` + `TextBlock` geometry while lookup context still comes from logical
        `TextBlock::words`.
+     - Use vertical `wordYpos` for native columns and horizontal prefix advance/ruby padding for horizontal lines.
+     - Make line/column jumps compare the selected block's flow axis.
+     - Use a normal UI-oriented dictionary popup for horizontal and vertical Japanese text.
      - Keep ruby text out of lookup strings.
    - Visible/manual tests:
      - Cursor highlight lands on the selected kanji in vertical columns.
-     - Up/down move within a column; left/right move between columns.
+     - Cursor highlight lands on the selected kanji in horizontal Japanese lines, including ruby-bearing lines.
+     - Sequential movement follows logical reading order in both writing modes.
+     - Side-button jumps move between vertical columns or horizontal lines, depending on the selected block.
      - Dictionary popup lookup still finds Japanese terms from logical reading order.
      - Ruby-heavy pages do not include readings in selected lookup text.
+     - English EPUBs do not enter dictionary cursor mode.
 
 7. Ruby-in-vertical polish.
    - Change:
