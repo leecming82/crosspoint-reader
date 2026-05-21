@@ -28,6 +28,7 @@ class TextBlock final : public Block {
   // Empty in lockstep with wordFocusBoundary.
   std::vector<uint16_t> wordFocusSuffixX;
   std::vector<std::string> rubyTexts;
+  std::vector<uint16_t> rubyBaseAdvances;
   BlockStyle blockStyle;
   bool vertical = false;
 
@@ -36,7 +37,7 @@ class TextBlock final : public Block {
                      std::vector<EpdFontFamily::Style> word_styles, std::vector<uint8_t> focus_boundary,
                      std::vector<uint16_t> focus_suffix_x, const BlockStyle& blockStyle = BlockStyle(),
                      std::vector<std::string> ruby_texts = {}, std::vector<int16_t> word_ypos = {},
-                     bool vertical = false)
+                     bool vertical = false, std::vector<uint16_t> ruby_base_advances = {})
       : words(std::move(words)),
         wordXpos(std::move(word_xpos)),
         wordYpos(std::move(word_ypos)),
@@ -44,6 +45,7 @@ class TextBlock final : public Block {
         wordFocusBoundary(std::move(focus_boundary)),
         wordFocusSuffixX(std::move(focus_suffix_x)),
         rubyTexts(std::move(ruby_texts)),
+        rubyBaseAdvances(std::move(ruby_base_advances)),
         blockStyle(blockStyle),
         vertical(vertical) {}
   ~TextBlock() override = default;
@@ -56,7 +58,7 @@ class TextBlock final : public Block {
   const std::vector<std::string>& getRubyTexts() const { return rubyTexts; }
   bool isVertical() const { return vertical; }
   bool hasRuby() const;
-  int rubyTopPadding(const GfxRenderer& renderer) const;
+  int rubyTopPadding(const GfxRenderer& renderer, int fontId) const;
   bool isEmpty() override { return words.empty(); }
   size_t wordCount() const { return words.size(); }
   // given a renderer works out where to break the words into lines

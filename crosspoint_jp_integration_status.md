@@ -64,8 +64,8 @@ without merging the whole fork.
   - Column breaks use the existing Japanese kinsoku head/tail helpers.
   - Single vertical glyph rendering stays on the precomputed layout position and avoids render-time width measurement.
   - The over-aggressive half-width punctuation/small-kana compression was backed out after device testing showed overlap.
-  - Native vertical blocks currently suppress ruby sidecars until proper vertical ruby placement is implemented, so ruby-bearing
-    base text follows the same per-glyph column rhythm as surrounding Japanese text.
+  - Ruby-bearing base text follows the same per-glyph column rhythm as surrounding Japanese text; ruby is now drawn as a
+    sidecar annotation rather than changing base glyph placement.
   - Japanese EPUB font size selection is keyed from EPUB language metadata (`ja`/`jpn`), not vertical/horizontal writing mode.
   - SD-card cpfont format v5 stores OpenType `vert`/`vrt2` codepoint substitutions; the reader remains compatible with
     v4 fonts, but vertical rendering and layout use punctuation alternates only when regenerated v5 fonts provide them.
@@ -79,6 +79,18 @@ without merging the whole fork.
     lines by `PageLine::yPos`.
   - Lookup text still walks logical `TextBlock::words`, so ruby readings remain out of dictionary context.
   - Dictionary popup presentation now follows normal UI orientation for both horizontal and vertical Japanese text.
+- Ruby-in-vertical has a first rendering pass:
+  - Vertical column layout preserves ruby sidecars when it explodes logical words into per-glyph/per-run vertical units.
+  - `TextBlock` draws vertical ruby beside the base column while keeping the base glyph rhythm unchanged.
+  - Horizontal ruby rendering now goes through the same ruby helper and uses the next-smaller built-in reader font where
+    available.
+  - SD-card font ruby uses the small UI/CJK fallback font when every glyph in a ruby group is covered; otherwise that ruby
+    group is skipped rather than drawn same-size or as missing-glyph boxes.
+  - Vertical ruby stores a base-span advance, so readings over multi-character bases center across the whole base word
+    instead of only the first glyph.
+  - Horizontal and vertical ruby placement have small calibrated draw-position biases from device testing, so ruby sits closer
+    to the intended base word without changing page layout geometry.
+  - Section cache version was bumped so ruby-bearing vertical pages rebuild with ruby sidecars and span data present.
 - The short-lived combined Reading Layout/Auto orientation infrastructure has been removed:
   - Reader menu rotation, status bar drawing, sleep popups, chapter/footnote/percent/QR/sync sub-activities, and section
     viewport sizing use the explicit physical orientation.
@@ -90,11 +102,11 @@ without merging the whole fork.
 
 ### Ruby
 
-- Replace current `SMALL_FONT_ID` proof rendering with a proper small reader/ruby font path.
-- Add vertical ruby placement after native vertical columns exist.
 - Add a user-facing ruby enable/disable setting only after font and vertical behavior are stable.
 - Re-test dictionary cursor, popup, selected text extraction, and lookup flow against ruby-heavy chapters in horizontal and
   vertical writing modes.
+- Decide whether to support simultaneous smaller SD-card ruby fonts for fuller coverage and family matching.
+- If denser books show column collisions, add ruby-aware vertical column spacing or a dedicated inter-column ruby gutter.
 
 ### Native Vertical Text
 
@@ -139,7 +151,8 @@ orientation or rotated horizontal lines pretending to be columns.
 4. Done: add initial vertical column layout and RTL column flow.
 5. Done: vertical kinsoku and spacing first pass.
 6. Done: dictionary cursor geometry for horizontal and vertical Japanese blocks.
-7. Polish ruby-in-vertical and glyph-id-only vertical alternates.
+7. Done: ruby-in-vertical first pass.
+8. Polish glyph-id-only vertical alternates and any ruby gutter/collision issues.
 
 ## Native Vertical Text Testable Slices
 
@@ -233,19 +246,31 @@ These slices should stay small enough to test from the reader UI, with serial lo
      - Ruby-heavy pages do not include readings in selected lookup text.
      - English EPUBs do not enter dictionary cursor mode.
 
-7. Ruby-in-vertical polish.
+7. Done: ruby-in-vertical polish.
    - Change:
-     - Draw ruby beside vertical base glyphs with a proper small reader/ruby font path.
-     - Fix cursor rectangles where ruby expands visual ink bounds.
+     - Preserve ruby sidecars when vertical layout splits logical words into vertical units.
+     - Draw ruby beside vertical base glyphs without changing base glyph positions or dictionary text.
+     - Use a shared ruby drawing helper for horizontal and vertical text.
+     - Use the next-smaller built-in reader font for built-in-font ruby where available.
+     - Use the small UI/CJK fallback font for SD-card ruby when all glyphs are covered; skip uncovered ruby groups.
+     - Store per-ruby base span in vertical blocks so multi-character bases align correctly.
+     - Tighten horizontal and vertical ruby draw placement with small device-tested biases.
+     - Bump the section cache version so old vertical pages without ruby sidecars/span data rebuild.
    - Visible/manual tests:
      - Ruby appears beside base text in vertical pages and above base text in horizontal pages.
-     - Disabling or hiding ruby later should not change dictionary lookup text.
+     - Multi-kanji bases such as `憔悴` center their ruby across the full base word.
+     - Single-kanji bases do not appear shifted toward the previous character.
+     - Horizontal ruby sits closer to the base text without touching it.
+     - Ruby-heavy vertical pages rebuild cache once after the version bump.
+     - Ruby readings do not affect dictionary lookup text.
      - Cursor boxes remain aligned on ruby-heavy vertical and horizontal pages.
 
-8. Glyph-id-only vertical alternates.
+8. Glyph-id-only vertical alternates and ruby gutter polish.
    - Change:
      - Extend cpfont beyond codepoint-to-codepoint `vert` substitutions so glyph-id-only replacements can be stored and
        rendered without private Unicode hacks.
+     - If needed, add a vertical ruby gutter or ruby-aware column spacing after device testing.
    - Visible/manual tests:
      - The Japanese long sound mark and dash-like glyphs use the font's true vertical forms when available.
      - Existing SD fonts without glyph-id-only alternate data still render with the fallback path.
+     - Ruby does not overlap adjacent columns at normal/wide line spacing.

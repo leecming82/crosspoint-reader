@@ -1397,6 +1397,21 @@ int GfxRenderer::getTextAdvanceX(const int fontId, const char* text, EpdFontFami
   return widthPx;
 }
 
+bool GfxRenderer::canRenderText(const int fontId, const char* text, const EpdFontFamily::Style style) const {
+  if (text == nullptr) return true;
+  const auto fontIt = fontMap.find(fontId);
+  if (fontIt == fontMap.end()) return false;
+
+  const EpdFontFamily& font = fontIt->second;
+  while (uint32_t cp = utf8NextCodepoint(reinterpret_cast<const uint8_t**>(&text))) {
+    if (utf8IsCombiningMark(cp)) continue;
+    cp = font.applyLigatures(cp, text, style);
+    if (shouldUseCjkUiFallback(fontId, cp)) continue;
+    if (!font.getGlyph(cp, style)) return false;
+  }
+  return true;
+}
+
 int GfxRenderer::getFontAscenderSize(const int fontId) const {
   const auto fontIt = fontMap.find(fontId);
   if (fontIt == fontMap.end()) {

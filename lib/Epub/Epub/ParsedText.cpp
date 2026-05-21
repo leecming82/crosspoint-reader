@@ -45,6 +45,7 @@ struct VerticalUnit {
   uint32_t lastCp;
   uint16_t advance;
   bool noBreakBefore;
+  bool firstUnitInWord;
   EpdFontFamily::Style style;
 };
 
@@ -634,9 +635,9 @@ void ParsedText::layoutAndExtractVerticalColumns(const GfxRenderer& renderer, co
   units.reserve(words.size() * 2);
 
   auto pushUnit = [&](const size_t wordIndex, const size_t start, const size_t end, const uint32_t firstCp,
-                      const uint32_t lastCp, const int advance, const bool noBreakBefore) {
+                      const uint32_t lastCp, const int advance, const bool noBreakBefore, const bool firstUnitInWord) {
     units.push_back({wordIndex, start, end, firstCp, lastCp, static_cast<uint16_t>(std::max(1, advance)), noBreakBefore,
-                     wordStyles[wordIndex]});
+                     firstUnitInWord, wordStyles[wordIndex]});
   };
 
   for (size_t wordIndex = 0; wordIndex < words.size(); ++wordIndex) {
@@ -663,7 +664,7 @@ void ParsedText::layoutAndExtractVerticalColumns(const GfxRenderer& renderer, co
           ++digitCount;
         }
         pushUnit(wordIndex, offset, runEnd, cp, lastCpInRun, cjkCellAdvance,
-                 firstUnitInWord && wordContinues[wordIndex]);
+                 firstUnitInWord && wordContinues[wordIndex], firstUnitInWord);
         offset = runEnd;
         firstUnitInWord = false;
         continue;
@@ -685,7 +686,7 @@ void ParsedText::layoutAndExtractVerticalColumns(const GfxRenderer& renderer, co
         const std::string run = word.substr(offset, runEnd - offset);
         pushUnit(wordIndex, offset, runEnd, cp, lastCpInRun,
                  measureRunWidth(renderer, fontId, run, wordStyles[wordIndex]),
-                 firstUnitInWord && wordContinues[wordIndex]);
+                 firstUnitInWord && wordContinues[wordIndex], firstUnitInWord);
         offset = runEnd;
         firstUnitInWord = false;
         continue;
@@ -699,7 +700,7 @@ void ParsedText::layoutAndExtractVerticalColumns(const GfxRenderer& renderer, co
       const char* measuredText = verticalCp != cp ? verticalCpText.c_str() : cpText;
       const int measured = renderer.getTextAdvanceX(fontId, measuredText, wordStyles[wordIndex]);
       pushUnit(wordIndex, offset, nextOffset, cp, cp, std::max(cjkCellAdvance, measured),
-               firstUnitInWord && wordContinues[wordIndex]);
+               firstUnitInWord && wordContinues[wordIndex], firstUnitInWord);
       offset = nextOffset;
       firstUnitInWord = false;
     }
@@ -726,10 +727,15 @@ void ParsedText::layoutAndExtractVerticalColumns(const GfxRenderer& renderer, co
     std::vector<int16_t> columnXPos;
     std::vector<int16_t> columnYPos;
     std::vector<EpdFontFamily::Style> columnStyles;
+    std::vector<std::string> columnRubyTexts;
+    std::vector<uint16_t> columnRubyBaseAdvances;
     columnWords.reserve(end - start);
     columnXPos.reserve(end - start);
     columnYPos.reserve(end - start);
     columnStyles.reserve(end - start);
+    columnRubyTexts.reserve(end - start);
+    columnRubyBaseAdvances.reserve(end - start);
+    bool hasColumnRuby = false;
 
     int ypos = 0;
     for (size_t i = start; i < end; ++i) {
@@ -739,12 +745,28 @@ void ParsedText::layoutAndExtractVerticalColumns(const GfxRenderer& renderer, co
       columnXPos.push_back(0);
       columnYPos.push_back(static_cast<int16_t>(ypos));
       columnStyles.push_back(unit.style);
+      std::string ruby;
+      if (unit.firstUnitInWord && unit.wordIndex < rubyTexts.size()) {
+        ruby = rubyTexts[unit.wordIndex];
+      }
+      hasColumnRuby = hasColumnRuby || !ruby.empty();
+      uint16_t rubyBaseAdvance = 0;
+      if (!ruby.empty()) {
+        int spanAdvance = 0;
+        for (size_t j = i; j < end && units[j].wordIndex == unit.wordIndex; ++j) {
+          spanAdvance += units[j].advance;
+        }
+        rubyBaseAdvance = static_cast<uint16_t>(std::min<int>(std::max(1, spanAdvance), UINT16_MAX));
+      }
+      columnRubyTexts.push_back(std::move(ruby));
+      columnRubyBaseAdvances.push_back(rubyBaseAdvance);
       ypos += unit.advance;
     }
 
-    processColumn(std::make_shared<TextBlock>(std::move(columnWords), std::move(columnXPos), std::move(columnStyles),
-                                              std::vector<uint8_t>{}, std::vector<uint16_t>{}, blockStyle,
-                                              std::vector<std::string>{}, std::move(columnYPos), true));
+    processColumn(std::make_shared<TextBlock>(
+        std::move(columnWords), std::move(columnXPos), std::move(columnStyles), std::vector<uint8_t>{},
+        std::vector<uint16_t>{}, blockStyle, hasColumnRuby ? std::move(columnRubyTexts) : std::vector<std::string>{},
+        std::move(columnYPos), true, hasColumnRuby ? std::move(columnRubyBaseAdvances) : std::vector<uint16_t>{}));
   };
 
   size_t columnStart = 0;
