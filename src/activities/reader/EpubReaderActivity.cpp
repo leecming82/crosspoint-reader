@@ -1697,7 +1697,7 @@ bool EpubReaderActivity::getKanjiCursorRect(const PageLine& pageLine, const Text
   }
 
   rect.x = kanjiMarginLeft + pageLine.xPos + xposVec[entry.wordIdx] + intraWordX;
-  rect.y = kanjiMarginTop + pageLine.yPos + textBlock.rubyTopPadding(renderer, effectiveReaderFontId());
+  rect.y = kanjiMarginTop + pageLine.yPos;
   return true;
 }
 

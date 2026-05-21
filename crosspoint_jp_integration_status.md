@@ -90,6 +90,7 @@ without merging the whole fork.
     instead of only the first glyph.
   - Horizontal and vertical ruby placement have small calibrated draw-position biases from device testing, so ruby sits closer
     to the intended base word without changing page layout geometry.
+  - Horizontal ruby is now paint-only: ruby-bearing lines keep the same row height and cursor baseline as non-ruby lines.
   - Section cache version was bumped so ruby-bearing vertical pages rebuild with ruby sidecars and span data present.
 - The short-lived combined Reading Layout/Auto orientation infrastructure has been removed:
   - Reader menu rotation, status bar drawing, sleep popups, chapter/footnote/percent/QR/sync sub-activities, and section
@@ -255,12 +256,13 @@ These slices should stay small enough to test from the reader UI, with serial lo
      - Use the small UI/CJK fallback font for SD-card ruby when all glyphs are covered; skip uncovered ruby groups.
      - Store per-ruby base span in vertical blocks so multi-character bases align correctly.
      - Tighten horizontal and vertical ruby draw placement with small device-tested biases.
+     - Keep horizontal ruby paint-only so ruby-bearing rows do not change line spacing.
      - Bump the section cache version so old vertical pages without ruby sidecars/span data rebuild.
    - Visible/manual tests:
      - Ruby appears beside base text in vertical pages and above base text in horizontal pages.
      - Multi-kanji bases such as `憔悴` center their ruby across the full base word.
      - Single-kanji bases do not appear shifted toward the previous character.
-     - Horizontal ruby sits closer to the base text without touching it.
+     - Horizontal ruby sits closer to the base text without touching it, while row spacing remains constant.
      - Ruby-heavy vertical pages rebuild cache once after the version bump.
      - Ruby readings do not affect dictionary lookup text.
      - Cursor boxes remain aligned on ruby-heavy vertical and horizontal pages.

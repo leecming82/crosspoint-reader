@@ -22,7 +22,7 @@ constexpr int NOTOSANS_18_FONT_ID = 37077304;
 
 // Device-tuned draw offsets. They move ruby within its reserved space without
 // changing page layout, cache geometry, or cursor hit boxes.
-constexpr int HORIZONTAL_RUBY_Y_BIAS = 6;
+constexpr int HORIZONTAL_RUBY_Y_BIAS = 11;
 constexpr int VERTICAL_RUBY_Y_BIAS = 6;
 
 size_t utf8CodepointCount(const std::string& text) {
@@ -83,7 +83,7 @@ int rubyReservedHeight(const GfxRenderer& renderer, const int rubyFontId) {
   return std::max(1, lineHeight - std::max(2, lineHeight / 8));
 }
 
-void drawHorizontalRuby(const GfxRenderer& renderer, const int bodyFontId, const int wordX, const int rubyY,
+void drawHorizontalRuby(const GfxRenderer& renderer, const int bodyFontId, const int wordX, const int baseY,
                         const std::string& base, const std::string& ruby, const EpdFontFamily::Style style) {
   if (ruby.empty()) return;
   const int rubyFontId = drawableRubyFontId(renderer, bodyFontId, ruby);
@@ -92,8 +92,8 @@ void drawHorizontalRuby(const GfxRenderer& renderer, const int bodyFontId, const
   const int rubyWidth = renderer.getTextWidth(rubyFontId, ruby.c_str(), EpdFontFamily::REGULAR);
   const int rubyX = wordX + (baseWidth - rubyWidth) / 2;
   const int rubyYOffset = std::max(0, renderer.getLineHeight(rubyFontId) - renderer.getFontAscenderSize(rubyFontId));
-  renderer.drawText(rubyFontId, rubyX, rubyY + rubyYOffset + HORIZONTAL_RUBY_Y_BIAS, ruby.c_str(), true,
-                    EpdFontFamily::REGULAR);
+  const int rubyY = baseY - rubyReservedHeight(renderer, rubyFontId) + rubyYOffset + HORIZONTAL_RUBY_Y_BIAS;
+  renderer.drawText(rubyFontId, rubyX, rubyY, ruby.c_str(), true, EpdFontFamily::REGULAR);
 }
 
 void drawVerticalRuby(const GfxRenderer& renderer, const int bodyFontId, const int wordX, const int wordY,
@@ -186,7 +186,7 @@ void TextBlock::render(const GfxRenderer& renderer, const int fontId, const int 
     return;
   }
 
-  const int baseY = y + rubyTopPadding(renderer, fontId);
+  const int baseY = y;
   for (size_t i = 0; i < words.size(); i++) {
     const int wordX = wordXpos[i] + x;
     const EpdFontFamily::Style currentStyle = wordStyles[i];

@@ -1311,8 +1311,7 @@ bool ChapterHtmlSlimParser::parseAndBuildPages() {
 }
 
 void ChapterHtmlSlimParser::addLineToPage(std::shared_ptr<TextBlock> line) {
-  const int rubyPadding = line->rubyTopPadding(renderer, fontId);
-  const int lineHeight = renderer.getLineHeight(fontId) * lineCompression + rubyPadding;
+  const int lineHeight = renderer.getLineHeight(fontId) * lineCompression;
 
   if (!currentPage) {
     currentPage.reset(new Page());
