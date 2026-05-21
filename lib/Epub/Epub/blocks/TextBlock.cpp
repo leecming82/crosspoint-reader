@@ -102,7 +102,7 @@ void drawVerticalRuby(const GfxRenderer& renderer, const int bodyFontId, const i
   const int rubyFontId = drawableRubyFontId(renderer, bodyFontId, ruby);
   if (rubyFontId == 0) return;
   const int rubyLineHeight = std::max(1, renderer.getLineHeight(rubyFontId));
-  const int rubyX = wordX + std::max(0, columnWidth - rubyLineHeight * 4 / 5) + std::max(1, rubyLineHeight / 12);
+  const int rubyX = wordX + std::max(0, columnWidth - rubyLineHeight * 5 / 6) + std::max(1, rubyLineHeight / 12);
   const int rubyAdvance = std::max(1, renderer.getTextAdvanceX(rubyFontId, ruby.c_str(), EpdFontFamily::REGULAR));
   const int span = std::max(1, baseAdvance);
   const int rubyY = wordY + (rubyAdvance <= span ? (span - rubyAdvance) / 2 : 0);
