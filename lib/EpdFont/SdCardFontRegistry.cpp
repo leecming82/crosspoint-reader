@@ -41,7 +41,7 @@ std::vector<uint8_t> SdCardFontFamilyInfo::availableSizes() const {
 // --- SdCardFontRegistry ---
 
 bool SdCardFontRegistry::parseFilename(const char* filename, uint8_t& size, uint8_t& style) {
-  // V4 naming: <name>_<size>.cpfont (e.g. Bookerly-SD_14.cpfont)
+  // Current multi-style naming: <name>_<size>.cpfont (e.g. Bookerly-SD_14.cpfont)
   // Use an ends-with check rather than strstr() so that in-progress downloads
   // like "Foo_14.cpfont.tmp" or backups like "Foo_14.cpfont~" aren't accepted.
   static constexpr char kExt[] = ".cpfont";
@@ -66,7 +66,7 @@ bool SdCardFontRegistry::parseFilename(const char* filename, uint8_t& size, uint
   long sizeVal = strtol(sizeStr, &endPtr, 10);
   if (endPtr == sizeStr || *endPtr != '\0' || sizeVal < 1 || sizeVal > 255) return false;
   size = static_cast<uint8_t>(sizeVal);
-  // V4 .cpfont files bundle every style (regular/bold/italic/bold-italic) into
+  // Current .cpfont files bundle every style (regular/bold/italic/bold-italic) into
   // one file, so style is always 0 at the registry level. The per-style
   // bitstream is selected later by SdCardFont::getEpdFont(style). The `style`
   // field in SdCardFontFileInfo is reserved for future formats that split
@@ -99,7 +99,7 @@ void SdCardFontRegistry::scanDirectory(const char* dirPath, SdCardFontFamilyInfo
     if (!parseFilename(nameBuffer, size, style)) continue;
 
     // Reject duplicate (pointSize, style) entries in the same family. With
-    // v4's bundle-everything design parseFilename always returns style=0, so
+    // The bundle-everything design means parseFilename always returns style=0, so
     // two files at the same size in the same family would silently shadow
     // each other in findFile(). Skip the duplicate and warn.
     bool duplicate = false;

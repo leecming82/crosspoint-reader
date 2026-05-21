@@ -151,6 +151,24 @@ uint32_t EpdFont::applyLigatures(uint32_t cp, const char*& text) const {
   return cp;
 }
 
+uint32_t EpdFont::applyVerticalSubstitution(const uint32_t cp) const {
+  const auto* substitutions = data->verticalSubstitutions;
+  const auto count = data->verticalSubstitutionCount;
+  if (!substitutions || count == 0) {
+    return cp;
+  }
+
+  const auto* end = substitutions + count;
+  const auto it = std::lower_bound(
+      substitutions, end, cp, [](const EpdVerticalSubstitution& sub, uint32_t value) { return sub.sourceCp < value; });
+
+  if (it != end && it->sourceCp == cp) {
+    return it->replacementCp;
+  }
+
+  return cp;
+}
+
 const EpdGlyph* EpdFont::getGlyph(const uint32_t cp) const {
   const int count = data->intervalCount;
   if (count == 0 && !data->glyphMissHandler) return nullptr;

@@ -15,6 +15,8 @@ static_assert(sizeof(EpdGlyph) == 16, "EpdGlyph must be 16 bytes to match .cpfon
 static_assert(sizeof(EpdUnicodeInterval) == 12, "EpdUnicodeInterval must be 12 bytes to match .cpfont file layout");
 static_assert(sizeof(EpdKernClassEntry) == 3, "EpdKernClassEntry must be 3 bytes to match .cpfont file layout");
 static_assert(sizeof(EpdLigaturePair) == 8, "EpdLigaturePair must be 8 bytes to match .cpfont file layout");
+static_assert(sizeof(EpdVerticalSubstitution) == 8,
+              "EpdVerticalSubstitution must be 8 bytes to match .cpfont file layout");
 
 namespace {
 
@@ -65,6 +67,15 @@ bool collectUniqueCodepoints(const char* text, uint32_t* codepoints, uint32_t& c
   return false;
 }
 
+bool appendUniqueCodepoint(uint32_t cp, uint32_t* codepoints, uint32_t& cpCount, uint32_t maxCount) {
+  for (uint32_t i = 0; i < cpCount; i++) {
+    if (codepoints[i] == cp) return false;
+  }
+  if (cpCount >= maxCount) return true;
+  codepoints[cpCount++] = cp;
+  return false;
+}
+
 const char* asCStr(const std::string& s) { return s.c_str(); }
 const char* asCStr(const char* s) { return s; }
 
@@ -95,6 +106,16 @@ void SdCardFont::freeStyleKernLigatureData(PerStyle& s) {
   s.kernRightClasses = nullptr;
   delete[] s.ligaturePairs;
   s.ligaturePairs = nullptr;
+  delete[] s.verticalSubstitutions;
+  s.verticalSubstitutions = nullptr;
+  s.stubData.ligaturePairs = nullptr;
+  s.stubData.ligaturePairCount = 0;
+  s.stubData.verticalSubstitutions = nullptr;
+  s.stubData.verticalSubstitutionCount = 0;
+  s.miniData.ligaturePairs = nullptr;
+  s.miniData.ligaturePairCount = 0;
+  s.miniData.verticalSubstitutions = nullptr;
+  s.miniData.verticalSubstitutionCount = 0;
   s.kernLigLoaded = false;
 }
 
@@ -157,13 +178,16 @@ void SdCardFont::applyKernLigaturePointers(PerStyle& s, EpdFontData& data) const
   // Ligatures are small (typically < 1KB) so they stay resident.
   data.ligaturePairs = s.ligaturePairs;
   data.ligaturePairCount = s.header.ligaturePairCount;
+  data.verticalSubstitutions = s.verticalSubstitutions;
+  data.verticalSubstitutionCount = s.header.verticalSubstitutionCount;
 }
 
 bool SdCardFont::loadStyleKernLigatureData(PerStyle& s) {
   if (s.kernLigLoaded) return true;
   bool hasKern = s.header.kernLeftEntryCount > 0;
   bool hasLig = s.header.ligaturePairCount > 0;
-  if (!hasKern && !hasLig) {
+  bool hasVert = s.header.verticalSubstitutionCount > 0 && s.verticalSubstitutions == nullptr;
+  if (!hasKern && !hasLig && !hasVert) {
     s.kernLigLoaded = true;
     return true;
   }
@@ -223,6 +247,26 @@ bool SdCardFont::loadStyleKernLigatureData(PerStyle& s) {
     }
   }
 
+  if (hasVert) {
+    s.verticalSubstitutions = new (std::nothrow) EpdVerticalSubstitution[s.header.verticalSubstitutionCount];
+    if (!s.verticalSubstitutions) {
+      LOG_ERR("SDCF", "Failed to allocate vertical substitutions");
+      freeStyleKernLigatureData(s);
+      return false;
+    }
+    if (!file.seekSet(s.verticalSubstitutionFileOffset)) {
+      LOG_ERR("SDCF", "Failed to seek to vertical substitution data");
+      freeStyleKernLigatureData(s);
+      return false;
+    }
+    size_t sz = s.header.verticalSubstitutionCount * sizeof(EpdVerticalSubstitution);
+    if (file.read(reinterpret_cast<uint8_t*>(s.verticalSubstitutions), sz) != static_cast<int>(sz)) {
+      LOG_ERR("SDCF", "Failed to read vertical substitutions");
+      freeStyleKernLigatureData(s);
+      return false;
+    }
+  }
+
   s.kernLigLoaded = true;
 
   // Make ligatures visible to the stub (used when no mini data built yet).
@@ -230,9 +274,11 @@ bool SdCardFont::loadStyleKernLigatureData(PerStyle& s) {
   // applyKernLigaturePointers() after buildMiniKernMatrix() runs.
   s.stubData.ligaturePairs = s.ligaturePairs;
   s.stubData.ligaturePairCount = s.header.ligaturePairCount;
+  s.stubData.verticalSubstitutions = s.verticalSubstitutions;
+  s.stubData.verticalSubstitutionCount = s.header.verticalSubstitutionCount;
 
-  LOG_DBG("SDCF", "Kern classes + lig loaded: kernL=%u, kernR=%u, ligs=%u", s.header.kernLeftEntryCount,
-          s.header.kernRightEntryCount, s.header.ligaturePairCount);
+  LOG_DBG("SDCF", "Kern classes + lig + vert loaded: kernL=%u, kernR=%u, ligs=%u, vert=%u", s.header.kernLeftEntryCount,
+          s.header.kernRightEntryCount, s.header.ligaturePairCount, s.header.verticalSubstitutionCount);
   return true;
 }
 
@@ -411,7 +457,9 @@ void SdCardFont::computeStyleFileOffsets(PerStyle& s, uint32_t baseOffset) {
   s.kernMatrixFileOffset = s.kernRightFileOffset + s.header.kernRightEntryCount * sizeof(EpdKernClassEntry);
   s.ligatureFileOffset =
       s.kernMatrixFileOffset + static_cast<uint32_t>(s.header.kernLeftClassCount) * s.header.kernRightClassCount;
-  s.bitmapFileOffset = s.ligatureFileOffset + s.header.ligaturePairCount * sizeof(EpdLigaturePair);
+  s.verticalSubstitutionFileOffset = s.ligatureFileOffset + s.header.ligaturePairCount * sizeof(EpdLigaturePair);
+  s.bitmapFileOffset =
+      s.verticalSubstitutionFileOffset + s.header.verticalSubstitutionCount * sizeof(EpdVerticalSubstitution);
 }
 
 // --- Load ---
@@ -444,8 +492,8 @@ bool SdCardFont::load(const char* path) {
   }
 
   uint16_t fileVersion = readU16(headerBuf + 8);
-  if (fileVersion != CPFONT_VERSION) {
-    LOG_ERR("SDCF", "Unsupported version: %u (expected %u)", fileVersion, CPFONT_VERSION);
+  if (fileVersion != 4 && fileVersion != CPFONT_VERSION) {
+    LOG_ERR("SDCF", "Unsupported version: %u (expected 4 or %u)", fileVersion, CPFONT_VERSION);
     return false;
   }
 
@@ -492,6 +540,7 @@ bool SdCardFont::load(const char* path) {
     s.header.kernLeftClassCount = tocBuf[21];
     s.header.kernRightClassCount = tocBuf[22];
     s.header.ligaturePairCount = tocBuf[23];
+    s.header.verticalSubstitutionCount = fileVersion >= 5 ? readU16(tocBuf + 28) : 0;
     s.header.is2Bit = is2Bit;
 
     // Sanity-check counts to reject malformed files before allocating.
@@ -500,10 +549,13 @@ bool SdCardFont::load(const char* path) {
     static constexpr uint32_t MAX_INTERVALS = 4096;
     static constexpr uint32_t MAX_GLYPHS = 65536;
     static constexpr uint32_t MAX_KERN_ENTRIES = 4096;
+    static constexpr uint32_t MAX_VERTICAL_SUBSTITUTIONS = 512;
     if (s.header.intervalCount > MAX_INTERVALS || s.header.glyphCount > MAX_GLYPHS ||
-        s.header.kernLeftEntryCount > MAX_KERN_ENTRIES || s.header.kernRightEntryCount > MAX_KERN_ENTRIES) {
-      LOG_ERR("SDCF", "Style %u: unreasonable counts (iv=%u, gl=%u, kL=%u, kR=%u)", styleId, s.header.intervalCount,
-              s.header.glyphCount, s.header.kernLeftEntryCount, s.header.kernRightEntryCount);
+        s.header.kernLeftEntryCount > MAX_KERN_ENTRIES || s.header.kernRightEntryCount > MAX_KERN_ENTRIES ||
+        s.header.verticalSubstitutionCount > MAX_VERTICAL_SUBSTITUTIONS) {
+      LOG_ERR("SDCF", "Style %u: unreasonable counts (iv=%u, gl=%u, kL=%u, kR=%u, vert=%u)", styleId,
+              s.header.intervalCount, s.header.glyphCount, s.header.kernLeftEntryCount, s.header.kernRightEntryCount,
+              s.header.verticalSubstitutionCount);
       file.close();
       freeAll();
       return false;
@@ -581,17 +633,42 @@ bool SdCardFont::load(const char* path) {
 
     s.epdFont.data = &s.stubData;
     applyGlyphMissCallback(i);
+
+    if (s.header.verticalSubstitutionCount > 0) {
+      s.verticalSubstitutions = new (std::nothrow) EpdVerticalSubstitution[s.header.verticalSubstitutionCount];
+      if (!s.verticalSubstitutions) {
+        LOG_ERR("SDCF", "Failed to allocate %u vertical substitutions for style %u", s.header.verticalSubstitutionCount,
+                i);
+        freeAll();
+        return false;
+      }
+      if (!file.seekSet(s.verticalSubstitutionFileOffset)) {
+        LOG_ERR("SDCF", "Failed to seek to vertical substitutions for style %u", i);
+        freeAll();
+        return false;
+      }
+      size_t verticalBytes = s.header.verticalSubstitutionCount * sizeof(EpdVerticalSubstitution);
+      if (file.read(reinterpret_cast<uint8_t*>(s.verticalSubstitutions), verticalBytes) !=
+          static_cast<int>(verticalBytes)) {
+        LOG_ERR("SDCF", "Failed to read vertical substitutions for style %u", i);
+        freeAll();
+        return false;
+      }
+      s.stubData.verticalSubstitutions = s.verticalSubstitutions;
+      s.stubData.verticalSubstitutionCount = s.header.verticalSubstitutionCount;
+    }
   }
 
   loaded_ = true;
 
-  LOG_DBG("SDCF", "Loaded: %s (v%u, %u styles)", path, CPFONT_VERSION, styleCount_);
+  LOG_DBG("SDCF", "Loaded: %s (v%u, %u styles)", path, fileVersion, styleCount_);
   for (uint8_t i = 0; i < MAX_STYLES; i++) {
     if (!styles_[i].present) continue;
     const auto& h = styles_[i].header;
-    LOG_DBG("SDCF", "  style[%u]: %u intervals, %u glyphs, advY=%u, asc=%d, desc=%d, kernL=%u, kernR=%u, ligs=%u", i,
+    LOG_DBG("SDCF",
+            "  style[%u]: %u intervals, %u glyphs, advY=%u, asc=%d, desc=%d, kernL=%u, kernR=%u, ligs=%u, vert=%u", i,
             h.intervalCount, h.glyphCount, h.advanceY, h.ascender, h.descender, h.kernLeftEntryCount,
-            h.kernRightEntryCount, h.ligaturePairCount);
+            h.kernRightEntryCount, h.ligaturePairCount, h.verticalSubstitutionCount);
   }
   return true;
 }
@@ -678,6 +755,21 @@ int SdCardFont::prewarm(const char* utf8Text, uint8_t styleMask, bool metadataOn
       auto& s = styles_[si];
 
       loadStyleKernLigatureData(s);
+      if (s.verticalSubstitutions && s.header.verticalSubstitutionCount > 0) {
+        for (uint16_t vi = 0; vi < s.header.verticalSubstitutionCount && cpCount < MAX_PAGE_GLYPHS; vi++) {
+          bool hasSource = false;
+          for (uint32_t i = 0; i < cpCount; i++) {
+            if (codepoints[i] == s.verticalSubstitutions[vi].sourceCp) {
+              hasSource = true;
+              break;
+            }
+          }
+          if (hasSource) {
+            appendUniqueCodepoint(s.verticalSubstitutions[vi].replacementCp, codepoints.get(), cpCount,
+                                  MAX_PAGE_GLYPHS);
+          }
+        }
+      }
       if (s.ligaturePairs && s.header.ligaturePairCount > 0) {
         for (uint8_t li = 0; li < s.header.ligaturePairCount && cpCount < MAX_PAGE_GLYPHS; li++) {
           uint32_t leftCp = s.ligaturePairs[li].pair >> 16;
@@ -927,6 +1019,8 @@ int SdCardFont::prewarmStyle(uint8_t styleIdx, const uint32_t* codepoints, uint3
   s.miniData.ascender = s.header.ascender;
   s.miniData.descender = s.header.descender;
   s.miniData.is2Bit = s.header.is2Bit;
+  s.miniData.verticalSubstitutions = s.verticalSubstitutions;
+  s.miniData.verticalSubstitutionCount = s.header.verticalSubstitutionCount;
   if (kernLigOk) {
     applyKernLigaturePointers(s, s.miniData);
   }
@@ -1169,9 +1263,11 @@ int SdCardFont::buildAdvanceTableRange(Iter begin, Iter end, bool includeSpace, 
 
   unsigned long startMs = millis();
 
-  // +2 reserved slots for space and hyphen injected after the main scan.
+  // +2 reserved slots for space/hyphen and extra room for vertical substitutions
+  // injected after the main scan.
   static constexpr uint32_t MAX_UNIQUE_CODEPOINTS = 4096;
-  uint32_t* codepoints = new (std::nothrow) uint32_t[MAX_UNIQUE_CODEPOINTS + 2];
+  static constexpr uint32_t EXTRA_CODEPOINTS = 512;
+  uint32_t* codepoints = new (std::nothrow) uint32_t[MAX_UNIQUE_CODEPOINTS + EXTRA_CODEPOINTS];
   if (!codepoints) {
     LOG_ERR("SDCF", "buildAdvanceTable: failed to allocate codepoint buffer (%u bytes)", MAX_UNIQUE_CODEPOINTS * 4);
     return -1;
@@ -1188,9 +1284,29 @@ int SdCardFont::buildAdvanceTableRange(Iter begin, Iter end, bool includeSpace, 
   if (includeHyphen && std::none_of(codepoints, codepoints + cpCount, [](uint32_t c) { return c == '-'; }))
     codepoints[cpCount++] = '-';
 
+  const uint32_t maxCodepoints = MAX_UNIQUE_CODEPOINTS + EXTRA_CODEPOINTS;
+  for (uint8_t si = 0; si < MAX_STYLES; si++) {
+    if (!(styleMask & (1 << si)) || !styles_[si].present) continue;
+    const auto& s = styles_[si];
+    if (!s.verticalSubstitutions || s.header.verticalSubstitutionCount == 0) continue;
+    for (uint16_t vi = 0; vi < s.header.verticalSubstitutionCount; vi++) {
+      bool hasSource = false;
+      for (uint32_t i = 0; i < cpCount; i++) {
+        if (codepoints[i] == s.verticalSubstitutions[vi].sourceCp) {
+          hasSource = true;
+          break;
+        }
+      }
+      if (hasSource &&
+          appendUniqueCodepoint(s.verticalSubstitutions[vi].replacementCp, codepoints, cpCount, maxCodepoints)) {
+        hitCap = true;
+        break;
+      }
+    }
+  }
+
   if (hitCap) {
-    LOG_ERR("SDCF", "buildAdvanceTable: unique codepoint cap (%u) hit, layout may be approximate",
-            MAX_UNIQUE_CODEPOINTS);
+    LOG_ERR("SDCF", "buildAdvanceTable: unique codepoint cap (%u) hit, layout may be approximate", maxCodepoints);
   }
   std::sort(codepoints, codepoints + cpCount);
   int totalMissed = fetchAdvancesForCodepoints(codepoints, cpCount, styleMask);

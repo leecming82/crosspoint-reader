@@ -581,19 +581,20 @@ void EpubReaderActivity::loop() {
     }
     const int bookProgressPercent = clampPercent(static_cast<int>(bookProgress + 0.5f));
     const std::string menuTitle = StringUtils::uiSafeBookTitle(epub->getTitle(), epub->getPath());
-    startActivityForResult(std::make_unique<EpubReaderMenuActivity>(
-                               renderer, mappedInput, menuTitle, currentPage, totalPages, bookProgressPercent,
-                               SETTINGS.orientation, SETTINGS.writingModePreference, !currentPageFootnotes.empty()),
-                           [this](const ActivityResult& result) {
-                             // Apply in-menu preference changes even if the menu was cancelled.
-                             const auto& menu = std::get<MenuResult>(result.data);
-                             applyOrientation(menu.orientation);
-                             applyWritingModePreference(menu.writingModePreference);
-                             toggleAutoPageTurn(menu.pageTurnOption);
-                             if (!result.isCancelled) {
-                               onReaderMenuConfirm(static_cast<EpubReaderMenuActivity::MenuAction>(menu.action));
-                             }
-                           });
+    startActivityForResult(
+        std::make_unique<EpubReaderMenuActivity>(
+            renderer, mappedInput, menuTitle, currentPage, totalPages, bookProgressPercent, SETTINGS.orientation,
+            SETTINGS.writingModePreference, !currentPageFootnotes.empty(), allowsManualVerticalWritingMode()),
+        [this](const ActivityResult& result) {
+          // Apply in-menu preference changes even if the menu was cancelled.
+          const auto& menu = std::get<MenuResult>(result.data);
+          applyOrientation(menu.orientation);
+          applyWritingModePreference(menu.writingModePreference);
+          toggleAutoPageTurn(menu.pageTurnOption);
+          if (!result.isCancelled) {
+            onReaderMenuConfirm(static_cast<EpubReaderMenuActivity::MenuAction>(menu.action));
+          }
+        });
   }
 
   // Long press BACK (1s+) goes to file selection
@@ -1289,7 +1290,8 @@ void EpubReaderActivity::resolveReadingProfile() {
       effectiveWritingMode = EpubWritingMode::HorizontalTb;
       break;
     case CrossPointSettings::WRITING_MODE_VERTICAL_RL:
-      effectiveWritingMode = EpubWritingMode::VerticalRl;
+      effectiveWritingMode =
+          allowsManualVerticalWritingMode() ? EpubWritingMode::VerticalRl : EpubWritingMode::HorizontalTb;
       break;
     case CrossPointSettings::WRITING_MODE_BOOK_DEFAULT:
     default:
@@ -1298,9 +1300,29 @@ void EpubReaderActivity::resolveReadingProfile() {
   }
 }
 
+bool EpubReaderActivity::isJapaneseLanguageBook() const {
+  if (!epub) return false;
+  const std::string& language = epub->getLanguage();
+  if (language.empty()) return false;
+
+  std::string primary;
+  for (char ch : language) {
+    if (ch == '-' || ch == '_' || ch == '.') break;
+    primary.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(ch))));
+  }
+
+  return primary == "ja" || primary == "jpn";
+}
+
+bool EpubReaderActivity::allowsManualVerticalWritingMode() const {
+  if (!epub) return false;
+  return isJapaneseLanguageBook() || epub->getResolvedWritingMode() != EpubWritingMode::HorizontalTb;
+}
+
+bool EpubReaderActivity::shouldUseJapaneseFontSize() const { return isJapaneseLanguageBook(); }
+
 uint8_t EpubReaderActivity::effectiveReaderFontSize() const {
-  const uint8_t size =
-      (effectiveWritingMode == EpubWritingMode::VerticalRl) ? SETTINGS.japaneseFontSize : SETTINGS.fontSize;
+  const uint8_t size = shouldUseJapaneseFontSize() ? SETTINGS.japaneseFontSize : SETTINGS.fontSize;
   return size < CrossPointSettings::FONT_SIZE_COUNT ? size : CrossPointSettings::MEDIUM;
 }
 

@@ -9,7 +9,7 @@
 # support a new version.
 
 # .cpfont binary format version. Bump when the on-disk struct layout changes.
-CPFONT_VERSION = 4
+CPFONT_VERSION = 5
 
 # JSON manifest schema version. Bump when the manifest shape changes.
 FONTS_MANIFEST_VERSION = 1

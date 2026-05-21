@@ -50,7 +50,8 @@ INTERVAL_PRESETS = {
     "punctuation": [(0x2000, 0x206F)],
     "cjk":         [(0x0020, 0x007E), (0x2000, 0x206F), (0x2500, 0x257F), (0x3000, 0x303F),
                     (0x3040, 0x309F), (0x30A0, 0x30FF),
-                    (0x4E00, 0x9FFF), (0xF900, 0xFAFF), (0xFF00, 0xFFEF)],
+                    (0x4E00, 0x9FFF), (0xF900, 0xFAFF), (0xFE10, 0xFE1F),
+                    (0xFE30, 0xFE4F), (0xFF00, 0xFFEF)],
     "hangul":      [(0xAC00, 0xD7AF), (0x1100, 0x11FF), (0x3130, 0x318F)],
     "cherokee":    [(0x13A0, 0x13FF), (0xAB70, 0xABBF)],
     "tifinagh":    [(0x2D30, 0x2D7F)],
@@ -138,6 +139,7 @@ StyleRasterData = namedtuple("StyleRasterData", [
     "kern_left_classes", "kern_right_classes", "kern_matrix",
     "kern_left_class_count", "kern_right_class_count",
     "ligature_pairs",
+    "vertical_substitutions",
 ])
 
 
@@ -516,6 +518,60 @@ def extract_ligatures_fonttools(font_path, codepoints):
     return pairs
 
 
+def extract_vertical_substitutions_fonttools(font_path, codepoints):
+    """Extract single-codepoint GSUB vert/vrt2 substitutions.
+
+    Returns sorted (source_cp, replacement_cp) pairs. The v5 cpfont runtime
+    stores codepoint replacements, so substitutions whose destination glyph has
+    no cmap codepoint are reported and skipped for now.
+    """
+    from fontTools.ttLib import TTFont
+
+    font = TTFont(font_path)
+    cmap = font.getBestCmap() or {}
+    glyph_to_cps = {}
+    for cp, gname in cmap.items():
+        glyph_to_cps.setdefault(gname, []).append(cp)
+    glyph_to_cp = {gname: min(cps) for gname, cps in glyph_to_cps.items()}
+    codepoints_set = set(codepoints)
+    substitutions = {}
+    skipped_no_cmap = 0
+
+    if 'GSUB' in font:
+        gsub = font['GSUB'].table
+        lookup_indices = set()
+        if gsub.FeatureList:
+            for fr in gsub.FeatureList.FeatureRecord:
+                if fr.FeatureTag in ('vert', 'vrt2'):
+                    lookup_indices.update(fr.Feature.LookupListIndex)
+
+        for li in lookup_indices:
+            lookup = gsub.LookupList.Lookup[li]
+            for st in lookup.SubTable:
+                actual = st.ExtSubTable if lookup.LookupType == 7 and hasattr(st, 'ExtSubTable') else st
+                mapping = getattr(actual, 'mapping', None)
+                if not mapping:
+                    continue
+                for src_glyph, dst_glyph in mapping.items():
+                    if src_glyph not in glyph_to_cp:
+                        continue
+                    src_cp = glyph_to_cp[src_glyph]
+                    if src_cp not in codepoints_set:
+                        continue
+                    if dst_glyph not in glyph_to_cp:
+                        skipped_no_cmap += 1
+                        continue
+                    dst_cp = glyph_to_cp[dst_glyph]
+                    if dst_cp in codepoints_set:
+                        substitutions[src_cp] = dst_cp
+
+    font.close()
+    if skipped_no_cmap:
+        print(f"  vert: skipped {skipped_no_cmap} substitution(s) whose replacement glyph has no cmap codepoint",
+              file=sys.stderr)
+    return sorted(substitutions.items())
+
+
 def rasterize_font_style(fontfile, size, intervals, style_id=0, force_autohint=False):
     """Rasterize all glyphs for one font style. Returns StyleRasterData."""
     import freetype
@@ -688,6 +744,9 @@ def rasterize_font_style(fontfile, size, intervals, style_id=0, force_autohint=F
         ligature_pairs = ligature_pairs[:255]
     print(f"  [{style_label}] Ligatures: {len(ligature_pairs)} pairs", file=sys.stderr)
 
+    vertical_substitutions = extract_vertical_substitutions_fonttools(fontfile, all_cps)
+    print(f"  [{style_label}] Vertical substitutions: {len(vertical_substitutions)} pairs", file=sys.stderr)
+
     return StyleRasterData(
         style_id=style_id,
         intervals=intervals,
@@ -702,6 +761,7 @@ def rasterize_font_style(fontfile, size, intervals, style_id=0, force_autohint=F
         kern_left_class_count=kern_left_class_count,
         kern_right_class_count=kern_right_class_count,
         ligature_pairs=ligature_pairs,
+        vertical_substitutions=vertical_substitutions,
     )
 
 
@@ -714,7 +774,8 @@ assert struct.calcsize(GLYPH_STRUCT_FORMAT) == 16
 
 def pack_style_sections(sd):
     """Pack one StyleRasterData into binary section bytearrays.
-    Returns (intervals_data, glyphs_data, kern_left, kern_right, kern_matrix, ligatures, bitmaps)."""
+    Returns (intervals_data, glyphs_data, kern_left, kern_right, kern_matrix,
+    ligatures, vertical_substitutions, bitmaps)."""
     intervals_data = bytearray()
     offset = 0
     for i_start, i_end in sd.intervals:
@@ -744,13 +805,17 @@ def pack_style_sections(sd):
     for packed_pair, lig_cp in sd.ligature_pairs:
         ligature_data += struct.pack("<II", packed_pair, lig_cp)
 
+    vertical_data = bytearray()
+    for source_cp, replacement_cp in sd.vertical_substitutions:
+        vertical_data += struct.pack("<II", source_cp, replacement_cp)
+
     bitmap_data = bytearray()
     for glyph, packed in sd.all_glyphs:
         bitmap_data += packed
     assert len(bitmap_data) == sd.total_bitmap_size
 
     return (intervals_data, glyphs_data, kern_left_data, kern_right_data,
-            kern_matrix_data, ligature_data, bitmap_data)
+            kern_matrix_data, ligature_data, vertical_data, bitmap_data)
 
 
 def style_sections_total_size(sections):
@@ -762,7 +827,7 @@ def style_sections_total_size(sections):
 
 def generate_cpfont_multistyle(style_fonts, size, intervals, output_path,
                                force_autohint=False):
-    """Generate a multi-style v4 .cpfont file.
+    """Generate a multi-style v5 .cpfont file.
 
     style_fonts: dict of {style_id: fontfile_path} e.g. {0: "Regular.ttf", 2: "Italic.ttf"}
     """
@@ -796,15 +861,15 @@ def generate_cpfont_multistyle(style_fonts, size, intervals, output_path,
         current_offset += style_sections_total_size(packed_sections[style_id])
 
     # Build global header
-    # V4 header: magic(8) + version(2) + flags(2) + styleCount(1) + reserved(19) = 32
+    # V5 header: magic(8) + version(2) + flags(2) + styleCount(1) + reserved(19) = 32
     header = struct.pack("<8sHHB19s", MAGIC, CPFONT_VERSION, flags, style_count, bytes(19))
     assert len(header) == HEADER_SIZE
 
     # Build style TOC entries
     # Each entry: styleId(1) + pad(3) + intervalCount(4) + glyphCount(4) +
     #   advanceY(1) + ascender(2) + descender(2) + kernL(2) + kernR(2) +
-    #   kernLCls(1) + kernRCls(1) + ligCount(1) + dataOffset(4) + reserved(4) = 32
-    STYLE_TOC_FORMAT = "<B3xIIBhhHHBBBI4x"
+    #   kernLCls(1) + kernRCls(1) + ligCount(1) + dataOffset(4) + vertCount(2) + reserved(2) = 32
+    STYLE_TOC_FORMAT = "<B3xIIBhhHHBBBIH2x"
     assert struct.calcsize(STYLE_TOC_FORMAT) == STYLE_TOC_ENTRY_SIZE
 
     toc_data = bytearray()
@@ -823,7 +888,8 @@ def generate_cpfont_multistyle(style_fonts, size, intervals, output_path,
                                 len(sd.kern_left_classes), len(sd.kern_right_classes),
                                 sd.kern_left_class_count, sd.kern_right_class_count,
                                 len(sd.ligature_pairs),
-                                style_offsets[style_id])
+                                style_offsets[style_id],
+                                len(sd.vertical_substitutions))
 
     # Write output
     os.makedirs(os.path.dirname(output_path) if os.path.dirname(output_path) else ".", exist_ok=True)
@@ -837,7 +903,7 @@ def generate_cpfont_multistyle(style_fonts, size, intervals, output_path,
         total_file_size = f.tell()
 
     # Print summary
-    print(f"  Output: {output_path} (v4, {style_count} styles)", file=sys.stderr)
+    print(f"  Output: {output_path} (v{CPFONT_VERSION}, {style_count} styles)", file=sys.stderr)
     print(f"    Header+TOC: {HEADER_SIZE + len(toc_data)} bytes", file=sys.stderr)
     for style_id in sorted(raster_data.keys()):
         sd = raster_data[style_id]
@@ -846,6 +912,7 @@ def generate_cpfont_multistyle(style_fonts, size, intervals, output_path,
         sname = style_names.get(style_id, str(style_id))
         ssize = style_sections_total_size(secs)
         print(f"    {sname}: {len(sd.all_glyphs)} glyphs, {len(sd.intervals)} intervals, "
+              f"{len(sd.vertical_substitutions)} vert substitutions, "
               f"{ssize} bytes", file=sys.stderr)
     print(f"    Total: {total_file_size} bytes ({total_file_size / 1024 / 1024:.2f} MB)", file=sys.stderr)
     return total_file_size
@@ -881,9 +948,9 @@ def main():
     parser.add_argument("--list-presets", action="store_true",
                         help="List available interval presets and exit.")
 
-    # Multi-style mode: per-style font file arguments (generates v4 .cpfont)
+    # Multi-style mode: per-style font file arguments (generates current-version .cpfont)
     parser.add_argument("--regular", dest="font_regular",
-                        help="Font file for regular style (enables multi-style v4 mode).")
+                        help="Font file for regular style (enables multi-style mode).")
     parser.add_argument("--bold", dest="font_bold",
                         help="Font file for bold style.")
     parser.add_argument("--italic", dest="font_italic",
@@ -959,11 +1026,11 @@ def main():
         font_name = base
 
     if not is_multistyle:
-        # Single font file provided: wrap as a single-style v4 font
+        # Single font file provided: wrap as a single-style font
         style_map = {"regular": 0, "bold": 1, "italic": 2, "bolditalic": 3}
         style_fonts[style_map[args.style]] = fontfile
 
-    # Always generate v4 format
+    # Always generate the current cpfont format
     if args.output and len(sizes) != 1:
         print("Error: --output can only be used with a single size", file=sys.stderr)
         sys.exit(1)
@@ -975,7 +1042,8 @@ def main():
         else:
             filename = f"{font_name}_{sz}.cpfont"
             output_path = os.path.join(output_dir, filename)
-        print(f"Generating {output_path} (size {sz}, {len(style_fonts)} style(s), v4)...", file=sys.stderr)
+        print(f"Generating {output_path} (size {sz}, {len(style_fonts)} style(s), v{CPFONT_VERSION})...",
+              file=sys.stderr)
         total_size += generate_cpfont_multistyle(
             style_fonts, sz, intervals, output_path,
             force_autohint=args.force_autohint)

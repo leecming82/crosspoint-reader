@@ -107,6 +107,12 @@ typedef struct {
   uint32_t ligatureCp;  ///< Codepoint of the replacement ligature glyph
 } __attribute__((packed)) EpdLigaturePair;
 
+/// Vertical writing substitution for one codepoint, sorted by sourceCp.
+typedef struct {
+  uint32_t sourceCp;       ///< Horizontal/source codepoint
+  uint32_t replacementCp;  ///< Vertical replacement codepoint
+} __attribute__((packed)) EpdVerticalSubstitution;
+
 /// Data stored for FONT AS A WHOLE
 typedef struct {
   const uint8_t* bitmap;                ///< Glyph bitmaps, concatenated
@@ -129,6 +135,8 @@ typedef struct {
   uint8_t kernRightClassCount;           ///< Number of distinct right classes (matrix cols)
   const EpdLigaturePair* ligaturePairs;  ///< Sorted ligature pair table (nullptr if none)
   uint32_t ligaturePairCount;            ///< Number of entries in ligaturePairs
+  const EpdVerticalSubstitution* verticalSubstitutions;  ///< Sorted vertical substitution table (nullptr if none)
+  uint32_t verticalSubstitutionCount;                    ///< Number of entries in verticalSubstitutions
 
   /// On-demand glyph loading for fonts that don't keep all glyphs in RAM (e.g. SD card fonts).
   /// Called by getGlyph() when a codepoint is not found in the interval table.

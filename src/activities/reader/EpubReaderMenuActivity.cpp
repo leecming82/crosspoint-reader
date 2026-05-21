@@ -11,11 +11,13 @@
 EpubReaderMenuActivity::EpubReaderMenuActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,
                                                const std::string& title, const int currentPage, const int totalPages,
                                                const int bookProgressPercent, const uint8_t orientation,
-                                               const uint8_t writingModePreference, const bool hasFootnotes)
+                                               const uint8_t writingModePreference, const bool hasFootnotes,
+                                               const bool allowVerticalWritingMode)
     : Activity("EpubReaderMenu", renderer, mappedInput),
       menuItems(buildMenuItems(hasFootnotes)),
       title(title),
       pendingOrientation(normalizeOrientation(orientation)),
+      allowVerticalWritingMode(allowVerticalWritingMode),
       pendingWritingModePreference(normalizeWritingModePreference(writingModePreference)),
       currentPage(currentPage),
       totalPages(totalPages),
@@ -45,8 +47,12 @@ uint8_t EpubReaderMenuActivity::normalizeOrientation(const uint8_t orientation) 
 }
 
 uint8_t EpubReaderMenuActivity::normalizeWritingModePreference(const uint8_t writingModePreference) const {
-  return writingModePreference < writingModeLabels.size() ? writingModePreference
+  return writingModePreference < writingModeOptionCount() ? writingModePreference
                                                           : CrossPointSettings::WRITING_MODE_BOOK_DEFAULT;
+}
+
+uint8_t EpubReaderMenuActivity::writingModeOptionCount() const {
+  return allowVerticalWritingMode ? writingModeLabels.size() : CrossPointSettings::WRITING_MODE_VERTICAL_RL;
 }
 
 void EpubReaderMenuActivity::onEnter() {
@@ -90,7 +96,7 @@ void EpubReaderMenuActivity::loop() {
     }
 
     if (selectedAction == MenuAction::WRITING_MODE) {
-      pendingWritingModePreference = (pendingWritingModePreference + 1) % writingModeLabels.size();
+      pendingWritingModePreference = (pendingWritingModePreference + 1) % writingModeOptionCount();
       requestUpdate();
       return;
     }

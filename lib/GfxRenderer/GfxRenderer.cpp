@@ -1329,6 +1329,13 @@ int GfxRenderer::getKerning(const int fontId, const uint32_t leftCp, const uint3
   return fp4::toPixel(kernFP);                                           // snap 4.4 fixed-point to nearest pixel
 }
 
+uint32_t GfxRenderer::getVerticalSubstitution(const int fontId, const uint32_t cp,
+                                              const EpdFontFamily::Style style) const {
+  const auto fontIt = fontMap.find(fontId);
+  if (fontIt == fontMap.end()) return cp;
+  return fontIt->second.applyVerticalSubstitution(cp, style);
+}
+
 int GfxRenderer::getTextAdvanceX(const int fontId, const char* text, EpdFontFamily::Style style) const {
   const char* originalText = text;
 
@@ -1489,11 +1496,15 @@ void GfxRenderer::drawTextVertical(const int fontId, const int x, int y, const c
   }
 
   const int fallbackAdvance = std::max(1, getLineHeight(fontId));
+  const auto fontIt = fontMap.find(fontId);
+  const bool hasFont = fontIt != fontMap.end();
   const auto* p = reinterpret_cast<const unsigned char*>(text);
   while (*p != '\0') {
     const auto* cpStart = p;
-    utf8NextCodepoint(&p);
-    std::string glyph(reinterpret_cast<const char*>(cpStart), p - cpStart);
+    const uint32_t sourceCp = utf8NextCodepoint(&p);
+    const uint32_t verticalCp = hasFont ? fontIt->second.applyVerticalSubstitution(sourceCp, style) : sourceCp;
+    const std::string glyph = verticalCp == sourceCp ? std::string(reinterpret_cast<const char*>(cpStart), p - cpStart)
+                                                     : utf8FromCodepoint(verticalCp);
     drawText(fontId, x, y, glyph.c_str(), black, style);
     const int measured = getTextAdvanceX(fontId, glyph.c_str(), style);
     y += (measured > 0 ? measured : fallbackAdvance) + charSpacing;

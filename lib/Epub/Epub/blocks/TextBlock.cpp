@@ -6,6 +6,7 @@
 #include <Utf8.h>
 #include <VerticalTextUtils.h>
 
+#include <algorithm>
 #include <cstring>
 
 namespace {
@@ -71,6 +72,10 @@ void TextBlock::render(const GfxRenderer& renderer, const int fontId, const int 
         renderer.drawTextTateChuYoko(fontId, wordX, wordY, word.c_str(), true, style, columnWidth);
       } else if (cpCount > 1 && !VerticalTextUtils::isUprightInVertical(firstCp)) {
         renderer.drawTextSideways(fontId, wordX, wordY, word.c_str(), true, style, columnWidth);
+      } else if (cpCount == 1) {
+        const uint32_t verticalCp = renderer.getVerticalSubstitution(fontId, firstCp, style);
+        const std::string verticalGlyph = verticalCp != firstCp ? utf8FromCodepoint(verticalCp) : word;
+        renderer.drawText(fontId, wordX, wordY, verticalGlyph.c_str(), true, style);
       } else {
         renderer.drawTextVertical(fontId, wordX, wordY, word.c_str(), true, style, 0);
       }

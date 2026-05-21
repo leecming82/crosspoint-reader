@@ -36,6 +36,10 @@ uint32_t EpdFontFamily::applyLigatures(const uint32_t cp, const char*& text, con
   return getFont(style)->applyLigatures(cp, text);
 }
 
+uint32_t EpdFontFamily::applyVerticalSubstitution(const uint32_t cp, const Style style) const {
+  return getFont(style)->applyVerticalSubstitution(cp);
+}
+
 bool EpdFontFamily::needsSyntheticBold(const Style style) const {
   if ((style & BOLD) == 0) {
     return false;

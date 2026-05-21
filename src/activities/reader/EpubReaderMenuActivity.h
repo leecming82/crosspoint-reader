@@ -28,7 +28,8 @@ class EpubReaderMenuActivity final : public Activity {
 
   explicit EpubReaderMenuActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, const std::string& title,
                                   const int currentPage, const int totalPages, const int bookProgressPercent,
-                                  uint8_t orientation, uint8_t writingModePreference, bool hasFootnotes);
+                                  uint8_t orientation, uint8_t writingModePreference, bool hasFootnotes,
+                                  bool allowVerticalWritingMode);
 
   void onEnter() override;
   void onExit() override;
@@ -44,6 +45,7 @@ class EpubReaderMenuActivity final : public Activity {
   static std::vector<MenuItem> buildMenuItems(bool hasFootnotes);
   uint8_t normalizeOrientation(uint8_t orientation) const;
   uint8_t normalizeWritingModePreference(uint8_t writingModePreference) const;
+  uint8_t writingModeOptionCount() const;
 
   // Fixed menu layout
   const std::vector<MenuItem> menuItems;
@@ -53,6 +55,7 @@ class EpubReaderMenuActivity final : public Activity {
   ButtonNavigator buttonNavigator;
   std::string title = "Reader Menu";
   uint8_t pendingOrientation = CrossPointSettings::PORTRAIT;
+  bool allowVerticalWritingMode = false;
   uint8_t pendingWritingModePreference = CrossPointSettings::WRITING_MODE_BOOK_DEFAULT;
   uint8_t selectedPageTurnOption = 0;
   GfxRenderer::Orientation previousRendererOrientation = GfxRenderer::Orientation::Portrait;

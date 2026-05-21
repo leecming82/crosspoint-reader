@@ -16,7 +16,7 @@
 // lib/EpdFont/scripts/cpfont_version.py. This firmware-side copy must be
 // bumped manually when the firmware is updated to support a new format.
 // Reader enforcement: SdCardFont::load().
-#define CPFONT_VERSION 4
+#define CPFONT_VERSION 5
 
 class SdCardFont {
  public:
@@ -33,7 +33,7 @@ class SdCardFont {
   SdCardFont& operator=(SdCardFont&&) = delete;
 
   // Load .cpfont file: reads header + intervals into RAM, records file layout offsets.
-  // Supports v4 (multi-style) format.
+  // Supports v4/v5 (multi-style) formats. v5 adds vertical substitutions.
   // Returns true on success.
   bool load(const char* path);
 
@@ -128,6 +128,7 @@ class SdCardFont {
     uint8_t kernLeftClassCount = 0;
     uint8_t kernRightClassCount = 0;
     uint8_t ligaturePairCount = 0;
+    uint16_t verticalSubstitutionCount = 0;
   };
 
   // All per-style data: file offsets, intervals, kern/lig, prewarm cache, EpdFont
@@ -141,6 +142,7 @@ class SdCardFont {
     uint32_t kernRightFileOffset = 0;
     uint32_t kernMatrixFileOffset = 0;
     uint32_t ligatureFileOffset = 0;
+    uint32_t verticalSubstitutionFileOffset = 0;
     uint32_t bitmapFileOffset = 0;
 
     // Full intervals loaded from file (kept in RAM for codepoint lookup)
@@ -155,6 +157,7 @@ class SdCardFont {
     EpdKernClassEntry* kernLeftClasses = nullptr;
     EpdKernClassEntry* kernRightClasses = nullptr;
     EpdLigaturePair* ligaturePairs = nullptr;
+    EpdVerticalSubstitution* verticalSubstitutions = nullptr;
     bool kernLigLoaded = false;
 
     // Stub EpdFontData returned when not prewarmed

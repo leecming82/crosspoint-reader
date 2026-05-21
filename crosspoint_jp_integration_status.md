@@ -58,6 +58,19 @@ without merging the whole fork.
   - `TextBlock` can carry vertical `wordYpos` geometry and render upright CJK, sideways Latin, and tate-chu-yoko digits.
   - The chapter parser paginates vertical columns right-to-left for resolved vertical writing mode.
   - Section cache version was bumped for vertical `TextBlock` geometry.
+- Vertical spacing/kinsoku has a first polish pass:
+  - Vertical layout uses representative CJK glyph advance instead of raw line height for body rhythm.
+  - Column breaks use the existing Japanese kinsoku head/tail helpers.
+  - Single vertical glyph rendering stays on the precomputed layout position and avoids render-time width measurement.
+  - The over-aggressive half-width punctuation/small-kana compression was backed out after device testing showed overlap.
+  - Native vertical blocks currently suppress ruby sidecars until proper vertical ruby placement is implemented, so ruby-bearing
+    base text follows the same per-glyph column rhythm as surrounding Japanese text.
+  - Japanese EPUB font size selection is keyed from EPUB language metadata (`ja`/`jpn`), not vertical/horizontal writing mode.
+  - SD-card cpfont format v5 stores OpenType `vert`/`vrt2` codepoint substitutions; the reader remains compatible with
+    v4 fonts, but vertical rendering and layout use punctuation alternates only when regenerated v5 fonts provide them.
+  - Manual Vertical RL is guarded to Japanese-language or book-declared vertical EPUBs; non-Japanese horizontal EPUBs ignore
+    a stale global Vertical RL setting and hide that choice in the book menu.
+  - Section cache version was bumped for the revised vertical geometry.
 - The short-lived combined Reading Layout/Auto orientation infrastructure has been removed:
   - Reader menu rotation, status bar drawing, sleep popups, chapter/footnote/percent/QR/sync sub-activities, and section
     viewport sizing use the explicit physical orientation.
@@ -99,8 +112,8 @@ orientation or rotated horizontal lines pretending to be columns.
 - Add renderer support:
   - Add native `drawTextVertical`/sideways/tate-chu-yoko rendering instead of rotating whole lines.
   - Draw vertical punctuation and ruby based on the resolved per-unit behavior.
-  - Decide separately whether to port OpenType `vert` substitute glyph extraction; this is quality polish and touches the
-    SD font format, so it should not block first native columns.
+  - OpenType `vert`/`vrt2` codepoint substitutions are supported for regenerated v5 SD fonts. Glyph-id-only vertical
+    alternates, such as Noto Serif JP's vertical long sound mark, still fall back to the original glyph.
 - Reconcile reader navigation and cache behavior:
   - Page-turn direction should come from resolved writing mode/page progression, not from physical orientation alone.
   - Status bar/menu orientation should remain governed by device/system UI orientation.
@@ -118,8 +131,9 @@ orientation or rotated horizontal lines pretending to be columns.
 2. Done: add writing-mode detection/cache plumbing and split writing mode from device orientation.
 3. Done: add vertical primitives and renderer proof drawing.
 4. Done: add initial vertical column layout and RTL column flow.
-5. Rework cursor/dictionary geometry for native vertical blocks.
-6. Polish ruby-in-vertical, small font selection, and optional OpenType `vert` support.
+5. Done: vertical kinsoku and spacing first pass.
+6. Rework cursor/dictionary geometry for native vertical blocks.
+7. Polish ruby-in-vertical and glyph-id-only vertical alternates.
 
 ## Native Vertical Text Testable Slices
 
@@ -174,14 +188,26 @@ These slices should stay small enough to test from the reader UI, with serial lo
      - English EPUBs still paginate and hyphenate as before.
      - Long Japanese paragraphs do not crash or visibly truncate.
 
-5. Vertical kinsoku and spacing.
+5. Done: vertical kinsoku and spacing.
    - Change:
      - Apply no-column-start/no-column-end rules using shared CJK punctuation helpers.
-     - Measure vertical advance, sideways Latin height, tate-chu-yoko cell height, and vertical char spacing in layout.
+     - Measure vertical advance from representative CJK glyph metrics instead of raw line height.
+     - Render single vertical glyphs from precomputed layout positions without half-cell punctuation/small-kana compression.
+     - Suppress vertical ruby sidecars for now, rather than treating ruby-bearing words as separate whole-word vertical runs.
+     - Keep Japanese EPUB font size selection keyed from EPUB language metadata, not writing mode.
+     - Extract and apply OpenType `vert`/`vrt2` codepoint substitutions from regenerated v5 SD fonts while keeping v4 fonts
+       compatible with the original fallback rendering.
    - Visible/manual tests:
      - Closing punctuation and small kana do not start a new column where avoidable.
      - Opening punctuation does not end a column where avoidable.
-     - Changing vertical spacing visibly affects vertical text without changing horizontal EPUB spacing.
+     - Japanese vertical text looks less like a naive square grid without glyph overlap or status-bar bleed.
+     - Ruby-bearing base characters align with surrounding column text, even though vertical ruby annotations are not drawn yet.
+     - Switching a Japanese EPUB between horizontal and vertical keeps the Japanese font-size setting.
+     - Regenerated v5 Japanese cpfonts use vertical punctuation alternates in vertical mode.
+     - Fonts without `vert` data, or `vert` replacements that have no Unicode codepoint, continue to render the original glyph.
+     - An English horizontal EPUB still opens/indexes horizontally even if the global Writing Mode setting was left on Vertical RL.
+     - A Japanese vertical EPUB rebuilds cache once after the version bump, then reopens from cache.
+     - Horizontal EPUB spacing is unchanged.
 
 6. Dictionary cursor geometry.
    - Change:
@@ -204,10 +230,10 @@ These slices should stay small enough to test from the reader UI, with serial lo
      - Disabling or hiding ruby later should not change dictionary lookup text.
      - Cursor boxes remain aligned on ruby-heavy vertical and horizontal pages.
 
-8. Optional OpenType `vert` support.
+8. Glyph-id-only vertical alternates.
    - Change:
-     - Only after native columns are stable, decide whether to extend SD font conversion/format for vertical substitute
-       glyphs.
+     - Extend cpfont beyond codepoint-to-codepoint `vert` substitutions so glyph-id-only replacements can be stored and
+       rendered without private Unicode hacks.
    - Visible/manual tests:
-     - Vertical punctuation improves compared with the renderer-only fallback.
-     - Existing SD fonts without `vert` data still render with the fallback path.
+     - The Japanese long sound mark and dash-like glyphs use the font's true vertical forms when available.
+     - Existing SD fonts without glyph-id-only alternate data still render with the fallback path.

@@ -1385,8 +1385,10 @@ void ChapterHtmlSlimParser::makePages() {
 
   if (isVerticalWritingMode()) {
     const BlockStyle& blockStyle = currentTextBlock->getBlockStyle();
-    if (!currentPage) {
-      currentPage.reset(new Page());
+    if (!currentPage || currentPage->elements.empty()) {
+      if (!currentPage) {
+        currentPage.reset(new Page());
+      }
       currentPageNextX = static_cast<int16_t>(std::max(0, viewportWidth - lineHeight));
       currentPageNextY = 0;
     }

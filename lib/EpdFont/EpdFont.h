@@ -23,4 +23,8 @@ class EpdFont {
   /// as many following codepoints from text as possible. Returns the
   /// (possibly substituted) codepoint; advances text past consumed chars.
   uint32_t applyLigatures(uint32_t cp, const char*& text) const;
+
+  /// Returns the vertical-writing replacement for cp, or cp if no `vert`/`vrt2`
+  /// substitution is available in this font.
+  uint32_t applyVerticalSubstitution(uint32_t cp) const;
 };
