@@ -53,11 +53,23 @@ bool addUniqueCodepoint(std::vector<uint32_t>& codepoints, const uint32_t cp, co
   return true;
 }
 
+bool isCjkCodepoint(const uint32_t cp) {
+  return (cp >= 0x3000 && cp <= 0x303F) ||  // CJK symbols and punctuation
+         (cp >= 0x3040 && cp <= 0x30FF) ||  // Hiragana + Katakana
+         (cp >= 0x31F0 && cp <= 0x31FF) ||  // Katakana phonetic extensions
+         (cp >= 0x3400 && cp <= 0x4DBF) ||  // CJK extension A
+         (cp >= 0x4E00 && cp <= 0x9FFF) ||  // CJK unified ideographs
+         (cp >= 0xF900 && cp <= 0xFAFF) ||  // CJK compatibility ideographs
+         (cp >= 0xFF00 && cp <= 0xFFEF) ||  // Fullwidth forms
+         (cp >= 0x20000 && cp <= 0x2FA1F);  // CJK extensions B-F + compatibility supplement
+}
+
 struct SectionAdvanceScan {
   std::vector<uint32_t> codepoints;
   int depth = 0;
   int skipUntilDepth = INT_MAX;
   bool hitCodepointCap = false;
+  bool hasCjk = false;
 
   static void XMLCALL startElement(void* userData, const XML_Char* name, const XML_Char**) {
     auto* self = static_cast<SectionAdvanceScan*>(userData);
@@ -90,6 +102,9 @@ struct SectionAdvanceScan {
     while (ptr < end && !self->hitCodepointCap) {
       const uint32_t cp = utf8NextCodepoint(&ptr);
       if (cp == 0) break;
+      if (isCjkCodepoint(cp)) {
+        self->hasCjk = true;
+      }
       addUniqueCodepoint(self->codepoints, cp, SECTION_ADVANCE_CODEPOINT_LIMIT, &self->hitCodepointCap);
     }
   }
@@ -101,7 +116,8 @@ void destroyXmlParser(XML_Parser parser) {
   }
 }
 
-bool scanSectionAdvanceCodepoints(const std::string& tmpHtmlPath, std::vector<uint32_t>& codepoints, bool& hitCap) {
+bool scanSectionAdvanceCodepoints(const std::string& tmpHtmlPath, std::vector<uint32_t>& codepoints, bool& hitCap,
+                                  bool& hasCjk) {
   XML_Parser parser = XML_ParserCreate(nullptr);
   if (!parser) {
     LOG_ERR("SCT", "Could not allocate advance scan parser");
@@ -143,6 +159,7 @@ bool scanSectionAdvanceCodepoints(const std::string& tmpHtmlPath, std::vector<ui
   file.close();
   destroyXmlParser(parser);
   hitCap = scan.hitCodepointCap;
+  hasCjk = scan.hasCjk;
   codepoints = std::move(scan.codepoints);
   return true;
 }
@@ -341,8 +358,11 @@ bool Section::createSectionFile(const int fontId, const float lineCompression, c
   if (renderer.isSdCardFont(fontId)) {
     std::vector<uint32_t> sectionCodepoints;
     bool hitCodepointCap = false;
-    if (scanSectionAdvanceCodepoints(tmpHtmlPath, sectionCodepoints, hitCodepointCap)) {
-      if (hitCodepointCap) {
+    bool hasCjk = false;
+    if (scanSectionAdvanceCodepoints(tmpHtmlPath, sectionCodepoints, hitCodepointCap, hasCjk)) {
+      if (!hasCjk) {
+        LOG_DBG("SCT", "Section advance prewarm skipped: no CJK text");
+      } else if (hitCodepointCap) {
         LOG_DBG("SCT", "Section advance prewarm skipped: codepoint cap hit");
       } else {
         addUniqueCodepoint(sectionCodepoints, ' ');
