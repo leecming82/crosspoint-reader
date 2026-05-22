@@ -503,6 +503,41 @@ void EpubReaderActivity::loop() {
     return;
   }
 
+  if (rubyAdjustActive) {
+    if (RenderLock::peek()) {
+      return;
+    }
+    if (rubyAdjustIgnoreOpeningRelease) {
+      if (!mappedInput.isPressed(MappedInputManager::Button::Confirm) &&
+          !mappedInput.isPressed(MappedInputManager::Button::Back)) {
+        rubyAdjustIgnoreOpeningRelease = false;
+      }
+      return;
+    }
+    if (mappedInput.wasReleased(MappedInputManager::Button::Confirm) ||
+        mappedInput.wasReleased(MappedInputManager::Button::Back)) {
+      exitRubyAdjustMode();
+      return;
+    }
+    if (mappedInput.wasPressed(MappedInputManager::Button::Left)) {
+      adjustRubyOffset(RubyAdjustAxis::X, -1);
+      return;
+    }
+    if (mappedInput.wasPressed(MappedInputManager::Button::Right)) {
+      adjustRubyOffset(RubyAdjustAxis::X, +1);
+      return;
+    }
+    if (mappedInput.wasPressed(MappedInputManager::Button::Up)) {
+      adjustRubyOffset(RubyAdjustAxis::Y, -1);
+      return;
+    }
+    if (mappedInput.wasPressed(MappedInputManager::Button::Down)) {
+      adjustRubyOffset(RubyAdjustAxis::Y, +1);
+      return;
+    }
+    return;
+  }
+
   // Rendering may be loading from SD and driving the display over SPI. Do not
   // mutate reader state until the current render finishes.
   if (RenderLock::peek()) {
@@ -843,6 +878,9 @@ void EpubReaderActivity::onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction 
       }
       break;
     }
+    case EpubReaderMenuActivity::MenuAction::RUBY_OFFSET:
+      enterRubyAdjustMode();
+      break;
     case EpubReaderMenuActivity::MenuAction::ROTATE_SCREEN:
     case EpubReaderMenuActivity::MenuAction::WRITING_MODE:
     case EpubReaderMenuActivity::MenuAction::AUTO_PAGE_TURN:
@@ -895,6 +933,61 @@ void EpubReaderActivity::applyWritingModePreference(const uint8_t writingModePre
 
     section.reset();
   }
+}
+
+uint8_t EpubReaderActivity::currentRubyOffsetX() const {
+  return effectiveWritingMode == EpubWritingMode::VerticalRl ? SETTINGS.tategakiRubyOffsetX
+                                                             : SETTINGS.yokogakiRubyOffsetX;
+}
+
+uint8_t EpubReaderActivity::currentRubyOffsetY() const {
+  return effectiveWritingMode == EpubWritingMode::VerticalRl ? SETTINGS.tategakiRubyOffsetY
+                                                             : SETTINGS.yokogakiRubyOffsetY;
+}
+
+void EpubReaderActivity::setCurrentRubyOffsetX(const uint8_t value) {
+  if (effectiveWritingMode == EpubWritingMode::VerticalRl) {
+    SETTINGS.tategakiRubyOffsetX = value;
+  } else {
+    SETTINGS.yokogakiRubyOffsetX = value;
+  }
+}
+
+void EpubReaderActivity::setCurrentRubyOffsetY(const uint8_t value) {
+  if (effectiveWritingMode == EpubWritingMode::VerticalRl) {
+    SETTINGS.tategakiRubyOffsetY = value;
+  } else {
+    SETTINGS.yokogakiRubyOffsetY = value;
+  }
+}
+
+void EpubReaderActivity::enterRubyAdjustMode() {
+  rubyAdjustActive = true;
+  rubyAdjustIgnoreOpeningRelease = true;
+  automaticPageTurnActive = false;
+  clearKanjiCursorState(/*saveResumePosition=*/false, /*requestRedraw=*/false);
+  requestUpdate();
+}
+
+void EpubReaderActivity::exitRubyAdjustMode() {
+  rubyAdjustActive = false;
+  rubyAdjustIgnoreOpeningRelease = false;
+  SETTINGS.saveToFile();
+  requestUpdate();
+}
+
+void EpubReaderActivity::adjustRubyOffset(const RubyAdjustAxis axis, const int delta) {
+  const int current = std::min<int>(axis == RubyAdjustAxis::X ? currentRubyOffsetX() : currentRubyOffsetY(), 32);
+  const int next = std::clamp(current + delta, 0, 32);
+  if (next == current) {
+    return;
+  }
+  if (axis == RubyAdjustAxis::X) {
+    setCurrentRubyOffsetX(static_cast<uint8_t>(next));
+  } else {
+    setCurrentRubyOffsetY(static_cast<uint8_t>(next));
+  }
+  requestUpdate();
 }
 
 void EpubReaderActivity::toggleAutoPageTurn(const uint8_t selectedPageTurnOption) {
@@ -1273,11 +1366,14 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
                                         const int orientedMarginRight, const int orientedMarginBottom,
                                         const int orientedMarginLeft) {
   const auto t0 = millis();
+  const int rubyOffsetX = static_cast<int>(std::min<uint8_t>(currentRubyOffsetX(), 32)) - 16;
+  const int rubyOffsetY = static_cast<int>(std::min<uint8_t>(currentRubyOffsetY(), 32)) - 16;
 
   // Font prewarm: scan pass accumulates text, then prewarm, then real render
   auto* fcm = renderer.getFontCacheManager();
   auto scope = fcm->createPrewarmScope();
-  page->render(renderer, effectiveReaderFontId(), orientedMarginLeft, orientedMarginTop);  // scan pass
+  page->render(renderer, effectiveReaderFontId(), orientedMarginLeft, orientedMarginTop, rubyOffsetX,
+               rubyOffsetY);  // scan pass
   scope.endScanAndPrewarm();
   const auto tPrewarm = millis();
 
@@ -1285,8 +1381,9 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
   const bool pageHasImages = page->hasImages();
   bool imagePageWithAA = pageHasImages && SETTINGS.textAntiAliasing;
 
-  page->render(renderer, effectiveReaderFontId(), orientedMarginLeft, orientedMarginTop);
+  page->render(renderer, effectiveReaderFontId(), orientedMarginLeft, orientedMarginTop, rubyOffsetX, rubyOffsetY);
   renderStatusBar();
+  renderRubyAdjustOverlay();
   const auto tBwRender = millis();
 
   if (imagePageWithAA) {
@@ -1303,7 +1400,8 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
 
       // Re-render page content to restore images into the blanked area
       // Status bar is not re-rendered here to avoid reading stale dynamic values (e.g. battery %)
-      page->render(renderer, effectiveReaderFontId(), orientedMarginLeft, orientedMarginTop);
+      page->render(renderer, effectiveReaderFontId(), orientedMarginLeft, orientedMarginTop, rubyOffsetX, rubyOffsetY);
+      renderRubyAdjustOverlay();
       renderer.displayBuffer(HalDisplay::FAST_REFRESH);
     } else {
       renderer.displayBuffer(HalDisplay::HALF_REFRESH);
@@ -1328,14 +1426,16 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
   if (SETTINGS.textAntiAliasing && bwBufferStored) {
     renderer.clearScreen(0x00);
     renderer.setRenderMode(GfxRenderer::GRAYSCALE_LSB);
-    page->render(renderer, effectiveReaderFontId(), orientedMarginLeft, orientedMarginTop);
+    page->render(renderer, effectiveReaderFontId(), orientedMarginLeft, orientedMarginTop, rubyOffsetX, rubyOffsetY);
+    renderRubyAdjustOverlay();
     renderer.copyGrayscaleLsbBuffers();
     const auto tGrayLsb = millis();
 
     // Render and copy to MSB buffer
     renderer.clearScreen(0x00);
     renderer.setRenderMode(GfxRenderer::GRAYSCALE_MSB);
-    page->render(renderer, effectiveReaderFontId(), orientedMarginLeft, orientedMarginTop);
+    page->render(renderer, effectiveReaderFontId(), orientedMarginLeft, orientedMarginTop, rubyOffsetX, rubyOffsetY);
+    renderRubyAdjustOverlay();
     renderer.copyGrayscaleMsbBuffers();
     const auto tGrayMsb = millis();
 
@@ -1359,13 +1459,15 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
 
       renderer.clearScreen(0x00);
       renderer.setRenderMode(GfxRenderer::GRAYSCALE_LSB);
-      page->render(renderer, effectiveReaderFontId(), orientedMarginLeft, orientedMarginTop);
+      page->render(renderer, effectiveReaderFontId(), orientedMarginLeft, orientedMarginTop, rubyOffsetX, rubyOffsetY);
+      renderRubyAdjustOverlay();
       renderer.copyGrayscaleLsbBuffers();
       const auto tGrayLsb = millis();
 
       renderer.clearScreen(0x00);
       renderer.setRenderMode(GfxRenderer::GRAYSCALE_MSB);
-      page->render(renderer, effectiveReaderFontId(), orientedMarginLeft, orientedMarginTop);
+      page->render(renderer, effectiveReaderFontId(), orientedMarginLeft, orientedMarginTop, rubyOffsetX, rubyOffsetY);
+      renderRubyAdjustOverlay();
       renderer.copyGrayscaleMsbBuffers();
       const auto tGrayMsb = millis();
 
@@ -1374,8 +1476,9 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
 
       renderer.setRenderMode(GfxRenderer::BW);
       renderer.clearScreen();
-      page->render(renderer, effectiveReaderFontId(), orientedMarginLeft, orientedMarginTop);
+      page->render(renderer, effectiveReaderFontId(), orientedMarginLeft, orientedMarginTop, rubyOffsetX, rubyOffsetY);
       renderStatusBar();
+      renderRubyAdjustOverlay();
       renderer.cleanupGrayscaleWithFrameBuffer();
       const auto tBwRestore = millis();
 
@@ -1428,6 +1531,16 @@ void EpubReaderActivity::renderStatusBar() const {
   }
 
   GUI.drawStatusBar(renderer, bookProgress, currentPage, pageCount, title, 0, textYOffset);
+}
+
+void EpubReaderActivity::renderRubyAdjustOverlay() const {
+  if (!rubyAdjustActive) {
+    return;
+  }
+
+  const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_DONE), "X-", "X+");
+  GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+  GUI.drawSideButtonHints(renderer, "Y-", "Y+");
 }
 
 void EpubReaderActivity::navigateToHref(const std::string& hrefStr, const bool savePosition) {

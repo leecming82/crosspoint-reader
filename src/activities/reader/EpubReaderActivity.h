@@ -40,6 +40,9 @@ class EpubReaderActivity final : public Activity {
   PendingPageTurnIntent pendingPageTurnIntent = PendingPageTurnIntent::None;
   unsigned long pendingPageTurnIntentAt = 0UL;
   EpubWritingMode effectiveWritingMode = EpubWritingMode::HorizontalTb;
+  enum class RubyAdjustAxis : uint8_t { X, Y };
+  bool rubyAdjustActive = false;
+  bool rubyAdjustIgnoreOpeningRelease = false;
 
   // Kanji cursor overlay (tategaki dictionary lookup, Phase 1)
   struct KanjiEntry {
@@ -117,6 +120,7 @@ class EpubReaderActivity final : public Activity {
   void renderContents(std::unique_ptr<Page> page, int orientedMarginTop, int orientedMarginRight,
                       int orientedMarginBottom, int orientedMarginLeft);
   void renderStatusBar() const;
+  void renderRubyAdjustOverlay() const;
   void silentIndexNextChapterIfNeeded(uint16_t viewportWidth, uint16_t viewportHeight);
   bool saveProgress(int spineIndex, int currentPage, int pageCount);
   void resolveReadingProfile();
@@ -130,6 +134,13 @@ class EpubReaderActivity final : public Activity {
   void onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction action);
   void applyOrientation(uint8_t orientation);
   void applyWritingModePreference(uint8_t writingModePreference);
+  uint8_t currentRubyOffsetX() const;
+  uint8_t currentRubyOffsetY() const;
+  void setCurrentRubyOffsetX(uint8_t value);
+  void setCurrentRubyOffsetY(uint8_t value);
+  void enterRubyAdjustMode();
+  void exitRubyAdjustMode();
+  void adjustRubyOffset(RubyAdjustAxis axis, int delta);
   void toggleAutoPageTurn(uint8_t selectedPageTurnOption);
   void pageTurn(bool isForwardTurn);
   void latchPageTurnIntentWhileBusy();

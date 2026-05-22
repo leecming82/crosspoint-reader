@@ -25,13 +25,14 @@ EpubReaderMenuActivity::EpubReaderMenuActivity(GfxRenderer& renderer, MappedInpu
 
 std::vector<EpubReaderMenuActivity::MenuItem> EpubReaderMenuActivity::buildMenuItems(bool hasFootnotes) {
   std::vector<MenuItem> items;
-  items.reserve(11);
+  items.reserve(12);
   items.push_back({MenuAction::SELECT_CHAPTER, StrId::STR_SELECT_CHAPTER});
   if (hasFootnotes) {
     items.push_back({MenuAction::FOOTNOTES, StrId::STR_FOOTNOTES});
   }
   items.push_back({MenuAction::ROTATE_SCREEN, StrId::STR_ORIENTATION});
   items.push_back({MenuAction::WRITING_MODE, StrId::STR_READING_LAYOUT});
+  items.push_back({MenuAction::RUBY_OFFSET, StrId::STR_RUBY_OFFSET});
   items.push_back({MenuAction::AUTO_PAGE_TURN, StrId::STR_AUTO_TURN_PAGES_PER_MIN});
   items.push_back({MenuAction::GO_TO_PERCENT, StrId::STR_GO_TO_PERCENT});
   items.push_back({MenuAction::SCREENSHOT, StrId::STR_SCREENSHOT_BUTTON});
@@ -143,14 +144,14 @@ void EpubReaderMenuActivity::render(RenderLock&&) {
   GUI.drawList(
       renderer, Rect{screen.x, contentTop, screen.width, contentHeight}, menuItems.size(), selectedIndex,
       [this](int index) { return I18N.get(menuItems[index].labelId); }, nullptr, nullptr,
-      [this](int index) {
+      [this](int index) -> std::string {
         const auto value = menuItems[index].action;
         if (value == MenuAction::ROTATE_SCREEN) {
-          return I18N.get(orientationLabels[normalizeOrientation(pendingOrientation)]);
+          return std::string(I18N.get(orientationLabels[normalizeOrientation(pendingOrientation)]));
         } else if (value == MenuAction::WRITING_MODE) {
-          return I18N.get(writingModeLabels[normalizeWritingModePreference(pendingWritingModePreference)]);
+          return std::string(I18N.get(writingModeLabels[normalizeWritingModePreference(pendingWritingModePreference)]));
         } else if (value == MenuAction::AUTO_PAGE_TURN) {
-          return pageTurnLabels[selectedPageTurnOption];
+          return std::string(pageTurnLabels[selectedPageTurnOption]);
         } else {
           return "";
         }

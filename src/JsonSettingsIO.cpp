@@ -5,6 +5,7 @@
 #include <Logging.h>
 #include <ObfuscationUtils.h>
 
+#include <algorithm>
 #include <cstring>
 #include <string>
 
@@ -143,6 +144,12 @@ bool JsonSettingsIO::saveSettings(const CrossPointSettings& s, const char* path)
   doc["frontButtonRight"] = s.frontButtonRight;
   // Font family — uses dynamic getter/setter in SettingsList so the generic loop skips it.
   doc["fontFamily"] = s.fontFamily;
+  // Reader-menu-only ruby paint offsets. Stored manually so they do not appear in Settings UI.
+  doc["yokogakiRubyOffsetX"] = s.yokogakiRubyOffsetX;
+  doc["yokogakiRubyOffsetY"] = s.yokogakiRubyOffsetY;
+  doc["tategakiRubyOffsetX"] = s.tategakiRubyOffsetX;
+  doc["tategakiRubyOffsetY"] = s.tategakiRubyOffsetY;
+  doc["rubyOffsetBias"] = 16;
   // SD card font family name — not in SettingsList, save manually
   if (s.sdFontFamilyName[0] != '\0') {
     doc["sdFontFamilyName"] = s.sdFontFamilyName;
@@ -280,6 +287,17 @@ bool JsonSettingsIO::loadSettings(CrossPointSettings& s, const char* json, bool*
 
   // Font family — uses dynamic getter/setter in SettingsList so the generic loop skips it.
   s.fontFamily = clamp(doc["fontFamily"] | (uint8_t)0, CrossPointSettings::BUILTIN_FONT_COUNT, 0);
+  const bool rubyOffsetsUseCurrentBias = (doc["rubyOffsetBias"] | (uint8_t)8) == 16;
+  const auto normalizeRubyOffset = [rubyOffsetsUseCurrentBias](const uint8_t value) -> uint8_t {
+    return rubyOffsetsUseCurrentBias ? std::min<uint8_t>(value, 32)
+                                     : static_cast<uint8_t>(std::min<int>(value, 16) + 8);
+  };
+  const uint8_t legacyRubyOffsetX = doc["rubyOffsetX"] | (doc["verticalRubyOffset"] | (uint8_t)8);
+  const uint8_t legacyRubyOffsetY = doc["rubyOffsetY"] | (uint8_t)8;
+  s.yokogakiRubyOffsetX = normalizeRubyOffset(doc["yokogakiRubyOffsetX"] | legacyRubyOffsetX);
+  s.yokogakiRubyOffsetY = normalizeRubyOffset(doc["yokogakiRubyOffsetY"] | legacyRubyOffsetY);
+  s.tategakiRubyOffsetX = normalizeRubyOffset(doc["tategakiRubyOffsetX"] | legacyRubyOffsetX);
+  s.tategakiRubyOffsetY = normalizeRubyOffset(doc["tategakiRubyOffsetY"] | legacyRubyOffsetY);
   // SD card font family name — not in SettingsList, load manually
   const char* sfn = doc["sdFontFamilyName"] | "";
   strncpy(s.sdFontFamilyName, sfn, sizeof(s.sdFontFamilyName) - 1);

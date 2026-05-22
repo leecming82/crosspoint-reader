@@ -85,6 +85,14 @@ void CrossPointSettings::normalizeDependentSettings(CrossPointSettings& settings
   }
 }
 
+void CrossPointSettings::resetRubyOffsets() {
+  constexpr uint8_t neutralRubyOffset = 16;
+  yokogakiRubyOffsetX = neutralRubyOffset;
+  yokogakiRubyOffsetY = neutralRubyOffset;
+  tategakiRubyOffsetX = neutralRubyOffset;
+  tategakiRubyOffsetY = neutralRubyOffset;
+}
+
 bool CrossPointSettings::saveToFile() const {
   Storage.mkdir("/.crosspoint");
   return JsonSettingsIO::saveSettings(*this, SETTINGS_FILE_JSON);

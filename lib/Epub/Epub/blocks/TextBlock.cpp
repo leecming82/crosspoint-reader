@@ -83,29 +83,32 @@ int horizontalRubyYBias(const GfxRenderer& renderer, const int rubyFontId) {
 }
 
 void drawHorizontalRuby(const GfxRenderer& renderer, const int bodyFontId, const int wordX, const int baseY,
-                        const std::string& base, const std::string& ruby, const EpdFontFamily::Style style) {
+                        const std::string& base, const std::string& ruby, const EpdFontFamily::Style style,
+                        const int rubyOffsetX, const int rubyOffsetY) {
   if (ruby.empty()) return;
   const int rubyFontId = drawableRubyFontId(renderer, bodyFontId, ruby);
   if (rubyFontId == 0) return;
   const int baseWidth = renderer.getTextWidth(bodyFontId, base.c_str(), style);
   const int rubyWidth = renderer.getTextWidth(rubyFontId, ruby.c_str(), EpdFontFamily::REGULAR);
-  const int rubyX = wordX + (baseWidth - rubyWidth) / 2;
+  const int rubyX = wordX + (baseWidth - rubyWidth) / 2 + rubyOffsetX;
   const int rubyYOffset = std::max(0, renderer.getLineHeight(rubyFontId) - renderer.getFontAscenderSize(rubyFontId));
-  const int rubyY =
-      baseY - rubyReservedHeight(renderer, rubyFontId) + rubyYOffset + horizontalRubyYBias(renderer, rubyFontId);
+  const int rubyY = baseY - rubyReservedHeight(renderer, rubyFontId) + rubyYOffset +
+                    horizontalRubyYBias(renderer, rubyFontId) + rubyOffsetY;
   renderer.drawText(rubyFontId, rubyX, rubyY, ruby.c_str(), true, EpdFontFamily::REGULAR);
 }
 
 void drawVerticalRuby(const GfxRenderer& renderer, const int bodyFontId, const int wordX, const int wordY,
-                      const int baseAdvance, const int columnWidth, const std::string& ruby) {
+                      const int baseAdvance, const int columnWidth, const std::string& ruby, const int rubyOffsetX,
+                      const int rubyOffsetY) {
   if (ruby.empty()) return;
   const int rubyFontId = drawableRubyFontId(renderer, bodyFontId, ruby);
   if (rubyFontId == 0) return;
   const int rubyLineHeight = std::max(1, renderer.getLineHeight(rubyFontId));
-  const int rubyX = wordX + std::max(0, columnWidth - rubyLineHeight * 5 / 6) + std::max(1, rubyLineHeight / 12);
+  const int rubyX =
+      wordX + std::max(0, columnWidth - rubyLineHeight * 5 / 6) + std::max(1, rubyLineHeight / 12) + rubyOffsetX;
   const int rubyAdvance = std::max(1, renderer.getTextAdvanceX(rubyFontId, ruby.c_str(), EpdFontFamily::REGULAR));
   const int span = std::max(1, baseAdvance);
-  const int rubyY = wordY + (rubyAdvance <= span ? (span - rubyAdvance) / 2 : 0);
+  const int rubyY = wordY + (rubyAdvance <= span ? (span - rubyAdvance) / 2 : 0) + rubyOffsetY;
   renderer.drawTextVertical(rubyFontId, rubyX, rubyY, ruby.c_str(), true, EpdFontFamily::REGULAR, 0);
 }
 }  // namespace
@@ -130,7 +133,8 @@ int TextBlock::rubyTopPadding(const GfxRenderer& renderer, const int fontId) con
   return 0;
 }
 
-void TextBlock::render(const GfxRenderer& renderer, const int fontId, const int x, const int y) const {
+void TextBlock::render(const GfxRenderer& renderer, const int fontId, const int x, const int y, const int rubyOffsetX,
+                       const int rubyOffsetY) const {
   if (vertical) {
     if (words.size() != wordYpos.size() || words.size() != wordStyles.size() ||
         (!wordXpos.empty() && words.size() != wordXpos.size()) ||
@@ -168,7 +172,8 @@ void TextBlock::render(const GfxRenderer& renderer, const int fontId, const int 
         const int fallbackAdvance = std::max(1, nextY - wordYpos[i]);
         const int baseAdvance =
             (!rubyBaseAdvances.empty() && rubyBaseAdvances[i] > 0) ? rubyBaseAdvances[i] : fallbackAdvance;
-        drawVerticalRuby(renderer, fontId, wordX, wordY, baseAdvance, columnWidth, rubyTexts[i]);
+        drawVerticalRuby(renderer, fontId, wordX, wordY, baseAdvance, columnWidth, rubyTexts[i], rubyOffsetX,
+                         rubyOffsetY);
       }
     }
     return;
@@ -193,7 +198,7 @@ void TextBlock::render(const GfxRenderer& renderer, const int fontId, const int 
     const uint8_t boundary = hasFocus ? wordFocusBoundary[i] : 0;
 
     if (!rubyTexts.empty() && i < rubyTexts.size() && !rubyTexts[i].empty()) {
-      drawHorizontalRuby(renderer, fontId, wordX, y, words[i], rubyTexts[i], currentStyle);
+      drawHorizontalRuby(renderer, fontId, wordX, y, words[i], rubyTexts[i], currentStyle, rubyOffsetX, rubyOffsetY);
     }
 
     if (boundary > 0) {

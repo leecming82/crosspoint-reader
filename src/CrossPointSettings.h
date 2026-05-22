@@ -205,6 +205,11 @@ class CrossPointSettings {
   uint8_t orientation = PORTRAIT;
   // EPUB writing-mode preference. Physical screen orientation is controlled by orientation above.
   uint8_t writingModePreference = WRITING_MODE_BOOK_DEFAULT;
+  // Ruby paint offsets. Stored biased so 16 means 0px, range is -16..+16px.
+  uint8_t yokogakiRubyOffsetX = 16;
+  uint8_t yokogakiRubyOffsetY = 16;
+  uint8_t tategakiRubyOffsetX = 16;
+  uint8_t tategakiRubyOffsetY = 16;
   // Button layouts (front layout retained for migration only)
   uint8_t frontButtonLayout = BACK_CONFIRM_LEFT_RIGHT;
   uint8_t sideButtonLayout = PREV_NEXT;
@@ -283,6 +288,8 @@ class CrossPointSettings {
 
   // If count_only is true, returns the number of settings items that would be written.
   uint8_t writeSettings(FsFile& file, bool count_only = false) const;
+
+  void resetRubyOffsets();
 
   bool saveToFile() const;
   bool loadFromFile();

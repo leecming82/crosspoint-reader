@@ -1209,6 +1209,8 @@ void CrossPointWebServer::handlePostSettings() {
   }
 
   const auto& settings = getSettingsList(&sdFontSystem.registry());
+  const uint8_t previousFontSize = SETTINGS.fontSize;
+  const uint8_t previousJapaneseFontSize = SETTINGS.japaneseFontSize;
   int applied = 0;
 
   for (const auto& s : settings) {
@@ -1266,6 +1268,9 @@ void CrossPointWebServer::handlePostSettings() {
   }
 
   CrossPointSettings::normalizeDependentSettings(SETTINGS);
+  if (SETTINGS.fontSize != previousFontSize || SETTINGS.japaneseFontSize != previousJapaneseFontSize) {
+    SETTINGS.resetRubyOffsets();
+  }
   SETTINGS.saveToFile();
 
   LOG_DBG("WEB", "Applied %d setting(s)", applied);

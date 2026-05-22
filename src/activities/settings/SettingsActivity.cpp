@@ -176,6 +176,8 @@ void SettingsActivity::toggleCurrentSetting() {
   }
 
   const auto& setting = (*currentSettings)[selectedSetting];
+  const uint8_t previousFontSize = SETTINGS.fontSize;
+  const uint8_t previousJapaneseFontSize = SETTINGS.japaneseFontSize;
 
   if (setting.type == SettingType::TOGGLE && setting.valuePtr != nullptr) {
     // Toggle the boolean value using the member pointer
@@ -254,6 +256,9 @@ void SettingsActivity::toggleCurrentSetting() {
   }
 
   CrossPointSettings::normalizeDependentSettings(SETTINGS);
+  if (SETTINGS.fontSize != previousFontSize || SETTINGS.japaneseFontSize != previousJapaneseFontSize) {
+    SETTINGS.resetRubyOffsets();
+  }
   SETTINGS.saveToFile();
 }
 
