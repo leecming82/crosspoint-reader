@@ -1387,7 +1387,7 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
   const auto tBwRender = millis();
 
   if (imagePageWithAA) {
-    kanjiPopupDismissFastRefreshPending = false;
+    kanjiOverlayFastRefreshPending = false;
     // Double FAST_REFRESH with selective image blanking (pablohc's technique):
     // HALF_REFRESH sets particles too firmly for the grayscale LUT to adjust.
     // Instead, blank only the image area and do two fast refreshes.
@@ -1407,8 +1407,8 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
       renderer.displayBuffer(HalDisplay::HALF_REFRESH);
     }
     // Double FAST_REFRESH handles ghosting for image pages; don't count toward full refresh cadence
-  } else if (kanjiPopupDismissFastRefreshPending) {
-    kanjiPopupDismissFastRefreshPending = false;
+  } else if (kanjiOverlayFastRefreshPending) {
+    kanjiOverlayFastRefreshPending = false;
     renderer.displayBuffer(HalDisplay::FAST_REFRESH);
   } else {
     ReaderUtils::displayWithRefreshCycle(renderer, pagesUntilFullRefresh);
@@ -1706,7 +1706,7 @@ void EpubReaderActivity::clearKanjiCursorState(const bool saveResumePosition, co
   kanjiPopupActive = false;
   releaseKanjiPopupMatches();
   kanjiCursorRefreshPending = false;
-  kanjiPopupDismissFastRefreshPending = false;
+  kanjiOverlayFastRefreshPending = false;
   kanjiCursorRebuildPending = false;
   kanjiCursorRectValid = false;
   releaseKanjiCursorPageCache(/*releaseIndexCapacity=*/true);
@@ -1717,7 +1717,9 @@ void EpubReaderActivity::clearKanjiCursorState(const bool saveResumePosition, co
 }
 
 void EpubReaderActivity::exitKanjiCursorMode() {
-  clearKanjiCursorState(/*saveResumePosition=*/true, /*requestRedraw=*/true);
+  clearKanjiCursorState(/*saveResumePosition=*/true, /*requestRedraw=*/false);
+  kanjiOverlayFastRefreshPending = true;
+  requestUpdate();
 }
 
 void EpubReaderActivity::moveKanjiCursor(const int direction) {
@@ -2019,7 +2021,7 @@ void EpubReaderActivity::hideKanjiPopup() {
   releaseKanjiCursorPageCache(/*releaseIndexCapacity=*/true);
   kanjiCursorRectValid = false;
   kanjiCursorRebuildPending = true;
-  kanjiPopupDismissFastRefreshPending = true;
+  kanjiOverlayFastRefreshPending = true;
   requestUpdate();  // repaint the page under the popup, then restore the cursor overlay
 }
 
