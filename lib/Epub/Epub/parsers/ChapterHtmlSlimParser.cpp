@@ -267,7 +267,6 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
   if (strcmp(name, "ruby") == 0) {
     if (self->partWordBufferIndex > 0) {
       self->flushPartWordBuffer();
-      self->nextWordContinues = true;
     }
     self->insideRuby = true;
     self->rubyDepth = self->depth;
@@ -1043,9 +1042,8 @@ void XMLCALL ChapterHtmlSlimParser::endElement(void* userData, const XML_Char* n
         if (self->effectiveItalic) {
           style = static_cast<EpdFontFamily::Style>(style | EpdFontFamily::ITALIC);
         }
-        self->currentTextBlock->addRubyWord(self->rubyBase, self->rubyText, style, self->effectiveUnderline,
-                                            self->nextWordContinues);
-        self->nextWordContinues = true;
+        self->currentTextBlock->addRubyWord(self->rubyBase, self->rubyText, style, self->effectiveUnderline, false);
+        self->nextWordContinues = false;
       }
       self->insideRuby = false;
       self->rubyDepth = -1;
