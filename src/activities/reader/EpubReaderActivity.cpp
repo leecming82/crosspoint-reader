@@ -1132,7 +1132,8 @@ void EpubReaderActivity::render(RenderLock&& lock) {
                 static_cast<uint8_t>(statusBarHeight + UITheme::getInstance().getMetrics().statusBarVerticalMargin))
           : std::max(SETTINGS.screenMargin, statusBarHeight);
 
-  orientedMarginBottom += statusBarReserve;
+  const int statusBarContentGap = statusBarHeight > 0 ? SETTINGS.screenMargin : 0;
+  orientedMarginBottom += statusBarReserve + statusBarContentGap;
 
   const uint16_t viewportWidth = renderer.getScreenWidth() - orientedMarginLeft - orientedMarginRight;
   const uint16_t viewportHeight = renderer.getScreenHeight() - orientedMarginTop - orientedMarginBottom;

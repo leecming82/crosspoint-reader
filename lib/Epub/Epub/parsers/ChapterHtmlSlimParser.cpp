@@ -43,6 +43,22 @@ bool matches(const char* tag_name, const char* const* possible_tags, size_t coun
   return false;
 }
 
+int centeredGridOffset(const int available, const int cell) {
+  if (available <= 0 || cell <= 1) {
+    return 0;
+  }
+  return (available % cell) / 2;
+}
+
+int horizontalTextCellAdvance(const GfxRenderer& renderer, const int fontId) {
+  const int cjkAdvance = std::max(renderer.getTextAdvanceX(fontId, "\xe6\x97\xa5", EpdFontFamily::REGULAR),   // 日
+                                  renderer.getTextAdvanceX(fontId, "\xe3\x81\x82", EpdFontFamily::REGULAR));  // あ
+  if (cjkAdvance > 1) {
+    return cjkAdvance;
+  }
+  return std::max(1, renderer.getLineHeight(fontId) / 2);
+}
+
 ImageRotation imageRotationForViewport(const GfxRenderer& renderer, const ImageDimensions& dims) {
   const bool imageLandscape = dims.width > dims.height;
   const bool viewportLandscape = renderer.getScreenWidth() > renderer.getScreenHeight();
@@ -1323,7 +1339,7 @@ void ChapterHtmlSlimParser::addLineToPage(std::shared_ptr<TextBlock> line) {
     completePageFn(std::move(currentPage), xpathParagraphIndex, xpathListItemIndex);
     completedPageCount++;
     currentPage.reset(new Page());
-    currentPageNextY = 0;
+    currentPageNextY = static_cast<int16_t>(centeredGridOffset(viewportHeight, lineAdvance));
   }
 
   // Track cumulative words to assign footnotes to the page containing their anchor
@@ -1335,8 +1351,8 @@ void ChapterHtmlSlimParser::addLineToPage(std::shared_ptr<TextBlock> line) {
   }
   pendingFootnotes.erase(pendingFootnotes.begin(), footnoteIt);
 
-  // Apply horizontal left inset (margin + padding) as x position offset
-  const int16_t xOffset = line->getBlockStyle().leftInset();
+  // Apply horizontal block inset plus any centered-grid offset computed for this block.
+  const int16_t xOffset = static_cast<int16_t>(line->getBlockStyle().leftInset() + currentLineXOffset);
   currentPage->elements.push_back(
       std::make_shared<PageLine>(line, xOffset, static_cast<int16_t>(currentPageNextY + rubyTopPadding)));
   currentPageNextY += lineAdvance;
@@ -1344,10 +1360,11 @@ void ChapterHtmlSlimParser::addLineToPage(std::shared_ptr<TextBlock> line) {
 
 void ChapterHtmlSlimParser::addColumnToPage(std::shared_ptr<TextBlock> column) {
   const int columnWidth = renderer.getLineHeight(fontId) * lineCompression;
+  const int xGridOffset = centeredGridOffset(viewportWidth, columnWidth);
 
   if (!currentPage) {
     currentPage.reset(new Page());
-    currentPageNextX = static_cast<int16_t>(std::max(0, viewportWidth - columnWidth));
+    currentPageNextX = static_cast<int16_t>(std::max(0, viewportWidth - columnWidth - xGridOffset));
     currentPageNextY = 0;
   }
 
@@ -1355,7 +1372,7 @@ void ChapterHtmlSlimParser::addColumnToPage(std::shared_ptr<TextBlock> column) {
     completePageFn(std::move(currentPage), xpathParagraphIndex, xpathListItemIndex);
     completedPageCount++;
     currentPage.reset(new Page());
-    currentPageNextX = static_cast<int16_t>(std::max(0, viewportWidth - columnWidth));
+    currentPageNextX = static_cast<int16_t>(std::max(0, viewportWidth - columnWidth - xGridOffset));
     currentPageNextY = 0;
   }
 
@@ -1367,7 +1384,7 @@ void ChapterHtmlSlimParser::addColumnToPage(std::shared_ptr<TextBlock> column) {
   }
   pendingFootnotes.erase(pendingFootnotes.begin(), footnoteIt);
 
-  currentPage->elements.push_back(std::make_shared<PageLine>(column, currentPageNextX, 0));
+  currentPage->elements.push_back(std::make_shared<PageLine>(column, currentPageNextX, currentColumnYOffset));
   currentPageNextX -= static_cast<int16_t>(columnWidth);
 }
 
@@ -1390,18 +1407,24 @@ void ChapterHtmlSlimParser::makePages() {
       if (!currentPage) {
         currentPage.reset(new Page());
       }
-      currentPageNextX = static_cast<int16_t>(std::max(0, viewportWidth - lineHeight));
+      const int xGridOffset = centeredGridOffset(viewportWidth, lineHeight);
+      currentPageNextX = static_cast<int16_t>(std::max(0, viewportWidth - lineHeight - xGridOffset));
       currentPageNextY = 0;
     }
 
     currentPageNextX -= static_cast<int16_t>(std::max(0, blockStyle.marginTop + blockStyle.paddingTop));
     const int verticalInset = blockStyle.totalHorizontalInset();
-    const uint16_t effectiveHeight =
+    const uint16_t insetHeight =
         (verticalInset < viewportHeight) ? static_cast<uint16_t>(viewportHeight - verticalInset) : viewportHeight;
+    const int yGridOffset = centeredGridOffset(insetHeight, horizontalTextCellAdvance(renderer, fontId));
+    const uint16_t effectiveHeight =
+        static_cast<uint16_t>(std::max(1, static_cast<int>(insetHeight) - yGridOffset * 2));
+    currentColumnYOffset = static_cast<int16_t>(blockStyle.leftInset() + yGridOffset);
 
     currentTextBlock->layoutAndExtractVerticalColumns(
         renderer, fontId, effectiveHeight,
         [this](const std::shared_ptr<TextBlock>& textBlock) { addColumnToPage(textBlock); }, sdAdvancePrewarmed);
+    currentColumnYOffset = 0;
 
     if (!pendingFootnotes.empty() && currentPage) {
       for (const auto& [idx, fn] : pendingFootnotes) {
@@ -1419,6 +1442,9 @@ void ChapterHtmlSlimParser::makePages() {
 
   // Apply top spacing before the paragraph (stored in pixels)
   const BlockStyle& blockStyle = currentTextBlock->getBlockStyle();
+  if (currentPage && currentPage->elements.empty()) {
+    currentPageNextY = static_cast<int16_t>(centeredGridOffset(viewportHeight, lineHeight));
+  }
   if (blockStyle.marginTop > 0) {
     currentPageNextY += blockStyle.marginTop;
   }
@@ -1428,12 +1454,16 @@ void ChapterHtmlSlimParser::makePages() {
 
   // Calculate effective width accounting for horizontal margins/padding
   const int horizontalInset = blockStyle.totalHorizontalInset();
-  const uint16_t effectiveWidth =
+  const uint16_t insetWidth =
       (horizontalInset < viewportWidth) ? static_cast<uint16_t>(viewportWidth - horizontalInset) : viewportWidth;
+  const int xGridOffset = centeredGridOffset(insetWidth, horizontalTextCellAdvance(renderer, fontId));
+  const uint16_t effectiveWidth = static_cast<uint16_t>(std::max(1, static_cast<int>(insetWidth) - xGridOffset * 2));
+  currentLineXOffset = static_cast<int16_t>(xGridOffset);
 
   currentTextBlock->layoutAndExtractLines(
       renderer, fontId, effectiveWidth,
       [this](const std::shared_ptr<TextBlock>& textBlock) { addLineToPage(textBlock); }, true, sdAdvancePrewarmed);
+  currentLineXOffset = 0;
 
   // Fallback: transfer any remaining pending footnotes to current page.
   // Normally addLineToPage handles this via word-index tracking, but this catches

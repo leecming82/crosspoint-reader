@@ -31,13 +31,15 @@ class TextBlock final : public Block {
   std::vector<uint16_t> rubyBaseAdvances;
   BlockStyle blockStyle;
   bool vertical = false;
+  int16_t verticalUprightXOffset = 0;
 
  public:
   explicit TextBlock(std::vector<std::string> words, std::vector<int16_t> word_xpos,
                      std::vector<EpdFontFamily::Style> word_styles, std::vector<uint8_t> focus_boundary,
                      std::vector<uint16_t> focus_suffix_x, const BlockStyle& blockStyle = BlockStyle(),
                      std::vector<std::string> ruby_texts = {}, std::vector<int16_t> word_ypos = {},
-                     bool vertical = false, std::vector<uint16_t> ruby_base_advances = {})
+                     bool vertical = false, std::vector<uint16_t> ruby_base_advances = {},
+                     int16_t vertical_upright_x_offset = 0)
       : words(std::move(words)),
         wordXpos(std::move(word_xpos)),
         wordYpos(std::move(word_ypos)),
@@ -47,7 +49,8 @@ class TextBlock final : public Block {
         rubyTexts(std::move(ruby_texts)),
         rubyBaseAdvances(std::move(ruby_base_advances)),
         blockStyle(blockStyle),
-        vertical(vertical) {}
+        vertical(vertical),
+        verticalUprightXOffset(vertical_upright_x_offset) {}
   ~TextBlock() override = default;
   void setBlockStyle(const BlockStyle& blockStyle) { this->blockStyle = blockStyle; }
   const BlockStyle& getBlockStyle() const { return blockStyle; }

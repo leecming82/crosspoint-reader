@@ -642,6 +642,8 @@ void ParsedText::layoutAndExtractVerticalColumns(const GfxRenderer& renderer, co
       std::max(renderer.getTextAdvanceX(fontId, "\xe6\x97\xa5", EpdFontFamily::REGULAR),   // 日
                renderer.getTextAdvanceX(fontId, "\xe3\x81\x82", EpdFontFamily::REGULAR));  // あ
   const int cjkCellAdvance = std::max(1, representativeCjkAdvance > 0 ? representativeCjkAdvance : lineHeight * 9 / 10);
+  const int16_t uprightGlyphXOffset =
+      representativeCjkAdvance > 0 ? static_cast<int16_t>(std::max(0, (lineHeight - representativeCjkAdvance) / 2)) : 0;
   std::vector<VerticalUnit> units;
   units.reserve(words.size() * 2);
 
@@ -776,7 +778,8 @@ void ParsedText::layoutAndExtractVerticalColumns(const GfxRenderer& renderer, co
     processColumn(std::make_shared<TextBlock>(
         std::move(columnWords), std::move(columnXPos), std::move(columnStyles), std::vector<uint8_t>{},
         std::vector<uint16_t>{}, blockStyle, hasColumnRuby ? std::move(columnRubyTexts) : std::vector<std::string>{},
-        std::move(columnYPos), true, hasColumnRuby ? std::move(columnRubyBaseAdvances) : std::vector<uint16_t>{}));
+        std::move(columnYPos), true, hasColumnRuby ? std::move(columnRubyBaseAdvances) : std::vector<uint16_t>{},
+        uprightGlyphXOffset));
   };
 
   size_t columnStart = 0;

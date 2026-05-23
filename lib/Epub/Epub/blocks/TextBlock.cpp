@@ -163,7 +163,7 @@ void TextBlock::render(const GfxRenderer& renderer, const int fontId, const int 
       } else if (cpCount == 1) {
         const uint32_t verticalCp = renderer.getVerticalSubstitution(fontId, firstCp, style);
         const std::string verticalGlyph = verticalCp != firstCp ? utf8FromCodepoint(verticalCp) : word;
-        renderer.drawText(fontId, wordX, wordY, verticalGlyph.c_str(), true, style);
+        renderer.drawText(fontId, wordX + verticalUprightXOffset, wordY, verticalGlyph.c_str(), true, style);
       } else {
         renderer.drawTextVertical(fontId, wordX, wordY, word.c_str(), true, style, 0);
       }
@@ -283,6 +283,7 @@ bool TextBlock::serialize(FsFile& file) const {
 
   serialization::writePod(file, static_cast<uint8_t>(vertical ? 1 : 0));
   if (vertical) {
+    serialization::writePod(file, verticalUprightXOffset);
     for (size_t i = 0; i < words.size(); ++i) {
       const int16_t ypos = i < wordYpos.size() ? wordYpos[i] : 0;
       serialization::writePod(file, ypos);
@@ -359,7 +360,9 @@ std::unique_ptr<TextBlock> TextBlock::deserialize(FsFile& file) {
   serialization::readPod(file, vertical);
   std::vector<int16_t> wordYpos;
   std::vector<uint16_t> rubyBaseAdvances;
+  int16_t verticalUprightXOffset = 0;
   if (vertical) {
+    serialization::readPod(file, verticalUprightXOffset);
     wordYpos.resize(wc);
     for (auto& y : wordYpos) serialization::readPod(file, y);
     uint8_t hasRubyAdvances = 0;
@@ -387,5 +390,5 @@ std::unique_ptr<TextBlock> TextBlock::deserialize(FsFile& file) {
   return std::unique_ptr<TextBlock>(new TextBlock(std::move(words), std::move(wordXpos), std::move(wordStyles),
                                                   std::move(wordFocusBoundary), std::move(wordFocusSuffixX), blockStyle,
                                                   std::move(rubyTexts), std::move(wordYpos), vertical != 0,
-                                                  std::move(rubyBaseAdvances)));
+                                                  std::move(rubyBaseAdvances), verticalUprightXOffset));
 }
