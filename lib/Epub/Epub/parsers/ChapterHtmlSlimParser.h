@@ -112,6 +112,7 @@ class ChapterHtmlSlimParser {
   void makePages();
   void addColumnToPage(std::shared_ptr<TextBlock> column);
   bool isVerticalWritingMode() const { return writingMode != EpubWritingMode::HorizontalTb; }
+  void emitHorizontalRule(const BlockStyle& blockStyle);
   // XML callbacks
   static void XMLCALL startElement(void* userData, const XML_Char* name, const XML_Char** atts);
   static void XMLCALL characterData(void* userData, const XML_Char* s, int len);

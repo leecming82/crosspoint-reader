@@ -19,8 +19,9 @@ void HalDisplay::begin(bool seamless) {
   einkDisplay.begin();
 
   if (seamless) {
-    // Defuse the SDK's X3 initial full-sync gate and skip the wakeup-gated
-    // requestResync() below so retained-frame resume paths paint fast.
+    // Defuse the SDK's X3 _x3InitialFullSyncsRemaining counter (no-op on X4)
+    // so the first paint isn't promoted to FULL (~770ms). Skips the wakeup-
+    // gated requestResync() below for the same reason.
     einkDisplay.skipInitialResync();
     return;
   }
