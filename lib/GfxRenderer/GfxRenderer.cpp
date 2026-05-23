@@ -8,44 +8,41 @@
 
 #include <algorithm>
 
+#include "CjkUiFontFallback.h"
 #include "FontCacheManager.h"
-#include "cjk_ui_font_20.h"
 
 namespace {
 
 const char* resolveVisualText(const char* text, std::string& visualBuffer, int paragraphLevel);
 constexpr uint32_t COMPRESSED_BW_BACKUP_CAP = 32 * 1024;
-constexpr int UI_10_FONT_ID = 22918846;
-constexpr int UI_12_FONT_ID = 1635686837;
-constexpr int SMALL_FONT_ID = 674098198;
 constexpr uint32_t CJK_UI_VERTICAL_PROLONGED_SOUND_MARK = 0xE000;
 
-bool isUiFontId(const int fontId) {
-  return fontId == UI_10_FONT_ID || fontId == UI_12_FONT_ID || fontId == SMALL_FONT_ID;
+bool shouldUseCjkUiFallback(const int fontId, const uint32_t cp) { return cjkUiHasGlyphForFontId(fontId, cp); }
+
+uint8_t cjkUiAdvance(const int fontId, const uint32_t cp) {
+  const CjkUiGlyphSet* set = cjkUiGlyphSetForFontId(fontId);
+  if (!set) return 0;
+  uint8_t advance = set->getGlyphWidth(cp);
+  // Full-cell CJK advances are tightened by two pixels to match the existing
+  // UI spacing and keep filenames/status text from bloating.
+  return advance >= set->cellWidth ? std::max<uint8_t>(1, set->cellWidth - 2) : advance;
 }
 
-bool shouldUseCjkUiFallback(const int fontId, const uint32_t cp) {
-  return isUiFontId(fontId) && cp >= 0x80 && CjkUiFont20::hasCjkUiGlyph(cp);
-}
-
-uint8_t cjkUiAdvance(const uint32_t cp) {
-  uint8_t advance = CjkUiFont20::getCjkUiGlyphWidth(cp);
-  // The generated font uses full 20px cells for CJK. Slightly tighter advance
-  // matches the crosspoint-jp UI spacing and keeps filenames from bloating.
-  return advance >= CjkUiFont20::CJK_UI_FONT_WIDTH ? 18 : advance;
-}
-
-void drawCjkUiGlyph(const GfxRenderer& renderer, const int x, const int y, const uint32_t cp, const bool black) {
-  const uint8_t* bitmap = CjkUiFont20::getCjkUiGlyph(cp);
+void drawCjkUiGlyph(const GfxRenderer& renderer, const int fontId, const int x, const int y, const uint32_t cp,
+                    const bool black) {
+  const CjkUiGlyphSet* set = cjkUiGlyphSetForFontId(fontId);
+  if (!set) return;
+  const uint8_t* bitmap = set->getGlyph(cp);
   if (!bitmap) return;
 
-  for (uint8_t glyphY = 0; glyphY < CjkUiFont20::CJK_UI_FONT_HEIGHT; glyphY++) {
-    for (uint8_t glyphX = 0; glyphX < CjkUiFont20::CJK_UI_FONT_WIDTH; glyphX++) {
-      const uint8_t byteIndex = glyphY * CjkUiFont20::CJK_UI_FONT_BYTES_PER_ROW + (glyphX / 8);
+  const int drawY = y + set->yOffset;
+  for (uint8_t glyphY = 0; glyphY < set->cellHeight; glyphY++) {
+    for (uint8_t glyphX = 0; glyphX < set->cellWidth; glyphX++) {
+      const uint8_t byteIndex = glyphY * set->bytesPerRow + (glyphX / 8);
       const uint8_t bitIndex = 7 - (glyphX % 8);
       const uint8_t byte = pgm_read_byte(&bitmap[byteIndex]);
       if ((byte >> bitIndex) & 1) {
-        renderer.drawPixel(x + glyphX, y + glyphY, black);
+        renderer.drawPixel(x + glyphX, drawY + glyphY, black);
       }
     }
   }
@@ -60,7 +57,7 @@ int measureUiTextWithCjkFallback(const EpdFontFamily& font, const int fontId, co
     if (utf8IsCombiningMark(cp)) continue;
     cp = font.applyLigatures(cp, text, style);
     if (shouldUseCjkUiFallback(fontId, cp)) {
-      width += cjkUiAdvance(cp);
+      width += cjkUiAdvance(fontId, cp);
       continue;
     }
 
@@ -371,7 +368,7 @@ int GfxRenderer::getTextWidth(const int fontId, const char* text, const EpdFontF
     return 0;
   }
 
-  if (isUiFontId(fontId)) {
+  if (cjkUiGlyphSetForFontId(fontId) != nullptr) {
     return measureUiTextWithCjkFallback(fontIt->second, fontId, text, style);
   }
 
@@ -433,8 +430,8 @@ void GfxRenderer::drawText(const int fontId, const int x, const int y, const cha
       if (prevCp != 0) {
         lastBaseX += fp4::toPixel(prevAdvanceFP);
       }
-      drawCjkUiGlyph(*this, lastBaseX, y, cp, black);
-      lastBaseX += cjkUiAdvance(cp);
+      drawCjkUiGlyph(*this, fontId, lastBaseX, y, cp, black);
+      lastBaseX += cjkUiAdvance(fontId, cp);
       lastBaseLeft = 0;
       lastBaseWidth = 0;
       lastBaseTop = 0;
@@ -1424,7 +1421,7 @@ int GfxRenderer::getTextAdvanceX(const int fontId, const char* text, EpdFontFami
   int widthPx = 0;
   int32_t prevAdvanceFP = 0;  // 12.4 fixed-point: prev glyph's advance + next kern for snap
   const auto& font = fontIt->second;
-  if (isUiFontId(fontId)) {
+  if (cjkUiGlyphSetForFontId(fontId) != nullptr) {
     return measureUiTextWithCjkFallback(font, fontId, text, style);
   }
 

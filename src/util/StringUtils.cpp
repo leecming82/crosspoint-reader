@@ -1,17 +1,16 @@
 #include "StringUtils.h"
 
+#include <CjkUiFontFallback.h>
 #include <Utf8.h>
 
 #include <algorithm>
 #include <cstdint>
 
-#include "cjk_ui_font_20.h"
-
 namespace StringUtils {
 namespace {
 
 bool isUnsupportedUiCodepoint(uint32_t cp) {
-  if (CjkUiFont20::hasCjkUiGlyph(cp)) {
+  if (cjkUiHasAnyGlyph(cp)) {
     return false;
   }
 
