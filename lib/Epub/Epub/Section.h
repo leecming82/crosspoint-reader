@@ -42,6 +42,7 @@ class Section {
                          uint8_t imageRendering, bool focusReadingEnabled, uint8_t readingLayout, uint8_t writingMode,
                          const std::function<void(size_t, size_t)>& progressFn = nullptr);
   std::unique_ptr<Page> loadPageFromSectionFile();
+  std::unique_ptr<Page> loadPageFromSectionFile(uint16_t pageNumber);
 
   // Look up the page number for an anchor id from the section cache file.
   std::optional<uint16_t> getPageForAnchor(const std::string& anchor) const;

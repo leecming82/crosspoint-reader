@@ -1851,7 +1851,7 @@ void EpubReaderActivity::flushKanjiCursorRefresh() {
 }
 
 std::string EpubReaderActivity::extractKanjiLookupText(const size_t maxChars) const {
-  if (!kanjiCursorPage || kanjiIndex.empty() || kanjiIndexPos < 0 ||
+  if (!section || !kanjiCursorPage || kanjiIndex.empty() || kanjiIndexPos < 0 ||
       kanjiIndexPos >= static_cast<int>(kanjiIndex.size()) || maxChars == 0) {
     return "";
   }
@@ -1859,42 +1859,55 @@ std::string EpubReaderActivity::extractKanjiLookupText(const size_t maxChars) co
   const auto& selected = kanjiIndex[kanjiIndexPos];
   std::string result;
   size_t charCount = 0;
-  bool started = false;
   int parenDepth = 0;
 
-  const auto& elements = kanjiCursorPage->elements;
-  for (int16_t ei = 0; ei < static_cast<int16_t>(elements.size()) && charCount < maxChars; ++ei) {
-    if (elements[ei]->getTag() != TAG_PageLine) continue;
-    if (!started && ei < selected.elementIdx) continue;
+  auto appendFromPage = [&](const Page& page, const bool startAtSelection) {
+    bool started = !startAtSelection;
+    const auto& elements = page.elements;
+    for (int16_t ei = 0; ei < static_cast<int16_t>(elements.size()) && charCount < maxChars; ++ei) {
+      if (elements[ei]->getTag() != TAG_PageLine) continue;
+      if (!started && ei < selected.elementIdx) continue;
 
-    const auto& block = *static_cast<const PageLine&>(*elements[ei]).getBlock();
-    const auto& words = block.getWords();
-    for (int16_t wi = 0; wi < static_cast<int16_t>(words.size()) && charCount < maxChars; ++wi) {
-      if (!started) {
-        if (ei != selected.elementIdx || wi != selected.wordIdx) continue;
-        started = true;
-      }
-
-      const size_t startOffset = (ei == selected.elementIdx && wi == selected.wordIdx) ? selected.byteOffset : 0;
-      if (startOffset >= words[wi].size()) continue;
-
-      const auto* wordStart = reinterpret_cast<const unsigned char*>(words[wi].c_str());
-      const auto* p = wordStart + startOffset;
-      while (*p != '\0' && charCount < maxChars) {
-        const auto* cpStart = p;
-        const uint32_t cp = utf8NextCodepoint(&p);
-        if (isOpenRubyParen(cp)) {
-          ++parenDepth;
-          continue;
+      const auto& pageLine = static_cast<const PageLine&>(*elements[ei]);
+      if (!pageLine.getBlock()) continue;
+      const auto& block = *pageLine.getBlock();
+      const auto& words = block.getWords();
+      for (int16_t wi = 0; wi < static_cast<int16_t>(words.size()) && charCount < maxChars; ++wi) {
+        if (!started) {
+          if (ei != selected.elementIdx || wi != selected.wordIdx) continue;
+          started = true;
         }
-        if (isCloseRubyParen(cp)) {
-          if (parenDepth > 0) --parenDepth;
-          continue;
+
+        const size_t startOffset =
+            startAtSelection && ei == selected.elementIdx && wi == selected.wordIdx ? selected.byteOffset : 0;
+        if (startOffset >= words[wi].size()) continue;
+
+        const auto* wordStart = reinterpret_cast<const unsigned char*>(words[wi].c_str());
+        const auto* p = wordStart + startOffset;
+        while (*p != '\0' && charCount < maxChars) {
+          const auto* cpStart = p;
+          const uint32_t cp = utf8NextCodepoint(&p);
+          if (isOpenRubyParen(cp)) {
+            ++parenDepth;
+            continue;
+          }
+          if (isCloseRubyParen(cp)) {
+            if (parenDepth > 0) --parenDepth;
+            continue;
+          }
+          if (parenDepth > 0) continue;
+          result.append(reinterpret_cast<const char*>(cpStart), p - cpStart);
+          ++charCount;
         }
-        if (parenDepth > 0) continue;
-        result.append(reinterpret_cast<const char*>(cpStart), p - cpStart);
-        ++charCount;
       }
+    }
+  };
+
+  appendFromPage(*kanjiCursorPage, /*startAtSelection=*/true);
+  if (charCount < maxChars && section->currentPage + 1 < section->pageCount) {
+    auto nextPage = section->loadPageFromSectionFile(static_cast<uint16_t>(section->currentPage + 1));
+    if (nextPage) {
+      appendFromPage(*nextPage, /*startAtSelection=*/false);
     }
   }
 
