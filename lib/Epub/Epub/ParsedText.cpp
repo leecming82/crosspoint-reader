@@ -642,7 +642,6 @@ void ParsedText::layoutAndExtractVerticalColumns(const GfxRenderer& renderer, co
       std::max(renderer.getTextAdvanceX(fontId, "\xe6\x97\xa5", EpdFontFamily::REGULAR),   // 日
                renderer.getTextAdvanceX(fontId, "\xe3\x81\x82", EpdFontFamily::REGULAR));  // あ
   const int cjkCellAdvance = std::max(1, representativeCjkAdvance > 0 ? representativeCjkAdvance : lineHeight * 9 / 10);
-  const int columnFitHeight = std::max(1, static_cast<int>(columnHeight) - std::max(0, lineHeight - cjkCellAdvance));
   std::vector<VerticalUnit> units;
   units.reserve(words.size() * 2);
 
@@ -787,7 +786,7 @@ void ParsedText::layoutAndExtractVerticalColumns(const GfxRenderer& renderer, co
     size_t i = columnStart;
     for (; i < units.size(); ++i) {
       const int candidate = columnUsed + units[i].advance;
-      if (candidate > columnFitHeight && i > columnStart) {
+      if (candidate > columnHeight && i > columnStart) {
         break;
       }
       columnUsed = candidate;
