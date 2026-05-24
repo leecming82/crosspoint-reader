@@ -122,17 +122,6 @@ bool TextBlock::hasRuby() const {
   return false;
 }
 
-int TextBlock::rubyTopPadding(const GfxRenderer& renderer, const int fontId) const {
-  if (rubyTexts.empty()) return 0;
-  for (const auto& ruby : rubyTexts) {
-    const int rubyFontId = !ruby.empty() ? drawableRubyFontId(renderer, fontId, ruby) : 0;
-    if (rubyFontId != 0) {
-      return rubyReservedHeight(renderer, rubyFontId);
-    }
-  }
-  return 0;
-}
-
 void TextBlock::render(const GfxRenderer& renderer, const int fontId, const int x, const int y, const int rubyOffsetX,
                        const int rubyOffsetY) const {
   if (vertical) {

@@ -1441,19 +1441,17 @@ bool ChapterHtmlSlimParser::parseAndBuildPages() {
 
 void ChapterHtmlSlimParser::addLineToPage(std::shared_ptr<TextBlock> line) {
   const int lineHeight = renderer.getLineHeight(fontId) * lineCompression;
-  const int rubyTopPadding = line->rubyTopPadding(renderer, fontId);
-  const int lineAdvance = lineHeight + rubyTopPadding;
 
   if (!currentPage) {
     currentPage.reset(new Page());
     currentPageNextY = 0;
   }
 
-  if (currentPageNextY + lineAdvance > viewportHeight) {
+  if (currentPageNextY + lineHeight > viewportHeight) {
     completePageFn(std::move(currentPage), xpathParagraphIndex, xpathListItemIndex);
     completedPageCount++;
     currentPage.reset(new Page());
-    currentPageNextY = static_cast<int16_t>(centeredGridOffset(viewportHeight, lineAdvance));
+    currentPageNextY = static_cast<int16_t>(centeredGridOffset(viewportHeight, lineHeight));
   }
 
   // Track cumulative words to assign footnotes to the page containing their anchor
@@ -1467,9 +1465,8 @@ void ChapterHtmlSlimParser::addLineToPage(std::shared_ptr<TextBlock> line) {
 
   // Apply horizontal block inset plus any centered-grid offset computed for this block.
   const int16_t xOffset = static_cast<int16_t>(line->getBlockStyle().leftInset() + currentLineXOffset);
-  currentPage->elements.push_back(
-      std::make_shared<PageLine>(line, xOffset, static_cast<int16_t>(currentPageNextY + rubyTopPadding)));
-  currentPageNextY += lineAdvance;
+  currentPage->elements.push_back(std::make_shared<PageLine>(line, xOffset, currentPageNextY));
+  currentPageNextY += lineHeight;
 }
 
 void ChapterHtmlSlimParser::addColumnToPage(std::shared_ptr<TextBlock> column) {

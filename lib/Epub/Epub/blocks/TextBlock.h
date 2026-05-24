@@ -61,7 +61,6 @@ class TextBlock final : public Block {
   const std::vector<std::string>& getRubyTexts() const { return rubyTexts; }
   bool isVertical() const { return vertical; }
   bool hasRuby() const;
-  int rubyTopPadding(const GfxRenderer& renderer, int fontId) const;
   bool isEmpty() override { return words.empty(); }
   size_t wordCount() const { return words.size(); }
   // given a renderer works out where to break the words into lines
