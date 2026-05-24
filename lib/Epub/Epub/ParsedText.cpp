@@ -20,18 +20,18 @@ namespace {
 // Soft hyphen byte pattern used throughout EPUBs (UTF-8 for U+00AD).
 constexpr char SOFT_HYPHEN_UTF8[] = "\xC2\xAD";
 constexpr size_t SOFT_HYPHEN_BYTES = 2;
-constexpr size_t MIN_FREE_HEAP_FOR_CJK_LAYOUT = 48 * 1024;
-constexpr size_t MAX_CJK_LAYOUT_UNITS = 1024;
-constexpr size_t CJK_LAYOUT_CHUNK_TARGET_UNITS = 768;
-constexpr size_t MAX_VERTICAL_LAYOUT_UNITS = 384;
-constexpr size_t VERTICAL_LAYOUT_CHUNK_TARGET_UNITS = 256;
+constexpr size_t MIN_FREE_HEAP_FOR_HORIZONTAL_CJK_LAYOUT = 48 * 1024;
+constexpr size_t MAX_HORIZONTAL_CJK_LAYOUT_UNITS = 1024;
+constexpr size_t HORIZONTAL_CJK_LAYOUT_CHUNK_TARGET_UNITS = 768;
+constexpr size_t MAX_TATEGAKI_LAYOUT_UNITS = 768;
+constexpr size_t TATEGAKI_LAYOUT_CHUNK_TARGET_UNITS = 512;
 
-struct CjkUnit {
-  size_t wordIndex;
-  size_t startByte;
-  size_t endByte;
+struct HorizontalCjkUnit {
   uint32_t firstCp;
   uint32_t lastCp;
+  uint16_t wordIndex;
+  uint16_t startByte;
+  uint16_t endByte;
   uint16_t width;
   bool noGapBefore;
   bool noBreakBefore;
@@ -39,17 +39,25 @@ struct CjkUnit {
   EpdFontFamily::Style style;
 };
 
-struct VerticalUnit {
-  size_t wordIndex;
-  size_t startByte;
-  size_t endByte;
-  uint32_t firstCp;
-  uint32_t lastCp;
+struct TategakiUnit {
+  uint16_t wordIndex;
+  uint16_t startByte;
+  uint16_t endByte;
   uint16_t advance;
   bool noBreakBefore;
   bool firstUnitInWord;
+  bool isKinsokuHead;
+  bool isKinsokuTail;
   EpdFontFamily::Style style;
 };
+
+// Horizontal CJK/tategaki layout is chunked before these temporary vectors are built
+// (1024/768 layout units respectively), so 16-bit source indexes and byte
+// spans are enough while avoiding size_t padding in every unit.
+static_assert(MAX_HORIZONTAL_CJK_LAYOUT_UNITS <= UINT16_MAX, "Horizontal CJK layout unit indexes must fit in uint16_t");
+static_assert(MAX_TATEGAKI_LAYOUT_UNITS <= UINT16_MAX, "Tategaki layout unit indexes must fit in uint16_t");
+static_assert(sizeof(HorizontalCjkUnit) <= 20, "HorizontalCjkUnit should stay compact");
+static_assert(sizeof(TategakiUnit) <= 14, "TategakiUnit should stay compact");
 
 bool hasLatinLetter(const std::string& word) {
   const auto* ptr = reinterpret_cast<const unsigned char*>(word.c_str());
@@ -598,10 +606,10 @@ void ParsedText::layoutAndExtractLines(const GfxRenderer& renderer, const int fo
     return;
   }
 
-  const bool useCjkWrapper = shouldUseCjkWrapper();
+  const bool useHorizontalCjkWrapper = shouldUseHorizontalCjkWrapper();
 
   // Apply fixed transforms before any per-line layout work.
-  applyParagraphIndent(useCjkWrapper);
+  applyParagraphIndent();
 
   // Ensure SD card font glyph metrics are loaded before measuring word widths.
   // For flash-based fonts isSdCardFont() returns false and this block is skipped
@@ -619,15 +627,16 @@ void ParsedText::layoutAndExtractLines(const GfxRenderer& renderer, const int fo
     if (styleMask == 0) styleMask = 0x01;  // defensive: regular only
     if (!sdAdvancePrewarmed) {
       renderer.ensureSdCardFontReady(fontId, words, hyphenationEnabled, styleMask);
-      if (useCjkWrapper) {
+      if (useHorizontalCjkWrapper) {
         renderer.ensureSdCardFontReady(fontId, "\xe6\x97\xa5\xe3\x81\x82", styleMask);  // 日あ
       }
     }
   }
 
   const int pageWidth = viewportWidth;
-  if (useCjkWrapper) {
-    if (layoutAndExtractCjkLines(renderer, fontId, pageWidth, processLine, includeLastLine, sdAdvancePrewarmed)) {
+  if (useHorizontalCjkWrapper) {
+    if (layoutAndExtractHorizontalCjkLines(renderer, fontId, pageWidth, processLine, includeLastLine,
+                                           sdAdvancePrewarmed)) {
       return;
     }
   }
@@ -693,34 +702,36 @@ void ParsedText::layoutAndExtractVerticalColumns(const GfxRenderer& renderer, co
   const int16_t uprightGlyphXOffset =
       representativeCjkAdvance > 0 ? static_cast<int16_t>(std::max(0, (lineHeight - representativeCjkAdvance) / 2)) : 0;
 
-  std::vector<VerticalUnit> units;
+  std::vector<TategakiUnit> units;
   units.reserve(words.size() * 2);
 
-  auto pushUnit = [&](const size_t wordIndex, const size_t start, const size_t end, const uint32_t firstCp,
+  auto pushUnit = [&](const uint16_t wordIndex, const uint16_t start, const uint16_t end, const uint32_t firstCp,
                       const uint32_t lastCp, const int advance, const bool noBreakBefore, const bool firstUnitInWord) {
-    units.push_back({wordIndex, start, end, firstCp, lastCp, static_cast<uint16_t>(std::max(1, advance)), noBreakBefore,
-                     firstUnitInWord, wordStyles[wordIndex]});
+    units.push_back({wordIndex, start, end, static_cast<uint16_t>(std::max(1, advance)), noBreakBefore, firstUnitInWord,
+                     VerticalTextUtils::isKinsokuHead(firstCp), VerticalTextUtils::isKinsokuTail(lastCp),
+                     wordStyles[wordIndex]});
   };
 
-  for (size_t wordIndex = 0; wordIndex < words.size(); ++wordIndex) {
+  for (uint16_t wordIndex = 0; wordIndex < words.size(); ++wordIndex) {
     const std::string& word = words[wordIndex];
     if ((wordStyles[wordIndex] & EpdFontFamily::TATE_CHU_YOKO) != 0) {
       const uint32_t firstCp = firstCodepoint(word);
       const uint32_t lastCp = lastCodepoint(word);
-      pushUnit(wordIndex, 0, word.size(), firstCp, lastCp, cjkCellAdvance, wordContinues[wordIndex], true);
+      pushUnit(wordIndex, 0, static_cast<uint16_t>(word.size()), firstCp, lastCp, cjkCellAdvance,
+               wordContinues[wordIndex], true);
       continue;
     }
 
-    size_t offset = 0;
+    uint16_t offset = 0;
     bool firstUnitInWord = true;
     while (offset < word.size()) {
       const auto* ptr = reinterpret_cast<const unsigned char*>(word.c_str() + offset);
       const uint32_t cp = utf8NextCodepoint(&ptr);
       if (cp == 0) break;
-      const size_t nextOffset = static_cast<size_t>(reinterpret_cast<const char*>(ptr) - word.c_str());
+      const uint16_t nextOffset = static_cast<uint16_t>(reinterpret_cast<const char*>(ptr) - word.c_str());
 
       if (VerticalTextUtils::isAsciiDigit(cp)) {
-        size_t runEnd = nextOffset;
+        uint16_t runEnd = nextOffset;
         uint32_t lastCpInRun = cp;
         size_t digitCount = 1;
         while (runEnd < word.size() && digitCount < 2) {
@@ -728,7 +739,7 @@ void ParsedText::layoutAndExtractVerticalColumns(const GfxRenderer& renderer, co
           const uint32_t lookaheadCp = utf8NextCodepoint(&lookaheadPtr);
           if (!VerticalTextUtils::isAsciiDigit(lookaheadCp)) break;
           lastCpInRun = lookaheadCp;
-          runEnd = static_cast<size_t>(reinterpret_cast<const char*>(lookaheadPtr) - word.c_str());
+          runEnd = static_cast<uint16_t>(reinterpret_cast<const char*>(lookaheadPtr) - word.c_str());
           ++digitCount;
         }
         pushUnit(wordIndex, offset, runEnd, cp, lastCpInRun, cjkCellAdvance,
@@ -739,7 +750,7 @@ void ParsedText::layoutAndExtractVerticalColumns(const GfxRenderer& renderer, co
       }
 
       if (!VerticalTextUtils::isUprightInVertical(cp)) {
-        size_t runEnd = nextOffset;
+        uint16_t runEnd = nextOffset;
         uint32_t lastCpInRun = cp;
         while (runEnd < word.size()) {
           const auto* lookaheadPtr = reinterpret_cast<const unsigned char*>(word.c_str() + runEnd);
@@ -749,7 +760,7 @@ void ParsedText::layoutAndExtractVerticalColumns(const GfxRenderer& renderer, co
             break;
           }
           lastCpInRun = lookaheadCp;
-          runEnd = static_cast<size_t>(reinterpret_cast<const char*>(lookaheadPtr) - word.c_str());
+          runEnd = static_cast<uint16_t>(reinterpret_cast<const char*>(lookaheadPtr) - word.c_str());
         }
         const std::string run = word.substr(offset, runEnd - offset);
         pushUnit(wordIndex, offset, runEnd, cp, lastCpInRun,
@@ -785,8 +796,7 @@ void ParsedText::layoutAndExtractVerticalColumns(const GfxRenderer& renderer, co
   auto canBreakAfter = [&units](const size_t index) {
     if (index + 1 >= units.size()) return true;
     if (units[index + 1].noBreakBefore) return false;
-    return !VerticalTextUtils::isKinsokuTail(units[index].lastCp) &&
-           !VerticalTextUtils::isKinsokuHead(units[index + 1].firstCp);
+    return !units[index].isKinsokuTail && !units[index + 1].isKinsokuHead;
   };
 
   auto emitColumn = [&](const size_t start, const size_t end) {
@@ -804,12 +814,12 @@ void ParsedText::layoutAndExtractVerticalColumns(const GfxRenderer& renderer, co
     columnRubyBaseAdvances.reserve(end - start);
     bool hasColumnRuby = false;
 
-    auto unitText = [&](const VerticalUnit& unit) {
+    auto unitText = [&](const TategakiUnit& unit) {
       const std::string& source = words[unit.wordIndex];
       return source.substr(unit.startByte, unit.endByte - unit.startByte);
     };
 
-    auto unitRuby = [&](const VerticalUnit& unit) {
+    auto unitRuby = [&](const TategakiUnit& unit) {
       if (unit.firstUnitInWord && unit.wordIndex < rubyTexts.size()) {
         return rubyTexts[unit.wordIndex];
       }
@@ -818,7 +828,7 @@ void ParsedText::layoutAndExtractVerticalColumns(const GfxRenderer& renderer, co
 
     int ypos = 0;
     for (size_t i = start; i < end;) {
-      const VerticalUnit& unit = units[i];
+      const TategakiUnit& unit = units[i];
       std::string text = unitText(unit);
       std::string ruby = unitRuby(unit);
       const bool canStartSidewaysPhrase = ruby.empty() && (unit.style & EpdFontFamily::TATE_CHU_YOKO) == 0 &&
@@ -828,7 +838,7 @@ void ParsedText::layoutAndExtractVerticalColumns(const GfxRenderer& renderer, co
         int phraseAdvance = unit.advance;
         size_t next = i + 1;
         while (next < end) {
-          const VerticalUnit& nextUnit = units[next];
+          const TategakiUnit& nextUnit = units[next];
           std::string nextText = unitText(nextUnit);
           if (!unitRuby(nextUnit).empty() || nextUnit.style != unit.style ||
               (nextUnit.style & EpdFontFamily::TATE_CHU_YOKO) != 0 || !isVerticalSidewaysPhraseToken(nextText)) {
@@ -933,7 +943,7 @@ void ParsedText::layoutAndExtractVerticalColumns(const GfxRenderer& renderer, co
   size_t lastEndByte = 0;
 
   for (size_t i = emitStart; i < units.size(); ++i) {
-    const VerticalUnit& unit = units[i];
+    const TategakiUnit& unit = units[i];
     const std::string& source = words[unit.wordIndex];
     if (!remainingWords.empty() && unit.wordIndex == lastWordIndex && unit.startByte == lastEndByte &&
         unit.style == remainingStyles.back()) {
@@ -983,15 +993,15 @@ bool ParsedText::layoutAndExtractChunkedTategakiColumns(
     const auto* ptr = reinterpret_cast<const unsigned char*>(word.c_str());
     while (utf8NextCodepoint(&ptr)) {
       ++totalUnits;
-      if (totalUnits > MAX_VERTICAL_LAYOUT_UNITS) {
+      if (totalUnits > MAX_TATEGAKI_LAYOUT_UNITS) {
         break;
       }
     }
-    if (totalUnits > MAX_VERTICAL_LAYOUT_UNITS) {
+    if (totalUnits > MAX_TATEGAKI_LAYOUT_UNITS) {
       break;
     }
   }
-  if (totalUnits <= MAX_VERTICAL_LAYOUT_UNITS) {
+  if (totalUnits <= MAX_TATEGAKI_LAYOUT_UNITS) {
     return false;
   }
 
@@ -1009,7 +1019,7 @@ bool ParsedText::layoutAndExtractChunkedTategakiColumns(
   const size_t estimatedUnitsPerColumn = std::max<size_t>(1, static_cast<size_t>(columnHeight) / cjkCellAdvance);
   const size_t preferredChunkUnits =
       std::max(estimatedUnitsPerColumn,
-               (VERTICAL_LAYOUT_CHUNK_TARGET_UNITS / estimatedUnitsPerColumn) * estimatedUnitsPerColumn);
+               (TATEGAKI_LAYOUT_CHUNK_TARGET_UNITS / estimatedUnitsPerColumn) * estimatedUnitsPerColumn);
 
   auto finishChunk = [&]() {
     if (current.words.empty()) {
@@ -1083,7 +1093,7 @@ bool ParsedText::layoutAndExtractChunkedTategakiColumns(
       const size_t prospectiveUnits = current.units + segmentUnits;
       const bool safeBoundary = canEndVerticalChunkAfter(word, nextOffset, cp);
       const bool preferredBoundary = prospectiveUnits >= preferredChunkUnits && safeBoundary;
-      const bool forcedBoundary = prospectiveUnits >= MAX_VERTICAL_LAYOUT_UNITS && safeBoundary;
+      const bool forcedBoundary = prospectiveUnits >= MAX_TATEGAKI_LAYOUT_UNITS && safeBoundary;
       if (preferredBoundary || forcedBoundary) {
         addSegment(wordIndex, segmentStart, nextOffset, sourceStyles[wordIndex],
                    segmentStart > 0 || sourceContinues[wordIndex], segmentUnits, ruby);
@@ -1119,7 +1129,7 @@ bool ParsedText::layoutAndExtractChunkedTategakiColumns(
   return true;
 }
 
-bool ParsedText::shouldUseCjkWrapper() const {
+bool ParsedText::shouldUseHorizontalCjkWrapper() const {
   size_t cjkCount = 0;
   size_t otherLetterCount = 0;
 
@@ -1140,7 +1150,7 @@ bool ParsedText::shouldUseCjkWrapper() const {
   return cjkCount >= 8 && cjkCount >= otherLetterCount;
 }
 
-bool ParsedText::layoutAndExtractChunkedYokogakiCjkLines(
+bool ParsedText::layoutAndExtractChunkedHorizontalCjkLines(
     const GfxRenderer& renderer, const int fontId, const int pageWidth,
     const std::function<void(std::shared_ptr<TextBlock>)>& processLine, const bool includeLastLine,
     const bool sdAdvancePrewarmed) {
@@ -1161,7 +1171,7 @@ bool ParsedText::layoutAndExtractChunkedYokogakiCjkLines(
   };
 
   auto estimatedChunkBytes = [&chunkByteCount](const Chunk& chunk) {
-    return (chunkByteCount(chunk) / 3 + chunk.words.size()) * sizeof(CjkUnit);
+    return (chunkByteCount(chunk) / 3 + chunk.words.size()) * sizeof(HorizontalCjkUnit);
   };
 
   std::vector<Chunk> chunks;
@@ -1210,8 +1220,9 @@ bool ParsedText::layoutAndExtractChunkedYokogakiCjkLines(
       ++segmentUnits;
 
       const size_t prospectiveUnits = current.units + segmentUnits;
-      const bool preferredBoundary = isCjkChunkBoundary(cp) && prospectiveUnits >= CJK_LAYOUT_CHUNK_TARGET_UNITS;
-      const bool forcedBoundary = prospectiveUnits >= MAX_CJK_LAYOUT_UNITS;
+      const bool preferredBoundary =
+          isCjkChunkBoundary(cp) && prospectiveUnits >= HORIZONTAL_CJK_LAYOUT_CHUNK_TARGET_UNITS;
+      const bool forcedBoundary = prospectiveUnits >= MAX_HORIZONTAL_CJK_LAYOUT_UNITS;
       if (preferredBoundary || forcedBoundary) {
         const bool attach = segmentStart > 0 || wordContinues[wordIndex];
         addSegment(word, segmentStart, nextOffset, wordStyles[wordIndex], attach, segmentUnits, ruby);
@@ -1233,8 +1244,8 @@ bool ParsedText::layoutAndExtractChunkedYokogakiCjkLines(
   }
 
   for (const auto& chunk : chunks) {
-    if (chunk.units > MAX_CJK_LAYOUT_UNITS || ESP.getMaxAllocHeap() < estimatedChunkBytes(chunk) ||
-        ESP.getFreeHeap() < MIN_FREE_HEAP_FOR_CJK_LAYOUT) {
+    if (chunk.units > MAX_HORIZONTAL_CJK_LAYOUT_UNITS || ESP.getMaxAllocHeap() < estimatedChunkBytes(chunk) ||
+        ESP.getFreeHeap() < MIN_FREE_HEAP_FOR_HORIZONTAL_CJK_LAYOUT) {
       return false;
     }
   }
@@ -1289,8 +1300,8 @@ bool ParsedText::layoutAndExtractChunkedYokogakiCjkLines(
     chunkText.wordIsFocusSuffix.assign(chunkText.words.size(), false);
     chunkText.rubyTexts = std::move(chunks[i].rubyTexts);
     const bool chunkIncludeLastLine = includeLastLine && i + 1 == chunks.size();
-    if (!chunkText.layoutAndExtractCjkLines(renderer, fontId, pageWidth, processLine, chunkIncludeLastLine,
-                                            sdAdvancePrewarmed)) {
+    if (!chunkText.layoutAndExtractHorizontalCjkLines(renderer, fontId, pageWidth, processLine, chunkIncludeLastLine,
+                                                      sdAdvancePrewarmed)) {
       return false;
     }
     if (!chunkIncludeLastLine) {
@@ -1310,21 +1321,21 @@ bool ParsedText::layoutAndExtractChunkedYokogakiCjkLines(
   return true;
 }
 
-bool ParsedText::layoutAndExtractCjkLines(const GfxRenderer& renderer, const int fontId, const int pageWidth,
-                                          const std::function<void(std::shared_ptr<TextBlock>)>& processLine,
-                                          const bool includeLastLine, const bool sdAdvancePrewarmed) {
-  std::vector<CjkUnit> units;
+bool ParsedText::layoutAndExtractHorizontalCjkLines(const GfxRenderer& renderer, const int fontId, const int pageWidth,
+                                                    const std::function<void(std::shared_ptr<TextBlock>)>& processLine,
+                                                    const bool includeLastLine, const bool sdAdvancePrewarmed) {
+  std::vector<HorizontalCjkUnit> units;
   size_t byteCount = 0;
   for (const auto& word : words) {
     byteCount += word.size();
   }
   const size_t estimatedUnits = byteCount / 3 + words.size();
-  const size_t estimatedBytes = estimatedUnits * sizeof(CjkUnit);
-  if (estimatedUnits > MAX_CJK_LAYOUT_UNITS || ESP.getFreeHeap() < MIN_FREE_HEAP_FOR_CJK_LAYOUT ||
+  const size_t estimatedBytes = estimatedUnits * sizeof(HorizontalCjkUnit);
+  if (estimatedUnits > MAX_HORIZONTAL_CJK_LAYOUT_UNITS || ESP.getFreeHeap() < MIN_FREE_HEAP_FOR_HORIZONTAL_CJK_LAYOUT ||
       ESP.getMaxAllocHeap() < estimatedBytes) {
-    if (estimatedUnits > MAX_CJK_LAYOUT_UNITS &&
-        layoutAndExtractChunkedYokogakiCjkLines(renderer, fontId, pageWidth, processLine, includeLastLine,
-                                                sdAdvancePrewarmed)) {
+    if (estimatedUnits > MAX_HORIZONTAL_CJK_LAYOUT_UNITS &&
+        layoutAndExtractChunkedHorizontalCjkLines(renderer, fontId, pageWidth, processLine, includeLastLine,
+                                                  sdAdvancePrewarmed)) {
       return true;
     }
     return false;
@@ -1342,7 +1353,7 @@ bool ParsedText::layoutAndExtractCjkLines(const GfxRenderer& renderer, const int
   // Refine the parser's coarse "words" into layout units. CJK text can usually break between
   // characters, while embedded Latin/numeric runs should stay together as a single measured unit.
   bool previousUnitWasCjk = false;
-  for (size_t wordIndex = 0; wordIndex < words.size(); ++wordIndex) {
+  for (uint16_t wordIndex = 0; wordIndex < words.size(); ++wordIndex) {
     const std::string& word = words[wordIndex];
     if (!rubyTexts.empty() && wordIndex < rubyTexts.size() && !rubyTexts[wordIndex].empty()) {
       const uint32_t firstCp = firstCodepoint(word);
@@ -1357,13 +1368,14 @@ bool ParsedText::layoutAndExtractCjkLines(const GfxRenderer& renderer, const int
       }
       const int rubyBaseWidth =
           std::max(measuredAdvance, cjkCellAdvance * static_cast<int>(std::max<size_t>(cpCount, 1)));
-      units.push_back({wordIndex, 0, word.size(), firstCp, lastCp, static_cast<uint16_t>(std::max(1, rubyBaseWidth)),
-                       noGapBefore, false, cpIsCjk, wordStyles[wordIndex]});
+      units.push_back({firstCp, lastCp, wordIndex, 0, static_cast<uint16_t>(word.size()),
+                       static_cast<uint16_t>(std::max(1, rubyBaseWidth)), noGapBefore, false, cpIsCjk,
+                       wordStyles[wordIndex]});
       previousUnitWasCjk = cpIsCjk;
       continue;
     }
 
-    size_t offset = 0;
+    uint16_t offset = 0;
     bool firstUnitInWord = true;
 
     while (offset < word.size()) {
@@ -1372,14 +1384,14 @@ bool ParsedText::layoutAndExtractCjkLines(const GfxRenderer& renderer, const int
       if (cp == 0) {
         break;
       }
-      const size_t nextOffset = static_cast<size_t>(reinterpret_cast<const char*>(ptr) - word.c_str());
+      const uint16_t nextOffset = static_cast<uint16_t>(reinterpret_cast<const char*>(ptr) - word.c_str());
       const bool cpIsCjk = isCjkCodepoint(cp);
       const bool noGapBefore = !units.empty() && (!firstUnitInWord || (firstUnitInWord && wordContinues[wordIndex]) ||
                                                   (previousUnitWasCjk && cpIsCjk));
       const bool noBreakBefore = !units.empty() && firstUnitInWord && wordContinues[wordIndex] && !cpIsCjk;
 
       if (!cpIsCjk) {
-        size_t runEnd = nextOffset;
+        uint16_t runEnd = nextOffset;
         uint32_t lastCpInRun = cp;
         while (runEnd < word.size()) {
           const auto* lookaheadPtr = reinterpret_cast<const unsigned char*>(word.c_str() + runEnd);
@@ -1388,10 +1400,10 @@ bool ParsedText::layoutAndExtractCjkLines(const GfxRenderer& renderer, const int
             break;
           }
           lastCpInRun = lookaheadCp;
-          runEnd = static_cast<size_t>(reinterpret_cast<const char*>(lookaheadPtr) - word.c_str());
+          runEnd = static_cast<uint16_t>(reinterpret_cast<const char*>(lookaheadPtr) - word.c_str());
         }
         const std::string run = word.substr(offset, runEnd - offset);
-        units.push_back({wordIndex, offset, runEnd, cp, lastCpInRun,
+        units.push_back({cp, lastCpInRun, wordIndex, offset, runEnd,
                          measureRunWidth(renderer, fontId, run, wordStyles[wordIndex]), noGapBefore, noBreakBefore,
                          false, wordStyles[wordIndex]});
         previousUnitWasCjk = false;
@@ -1409,7 +1421,7 @@ bool ParsedText::layoutAndExtractCjkLines(const GfxRenderer& renderer, const int
       const int unitWidth = isCjkClosingPunctuation(cp) && measuredAdvance > 0
                                 ? measuredAdvance
                                 : std::max(cjkCellAdvance, measuredAdvance);
-      units.push_back({wordIndex, offset, nextOffset, cp, cp, static_cast<uint16_t>(std::max(1, unitWidth)),
+      units.push_back({cp, cp, wordIndex, offset, nextOffset, static_cast<uint16_t>(std::max(1, unitWidth)),
                        noGapBefore, noBreakBefore, true, wordStyles[wordIndex]});
       previousUnitWasCjk = true;
       offset = nextOffset;
@@ -1441,7 +1453,7 @@ bool ParsedText::layoutAndExtractCjkLines(const GfxRenderer& renderer, const int
     return !isCjkNoLineEnd(units[unitIndex].lastCp) && !isCjkNoLineStart(units[unitIndex + 1].firstCp);
   };
 
-  auto gapBefore = [&renderer, fontId](const CjkUnit& previous, const CjkUnit& current) {
+  auto gapBefore = [&renderer, fontId](const HorizontalCjkUnit& previous, const HorizontalCjkUnit& current) {
     if (current.noGapBefore) {
       if (previous.isCjk || current.isCjk) {
         return 0;
@@ -1455,7 +1467,7 @@ bool ParsedText::layoutAndExtractCjkLines(const GfxRenderer& renderer, const int
     if (!isFirstLine || start != 0 || firstLineIndent <= 0 || units.empty()) {
       return 0;
     }
-    const CjkUnit& unit = units.front();
+    const HorizontalCjkUnit& unit = units.front();
     if (!unit.isCjk || !isCjkOpeningPunctuation(unit.firstCp)) {
       return 0;
     }
@@ -1496,7 +1508,7 @@ bool ParsedText::layoutAndExtractCjkLines(const GfxRenderer& renderer, const int
         xpos += gapBefore(units[i - 1], units[i]);
       }
 
-      const CjkUnit& unit = units[i];
+      const HorizontalCjkUnit& unit = units[i];
       const std::string& source = words[unit.wordIndex];
       const bool canMerge = !lineWords.empty() && unit.noGapBefore && !unit.isCjk && !units[i - 1].isCjk &&
                             lineWordStyles.back() == unit.style;
@@ -1530,7 +1542,7 @@ bool ParsedText::layoutAndExtractCjkLines(const GfxRenderer& renderer, const int
       return;
     }
 
-    const CjkUnit& firstRemaining = units[unitIndex];
+    const HorizontalCjkUnit& firstRemaining = units[unitIndex];
     const size_t wordIndex = firstRemaining.wordIndex;
     const size_t byteOffset = firstRemaining.startByte;
     words.erase(words.begin(), words.begin() + wordIndex);
@@ -1756,7 +1768,7 @@ std::vector<size_t> ParsedText::computeLineBreaks(const GfxRenderer& renderer, c
   return lineBreakIndices;
 }
 
-void ParsedText::applyParagraphIndent(const bool useCjkWrapper) {
+void ParsedText::applyParagraphIndent() {
   if (extraParagraphSpacing || words.empty()) {
     return;
   }

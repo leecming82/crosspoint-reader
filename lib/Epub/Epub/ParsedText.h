@@ -23,7 +23,7 @@ class ParsedText {
   bool hyphenationEnabled;
   bool focusReadingEnabled;
 
-  void applyParagraphIndent(bool useCjkWrapper);
+  void applyParagraphIndent();
   std::vector<size_t> computeLineBreaks(const GfxRenderer& renderer, int fontId, int pageWidth,
                                         std::vector<uint16_t>& wordWidths, std::vector<bool>& continuesVec);
   std::vector<size_t> computeHyphenatedLineBreaks(const GfxRenderer& renderer, int fontId, int pageWidth,
@@ -35,13 +35,13 @@ class ParsedText {
                    const std::function<void(std::shared_ptr<TextBlock>)>& processLine, const GfxRenderer& renderer,
                    int fontId);
   std::vector<uint16_t> calculateWordWidths(const GfxRenderer& renderer, int fontId);
-  bool shouldUseCjkWrapper() const;
-  bool layoutAndExtractCjkLines(const GfxRenderer& renderer, int fontId, int pageWidth,
-                                const std::function<void(std::shared_ptr<TextBlock>)>& processLine,
-                                bool includeLastLine = true, bool sdAdvancePrewarmed = false);
-  bool layoutAndExtractChunkedYokogakiCjkLines(const GfxRenderer& renderer, int fontId, int pageWidth,
-                                               const std::function<void(std::shared_ptr<TextBlock>)>& processLine,
-                                               bool includeLastLine = true, bool sdAdvancePrewarmed = false);
+  bool shouldUseHorizontalCjkWrapper() const;
+  bool layoutAndExtractHorizontalCjkLines(const GfxRenderer& renderer, int fontId, int pageWidth,
+                                          const std::function<void(std::shared_ptr<TextBlock>)>& processLine,
+                                          bool includeLastLine = true, bool sdAdvancePrewarmed = false);
+  bool layoutAndExtractChunkedHorizontalCjkLines(const GfxRenderer& renderer, int fontId, int pageWidth,
+                                                 const std::function<void(std::shared_ptr<TextBlock>)>& processLine,
+                                                 bool includeLastLine = true, bool sdAdvancePrewarmed = false);
   bool layoutAndExtractChunkedTategakiColumns(const GfxRenderer& renderer, int fontId, uint16_t columnHeight,
                                               const std::function<void(std::shared_ptr<TextBlock>)>& processColumn,
                                               bool sdAdvancePrewarmed = false);
