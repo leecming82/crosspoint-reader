@@ -801,18 +801,13 @@ void ParsedText::layoutAndExtractVerticalColumns(const GfxRenderer& renderer, co
 
   auto emitColumn = [&](const size_t start, const size_t end) {
     std::vector<std::string> columnWords;
-    std::vector<int16_t> columnXPos;
     std::vector<int16_t> columnYPos;
     std::vector<EpdFontFamily::Style> columnStyles;
     std::vector<std::string> columnRubyTexts;
     std::vector<uint16_t> columnRubyBaseAdvances;
     columnWords.reserve(end - start);
-    columnXPos.reserve(end - start);
     columnYPos.reserve(end - start);
     columnStyles.reserve(end - start);
-    columnRubyTexts.reserve(end - start);
-    columnRubyBaseAdvances.reserve(end - start);
-    bool hasColumnRuby = false;
 
     auto unitText = [&](const TategakiUnit& unit) {
       const std::string& source = words[unit.wordIndex];
@@ -824,6 +819,20 @@ void ParsedText::layoutAndExtractVerticalColumns(const GfxRenderer& renderer, co
         return rubyTexts[unit.wordIndex];
       }
       return std::string();
+    };
+
+    auto pushRubySidecar = [&](std::string ruby, const uint16_t rubyBaseAdvance) {
+      if (ruby.empty() && columnRubyTexts.empty()) {
+        return;
+      }
+      if (columnRubyTexts.empty()) {
+        columnRubyTexts.reserve(end - start);
+        columnRubyBaseAdvances.reserve(end - start);
+        columnRubyTexts.resize(columnWords.size() - 1);
+        columnRubyBaseAdvances.resize(columnWords.size() - 1);
+      }
+      columnRubyTexts.push_back(std::move(ruby));
+      columnRubyBaseAdvances.push_back(rubyBaseAdvance);
     };
 
     int ypos = 0;
@@ -850,21 +859,17 @@ void ParsedText::layoutAndExtractVerticalColumns(const GfxRenderer& renderer, co
         }
 
         columnWords.push_back(std::move(text));
-        columnXPos.push_back(0);
         columnYPos.push_back(static_cast<int16_t>(ypos));
         columnStyles.push_back(unit.style);
-        columnRubyTexts.emplace_back();
-        columnRubyBaseAdvances.push_back(0);
+        pushRubySidecar(std::string(), 0);
         ypos += phraseAdvance;
         i = next;
         continue;
       }
 
       columnWords.push_back(std::move(text));
-      columnXPos.push_back(0);
       columnYPos.push_back(static_cast<int16_t>(ypos));
       columnStyles.push_back(unit.style);
-      hasColumnRuby = hasColumnRuby || !ruby.empty();
       uint16_t rubyBaseAdvance = 0;
       if (!ruby.empty()) {
         int spanAdvance = 0;
@@ -873,17 +878,15 @@ void ParsedText::layoutAndExtractVerticalColumns(const GfxRenderer& renderer, co
         }
         rubyBaseAdvance = static_cast<uint16_t>(std::min<int>(std::max(1, spanAdvance), UINT16_MAX));
       }
-      columnRubyTexts.push_back(std::move(ruby));
-      columnRubyBaseAdvances.push_back(rubyBaseAdvance);
+      pushRubySidecar(std::move(ruby), rubyBaseAdvance);
       ypos += unit.advance;
       ++i;
     }
 
-    processColumn(std::make_shared<TextBlock>(
-        std::move(columnWords), std::move(columnXPos), std::move(columnStyles), std::vector<uint8_t>{},
-        std::vector<uint16_t>{}, blockStyle, hasColumnRuby ? std::move(columnRubyTexts) : std::vector<std::string>{},
-        std::move(columnYPos), true, hasColumnRuby ? std::move(columnRubyBaseAdvances) : std::vector<uint16_t>{},
-        uprightGlyphXOffset));
+    processColumn(std::make_shared<TextBlock>(std::move(columnWords), std::vector<int16_t>{}, std::move(columnStyles),
+                                              std::vector<uint8_t>{}, std::vector<uint16_t>{}, blockStyle,
+                                              std::move(columnRubyTexts), std::move(columnYPos), true,
+                                              std::move(columnRubyBaseAdvances), uprightGlyphXOffset));
   };
 
   size_t columnStart = 0;

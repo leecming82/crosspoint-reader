@@ -239,7 +239,9 @@ bool TextBlock::serialize(FsFile& file) const {
   // Focus annotations are optional; vectors are either empty (no splits in this block)
   // or sized in lockstep with words[].
   const bool hasFocus = !wordFocusBoundary.empty();
-  if (words.size() != wordXpos.size() || words.size() != wordStyles.size() ||
+  const bool hasXPos = !wordXpos.empty();
+  if ((hasXPos && words.size() != wordXpos.size()) || (!vertical && !hasXPos && !words.empty()) ||
+      words.size() != wordStyles.size() ||
       (hasFocus && (words.size() != wordFocusBoundary.size() || words.size() != wordFocusSuffixX.size())) ||
       (!rubyTexts.empty() && words.size() != rubyTexts.size())) {
     LOG_ERR("TXB",
@@ -253,7 +255,10 @@ bool TextBlock::serialize(FsFile& file) const {
   // Word data
   serialization::writePod(file, static_cast<uint16_t>(words.size()));
   for (const auto& w : words) serialization::writeString(file, w);
-  for (auto x : wordXpos) serialization::writePod(file, x);
+  serialization::writePod(file, static_cast<uint8_t>(hasXPos ? 1 : 0));
+  if (hasXPos) {
+    for (auto x : wordXpos) serialization::writePod(file, x);
+  }
   for (auto s : wordStyles) serialization::writePod(file, s);
   // Focus block: 1-byte presence flag, followed by per-word vectors only when present.
   // Saves 3 bytes/word when focus reading is disabled or no word on this line was split.
@@ -324,10 +329,14 @@ std::unique_ptr<TextBlock> TextBlock::deserialize(FsFile& file) {
 
   // Word data
   words.resize(wc);
-  wordXpos.resize(wc);
   wordStyles.resize(wc);
   for (auto& w : words) serialization::readString(file, w);
-  for (auto& x : wordXpos) serialization::readPod(file, x);
+  uint8_t hasXPos;
+  serialization::readPod(file, hasXPos);
+  if (hasXPos) {
+    wordXpos.resize(wc);
+    for (auto& x : wordXpos) serialization::readPod(file, x);
+  }
   for (auto& s : wordStyles) serialization::readPod(file, s);
   // Focus block: presence flag, then vectors only if present. Empty vectors when absent
   // signal "no splits in this block" to render() (zero per-word RAM cost).
