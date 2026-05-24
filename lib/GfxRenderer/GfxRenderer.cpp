@@ -1496,6 +1496,10 @@ void GfxRenderer::drawTextRotated90CW(const int fontId, const int x, const int y
   if (text == nullptr || *text == '\0') {
     return;
   }
+  if (fontCacheManager_ && fontCacheManager_->isScanning()) {
+    fontCacheManager_->recordText(text, fontId, style);
+    return;
+  }
 
   const auto fontIt = fontMap.find(fontId);
   if (fontIt == fontMap.end()) {
@@ -1587,12 +1591,28 @@ void GfxRenderer::drawTextVertical(const int fontId, const int x, int y, const c
 
 void GfxRenderer::drawTextSideways(const int fontId, const int x, const int y, const char* text, const bool black,
                                    const EpdFontFamily::Style style, const int columnWidth) const {
+  if (text == nullptr || *text == '\0') {
+    return;
+  }
+  if (fontCacheManager_ && fontCacheManager_->isScanning()) {
+    fontCacheManager_->recordText(text, fontId, style);
+    return;
+  }
+
   const int drawX = columnWidth > 0 ? x + (columnWidth - getLineHeight(fontId)) / 2 : x;
   drawTextRotated90CW(fontId, drawX, y + getTextAdvanceX(fontId, text, style), text, black, style);
 }
 
 void GfxRenderer::drawTextTateChuYoko(const int fontId, const int x, const int y, const char* text, const bool black,
                                       const EpdFontFamily::Style style, const int columnWidth) const {
+  if (text == nullptr || *text == '\0') {
+    return;
+  }
+  if (fontCacheManager_ && fontCacheManager_->isScanning()) {
+    fontCacheManager_->recordText(text, fontId, style);
+    return;
+  }
+
   const int textWidth = getTextAdvanceX(fontId, text, style);
   const int drawX = columnWidth > 0 ? x + (columnWidth - textWidth) / 2 : x;
   drawText(fontId, drawX, y, text, black, style);
