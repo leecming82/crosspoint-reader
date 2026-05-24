@@ -112,6 +112,7 @@ class ChapterHtmlSlimParser {
   void flushPartWordBufferForCapacity(char nextByte);
   void flushPartWordBuffer();
   void commitPendingAnchor();
+  void flushLongTextBlock();
   void makePages();
   void addColumnToPage(std::shared_ptr<TextBlock> column);
   bool isVerticalWritingMode() const { return writingMode != EpubWritingMode::HorizontalTb; }
