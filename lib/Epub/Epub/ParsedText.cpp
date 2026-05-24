@@ -51,6 +51,27 @@ struct VerticalUnit {
   EpdFontFamily::Style style;
 };
 
+bool hasLatinLetter(const std::string& word) {
+  const auto* ptr = reinterpret_cast<const unsigned char*>(word.c_str());
+  while (const uint32_t cp = utf8NextCodepoint(&ptr)) {
+    if (((cp | 0x20) >= 'a' && (cp | 0x20) <= 'z') || (cp >= 0x00C0 && cp <= 0x024F)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool isVerticalSidewaysPhraseToken(const std::string& word) {
+  if (word.empty()) return false;
+  const auto* ptr = reinterpret_cast<const unsigned char*>(word.c_str());
+  while (const uint32_t cp = utf8NextCodepoint(&ptr)) {
+    if (VerticalTextUtils::isUprightInVertical(cp) || VerticalTextUtils::isAsciiDigit(cp)) {
+      return false;
+    }
+  }
+  return true;
+}
+
 std::vector<std::string> sliceRubyTexts(const std::vector<std::string>& rubyTexts, const size_t start,
                                         const size_t end) {
   if (rubyTexts.empty()) {
@@ -671,6 +692,7 @@ void ParsedText::layoutAndExtractVerticalColumns(const GfxRenderer& renderer, co
   const int cjkCellAdvance = std::max(1, representativeCjkAdvance > 0 ? representativeCjkAdvance : lineHeight * 9 / 10);
   const int16_t uprightGlyphXOffset =
       representativeCjkAdvance > 0 ? static_cast<int16_t>(std::max(0, (lineHeight - representativeCjkAdvance) / 2)) : 0;
+
   std::vector<VerticalUnit> units;
   units.reserve(words.size() * 2);
 
@@ -782,18 +804,56 @@ void ParsedText::layoutAndExtractVerticalColumns(const GfxRenderer& renderer, co
     columnRubyBaseAdvances.reserve(end - start);
     bool hasColumnRuby = false;
 
-    int ypos = 0;
-    for (size_t i = start; i < end; ++i) {
-      const VerticalUnit& unit = units[i];
+    auto unitText = [&](const VerticalUnit& unit) {
       const std::string& source = words[unit.wordIndex];
-      columnWords.emplace_back(source, unit.startByte, unit.endByte - unit.startByte);
+      return source.substr(unit.startByte, unit.endByte - unit.startByte);
+    };
+
+    auto unitRuby = [&](const VerticalUnit& unit) {
+      if (unit.firstUnitInWord && unit.wordIndex < rubyTexts.size()) {
+        return rubyTexts[unit.wordIndex];
+      }
+      return std::string();
+    };
+
+    int ypos = 0;
+    for (size_t i = start; i < end;) {
+      const VerticalUnit& unit = units[i];
+      std::string text = unitText(unit);
+      std::string ruby = unitRuby(unit);
+      const bool canStartSidewaysPhrase = ruby.empty() && (unit.style & EpdFontFamily::TATE_CHU_YOKO) == 0 &&
+                                          isVerticalSidewaysPhraseToken(text) && hasLatinLetter(text);
+
+      if (canStartSidewaysPhrase) {
+        int phraseAdvance = unit.advance;
+        size_t next = i + 1;
+        while (next < end) {
+          const VerticalUnit& nextUnit = units[next];
+          std::string nextText = unitText(nextUnit);
+          if (!unitRuby(nextUnit).empty() || nextUnit.style != unit.style ||
+              (nextUnit.style & EpdFontFamily::TATE_CHU_YOKO) != 0 || !isVerticalSidewaysPhraseToken(nextText)) {
+            break;
+          }
+          text += nextText;
+          phraseAdvance += nextUnit.advance;
+          ++next;
+        }
+
+        columnWords.push_back(std::move(text));
+        columnXPos.push_back(0);
+        columnYPos.push_back(static_cast<int16_t>(ypos));
+        columnStyles.push_back(unit.style);
+        columnRubyTexts.emplace_back();
+        columnRubyBaseAdvances.push_back(0);
+        ypos += phraseAdvance;
+        i = next;
+        continue;
+      }
+
+      columnWords.push_back(std::move(text));
       columnXPos.push_back(0);
       columnYPos.push_back(static_cast<int16_t>(ypos));
       columnStyles.push_back(unit.style);
-      std::string ruby;
-      if (unit.firstUnitInWord && unit.wordIndex < rubyTexts.size()) {
-        ruby = rubyTexts[unit.wordIndex];
-      }
       hasColumnRuby = hasColumnRuby || !ruby.empty();
       uint16_t rubyBaseAdvance = 0;
       if (!ruby.empty()) {
@@ -806,6 +866,7 @@ void ParsedText::layoutAndExtractVerticalColumns(const GfxRenderer& renderer, co
       columnRubyTexts.push_back(std::move(ruby));
       columnRubyBaseAdvances.push_back(rubyBaseAdvance);
       ypos += unit.advance;
+      ++i;
     }
 
     processColumn(std::make_shared<TextBlock>(
