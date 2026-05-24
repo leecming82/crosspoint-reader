@@ -55,7 +55,8 @@ class ParsedText {
         focusReadingEnabled(focusReadingEnabled) {}
   ~ParsedText() = default;
 
-  void addWord(std::string word, EpdFontFamily::Style fontStyle, bool underline = false, bool attachToPrevious = false);
+  void addWord(std::string word, EpdFontFamily::Style fontStyle, bool underline = false, bool attachToPrevious = false,
+               bool tateChuYoko = false);
   void addRubyWord(std::string word, std::string ruby, EpdFontFamily::Style fontStyle, bool underline = false,
                    bool attachToPrevious = false);
   void setBlockStyle(const BlockStyle& blockStyle) { this->blockStyle = blockStyle; }

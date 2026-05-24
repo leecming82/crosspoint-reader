@@ -102,6 +102,11 @@ void filterStyleForDebugMode(CssStyle& style) {
   style.defined.display = 0;
 }
 
+CssTextCombine interpretTextCombine(const std::string_view value) {
+  const std::string_view stripped = stripTrailingImportant(value);
+  return (stripped == "horizontal" || stripped == "all") ? CssTextCombine::Horizontal : CssTextCombine::None;
+}
+
 }  // anonymous namespace
 
 // String utilities implementation
@@ -382,6 +387,13 @@ void CssParser::parseDeclarationIntoStyle(const std::string& decl, CssStyle& sty
              propNameBuf == "-webkit-writing-mode") {
     style.writingMode = interpretWritingMode(propValueBuf);
     style.defined.writingMode = 1;
+  } else if (propNameBuf == "text-combine-upright" || propNameBuf == "-webkit-text-combine-upright" ||
+             propNameBuf == "-webkit-text-combine" || propNameBuf == "-epub-text-combine") {
+    if (stripTrailingImportant(propValueBuf) == "inherit") {
+      return;
+    }
+    style.textCombine = interpretTextCombine(propValueBuf);
+    style.defined.textCombine = 1;
   }
 }
 
@@ -779,6 +791,7 @@ bool CssParser::saveToCache() const {
     file.write(static_cast<uint8_t>(style.fontWeight));
     file.write(static_cast<uint8_t>(style.textDecoration));
     file.write(static_cast<uint8_t>(style.writingMode));
+    file.write(static_cast<uint8_t>(style.textCombine));
 
     // Write CssLength fields (value + unit)
     auto writeLength = [&file](const CssLength& len) {
@@ -818,6 +831,7 @@ bool CssParser::saveToCache() const {
     if (style.defined.imageWidth) definedBits |= 1 << 14;
     if (style.defined.display) definedBits |= 1 << 15;
     if (style.defined.writingMode) definedBits |= 1UL << 16;
+    if (style.defined.textCombine) definedBits |= 1UL << 17;
     file.write(reinterpret_cast<const uint8_t*>(&definedBits), sizeof(definedBits));
   }
 
@@ -868,7 +882,7 @@ bool CssParser::loadFromCache() {
   constexpr size_t CSS_LENGTH_FIELD_COUNT = 11;
   constexpr size_t CSS_LENGTH_BYTES = sizeof(float) + sizeof(uint8_t);
   constexpr size_t CSS_FIXED_STYLE_BYTES =
-      5 * sizeof(uint8_t) + (CSS_LENGTH_FIELD_COUNT * CSS_LENGTH_BYTES) + sizeof(uint8_t) + sizeof(uint32_t);
+      6 * sizeof(uint8_t) + (CSS_LENGTH_FIELD_COUNT * CSS_LENGTH_BYTES) + sizeof(uint8_t) + sizeof(uint32_t);
 
   // Read each rule
   for (uint16_t i = 0; i < ruleCount; ++i) {
@@ -936,6 +950,12 @@ bool CssParser::loadFromCache() {
     }
     style.writingMode = static_cast<CssWritingMode>(enumVal);
 
+    if (file.read(&enumVal, 1) != 1) {
+      rulesBySelector_.clear();
+      return false;
+    }
+    style.textCombine = static_cast<CssTextCombine>(enumVal);
+
     // Read CssLength fields
     auto readLength = [&file](CssLength& len) -> bool {
       if (file.read(&len.value, sizeof(len.value)) != sizeof(len.value)) {
@@ -988,6 +1008,7 @@ bool CssParser::loadFromCache() {
     style.defined.imageWidth = (definedBits & 1 << 14) != 0;
     style.defined.display = (definedBits & 1 << 15) != 0;
     style.defined.writingMode = (definedBits & 1UL << 16) != 0;
+    style.defined.textCombine = (definedBits & 1UL << 17) != 0;
 
     filterStyleForDebugMode(style);
     rulesBySelector_[selector] = style;

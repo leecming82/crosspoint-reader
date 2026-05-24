@@ -120,6 +120,7 @@ void ChapterHtmlSlimParser::updateEffectiveInlineStyle() {
   effectiveItalic = currentCssStyle.hasFontStyle() && currentCssStyle.fontStyle == CssFontStyle::Italic;
   effectiveUnderline =
       currentCssStyle.hasTextDecoration() && currentCssStyle.textDecoration == CssTextDecoration::Underline;
+  effectiveTextCombine = currentCssStyle.hasTextCombine() && currentCssStyle.textCombine == CssTextCombine::Horizontal;
 
   // Apply inline style stack in order
   for (const auto& entry : inlineStyleStack) {
@@ -131,6 +132,9 @@ void ChapterHtmlSlimParser::updateEffectiveInlineStyle() {
     }
     if (entry.hasUnderline) {
       effectiveUnderline = entry.underline;
+    }
+    if (entry.hasTextCombine) {
+      effectiveTextCombine = entry.textCombine;
     }
   }
 }
@@ -156,7 +160,7 @@ void ChapterHtmlSlimParser::flushPartWordBuffer() {
 
   // flush the buffer
   partWordBuffer[partWordBufferIndex] = '\0';
-  currentTextBlock->addWord(partWordBuffer, fontStyle, false, nextWordContinues);
+  currentTextBlock->addWord(partWordBuffer, fontStyle, false, nextWordContinues, effectiveTextCombine);
   partWordBufferIndex = 0;
   nextWordContinues = false;
 }
@@ -851,6 +855,10 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
       entry.hasItalic = true;
       entry.italic = cssStyle.fontStyle == CssFontStyle::Italic;
     }
+    if (cssStyle.hasTextCombine()) {
+      entry.hasTextCombine = true;
+      entry.textCombine = cssStyle.textCombine == CssTextCombine::Horizontal;
+    }
     self->inlineStyleStack.push_back(entry);
     self->updateEffectiveInlineStyle();
   } else if (matches(name, BOLD_TAGS, std::size(BOLD_TAGS))) {
@@ -872,6 +880,10 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
     if (cssStyle.hasTextDecoration()) {
       entry.hasUnderline = true;
       entry.underline = cssStyle.textDecoration == CssTextDecoration::Underline;
+    }
+    if (cssStyle.hasTextCombine()) {
+      entry.hasTextCombine = true;
+      entry.textCombine = cssStyle.textCombine == CssTextCombine::Horizontal;
     }
     self->inlineStyleStack.push_back(entry);
     self->updateEffectiveInlineStyle();
@@ -895,11 +907,16 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
       entry.hasUnderline = true;
       entry.underline = cssStyle.textDecoration == CssTextDecoration::Underline;
     }
+    if (cssStyle.hasTextCombine()) {
+      entry.hasTextCombine = true;
+      entry.textCombine = cssStyle.textCombine == CssTextCombine::Horizontal;
+    }
     self->inlineStyleStack.push_back(entry);
     self->updateEffectiveInlineStyle();
   } else if (strcmp(name, "span") == 0 || !isHeaderOrBlock(name)) {
     // Handle span and other inline elements for CSS styling
-    if (cssStyle.hasFontWeight() || cssStyle.hasFontStyle() || cssStyle.hasTextDecoration()) {
+    if (cssStyle.hasFontWeight() || cssStyle.hasFontStyle() || cssStyle.hasTextDecoration() ||
+        cssStyle.hasTextCombine()) {
       // Flush buffer before style change so preceding text gets current style
       if (self->partWordBufferIndex > 0) {
         self->flushPartWordBuffer();
@@ -918,6 +935,10 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
       if (cssStyle.hasTextDecoration()) {
         entry.hasUnderline = true;
         entry.underline = cssStyle.textDecoration == CssTextDecoration::Underline;
+      }
+      if (cssStyle.hasTextCombine()) {
+        entry.hasTextCombine = true;
+        entry.textCombine = cssStyle.textCombine == CssTextCombine::Horizontal;
       }
       self->inlineStyleStack.push_back(entry);
       self->updateEffectiveInlineStyle();
@@ -983,6 +1004,12 @@ void XMLCALL ChapterHtmlSlimParser::characterData(void* userData, const XML_Char
       // Currently looking at whitespace, if there's anything in the partWordBuffer, flush it
       if (self->partWordBufferIndex > 0) {
         self->flushPartWordBuffer();
+        if (self->isVerticalWritingMode()) {
+          self->partWordBuffer[0] = ' ';
+          self->partWordBuffer[1] = '\0';
+          self->partWordBufferIndex = 1;
+          self->flushPartWordBuffer();
+        }
       }
       // Whitespace is a real word boundary — reset continuation state
       self->nextWordContinues = false;

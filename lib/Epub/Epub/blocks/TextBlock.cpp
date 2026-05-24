@@ -156,7 +156,8 @@ void TextBlock::render(const GfxRenderer& renderer, const int fontId, const int 
       const uint32_t firstCp = firstCodepoint(word);
       const size_t cpCount = utf8CodepointCount(word);
 
-      if (isAsciiDigitString(word) && cpCount <= 2) {
+      const bool forceTateChuYoko = (style & EpdFontFamily::TATE_CHU_YOKO) != 0;
+      if (forceTateChuYoko || (isAsciiDigitString(word) && cpCount <= 2)) {
         renderer.drawTextTateChuYoko(fontId, wordX, wordY, word.c_str(), true, style, columnWidth);
       } else if (cpCount > 1 && !VerticalTextUtils::isUprightInVertical(firstCp)) {
         renderer.drawTextSideways(fontId, wordX, wordY, word.c_str(), true, style, columnWidth);

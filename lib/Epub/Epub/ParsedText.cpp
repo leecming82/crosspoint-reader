@@ -388,16 +388,19 @@ bool isWordCharacter(uint32_t cp) {
 }  // namespace
 
 void ParsedText::addWord(std::string word, const EpdFontFamily::Style fontStyle, const bool underline,
-                         const bool attachToPrevious) {
+                         const bool attachToPrevious, const bool tateChuYoko) {
   if (word.empty()) return;
 
   EpdFontFamily::Style baseStyle = fontStyle;
   if (underline) {
     baseStyle = static_cast<EpdFontFamily::Style>(baseStyle | EpdFontFamily::UNDERLINE);
   }
+  if (tateChuYoko) {
+    baseStyle = static_cast<EpdFontFamily::Style>(baseStyle | EpdFontFamily::TATE_CHU_YOKO);
+  }
 
   // Already-bold text should stay fully bold; focus splitting would make its suffix regular later.
-  if (!this->focusReadingEnabled || (baseStyle & EpdFontFamily::BOLD) != 0) {
+  if (tateChuYoko || !this->focusReadingEnabled || (baseStyle & EpdFontFamily::BOLD) != 0) {
     words.push_back(std::move(word));
     wordStyles.push_back(baseStyle);
     wordContinues.push_back(attachToPrevious);
@@ -655,6 +658,12 @@ void ParsedText::layoutAndExtractVerticalColumns(const GfxRenderer& renderer, co
 
   for (size_t wordIndex = 0; wordIndex < words.size(); ++wordIndex) {
     const std::string& word = words[wordIndex];
+    if ((wordStyles[wordIndex] & EpdFontFamily::TATE_CHU_YOKO) != 0) {
+      const uint32_t firstCp = firstCodepoint(word);
+      const uint32_t lastCp = lastCodepoint(word);
+      pushUnit(wordIndex, 0, word.size(), firstCp, lastCp, cjkCellAdvance, wordContinues[wordIndex], true);
+      continue;
+    }
 
     size_t offset = 0;
     bool firstUnitInWord = true;

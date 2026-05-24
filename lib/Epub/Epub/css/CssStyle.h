@@ -57,26 +57,28 @@ enum class CssTextDecoration : uint8_t { None = 0, Underline = 1 };
 // Display options - only None and Block are relevant for e-ink rendering
 enum class CssDisplay : uint8_t { Block = 0, None = 1 };
 enum class CssWritingMode : uint8_t { HorizontalTb = 0, VerticalRl = 1, VerticalLr = 2 };
+enum class CssTextCombine : uint8_t { None = 0, Horizontal = 1 };
 
 // Bitmask for tracking which properties have been explicitly set
 struct CssPropertyFlags {
-  uint16_t textAlign : 1;
-  uint16_t fontStyle : 1;
-  uint16_t fontWeight : 1;
-  uint16_t textDecoration : 1;
-  uint16_t textIndent : 1;
-  uint16_t marginTop : 1;
-  uint16_t marginBottom : 1;
-  uint16_t marginLeft : 1;
-  uint16_t marginRight : 1;
-  uint16_t paddingTop : 1;
-  uint16_t paddingBottom : 1;
-  uint16_t paddingLeft : 1;
-  uint16_t paddingRight : 1;
-  uint16_t imageHeight : 1;
-  uint16_t imageWidth : 1;
-  uint16_t display : 1;
-  uint16_t writingMode : 1;
+  uint32_t textAlign : 1;
+  uint32_t fontStyle : 1;
+  uint32_t fontWeight : 1;
+  uint32_t textDecoration : 1;
+  uint32_t textIndent : 1;
+  uint32_t marginTop : 1;
+  uint32_t marginBottom : 1;
+  uint32_t marginLeft : 1;
+  uint32_t marginRight : 1;
+  uint32_t paddingTop : 1;
+  uint32_t paddingBottom : 1;
+  uint32_t paddingLeft : 1;
+  uint32_t paddingRight : 1;
+  uint32_t imageHeight : 1;
+  uint32_t imageWidth : 1;
+  uint32_t display : 1;
+  uint32_t writingMode : 1;
+  uint32_t textCombine : 1;
 
   CssPropertyFlags()
       : textAlign(0),
@@ -95,19 +97,20 @@ struct CssPropertyFlags {
         imageHeight(0),
         imageWidth(0),
         display(0),
-        writingMode(0) {}
+        writingMode(0),
+        textCombine(0) {}
 
   [[nodiscard]] bool anySet() const {
     return textAlign || fontStyle || fontWeight || textDecoration || textIndent || marginTop || marginBottom ||
            marginLeft || marginRight || paddingTop || paddingBottom || paddingLeft || paddingRight || imageHeight ||
-           imageWidth || display || writingMode;
+           imageWidth || display || writingMode || textCombine;
   }
 
   void clearAll() {
     textAlign = fontStyle = fontWeight = textDecoration = textIndent = 0;
     marginTop = marginBottom = marginLeft = marginRight = 0;
     paddingTop = paddingBottom = paddingLeft = paddingRight = 0;
-    imageHeight = imageWidth = display = writingMode = 0;
+    imageHeight = imageWidth = display = writingMode = textCombine = 0;
   }
 };
 
@@ -133,6 +136,7 @@ struct CssStyle {
   CssLength imageWidth;     // Width for img when both or only width set
   CssDisplay display = CssDisplay::Block;  // display property (Block or None)
   CssWritingMode writingMode = CssWritingMode::HorizontalTb;
+  CssTextCombine textCombine = CssTextCombine::None;
 
   CssPropertyFlags defined;  // Tracks which properties were explicitly set
 
@@ -207,6 +211,10 @@ struct CssStyle {
       writingMode = base.writingMode;
       defined.writingMode = 1;
     }
+    if (base.hasTextCombine()) {
+      textCombine = base.textCombine;
+      defined.textCombine = 1;
+    }
   }
 
   [[nodiscard]] bool hasTextAlign() const { return defined.textAlign; }
@@ -226,6 +234,7 @@ struct CssStyle {
   [[nodiscard]] bool hasImageWidth() const { return defined.imageWidth; }
   [[nodiscard]] bool hasDisplay() const { return defined.display; }
   [[nodiscard]] bool hasWritingMode() const { return defined.writingMode; }
+  [[nodiscard]] bool hasTextCombine() const { return defined.textCombine; }
 
   void reset() {
     textAlign = CssTextAlign::Left;
@@ -238,6 +247,7 @@ struct CssStyle {
     imageHeight = imageWidth = CssLength{};
     display = CssDisplay::Block;
     writingMode = CssWritingMode::HorizontalTb;
+    textCombine = CssTextCombine::None;
     defined.clearAll();
   }
 };
