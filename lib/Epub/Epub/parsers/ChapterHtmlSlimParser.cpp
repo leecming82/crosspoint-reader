@@ -35,6 +35,11 @@ constexpr const char* SKIP_TAGS[] = {"head"};
 
 bool isWhitespace(const char c) { return c == ' ' || c == '\r' || c == '\n' || c == '\t'; }
 
+bool isAsciiWordByte(const char c) {
+  const auto ch = static_cast<unsigned char>(c);
+  return (ch >= '0' && ch <= '9') || ((ch | 0x20) >= 'a' && (ch | 0x20) <= 'z') || ch == '\'' || ch == '-';
+}
+
 bool matches(const char* tag_name, const char* const* possible_tags, size_t count) {
   for (size_t i = 0; i < count; i++) {
     if (strcmp(tag_name, possible_tags[i]) == 0) {
@@ -182,26 +187,55 @@ void ChapterHtmlSlimParser::commitPendingAnchor() {
 void ChapterHtmlSlimParser::appendToPartWordBuffer(const char* text, const int len) {
   for (int i = 0; i < len; i++) {
     if (partWordBufferIndex >= MAX_WORD_SIZE) {
-      const int safeLen = utf8SafeTruncateBuffer(partWordBuffer, partWordBufferIndex);
-
-      if (safeLen < partWordBufferIndex && safeLen > 0) {
-        const int overflow = partWordBufferIndex - safeLen;
-        char saved[4];
-        for (int j = 0; j < overflow; j++) {
-          saved[j] = partWordBuffer[safeLen + j];
-        }
-        partWordBufferIndex = safeLen;
-        flushPartWordBuffer();
-        for (int j = 0; j < overflow; j++) {
-          partWordBuffer[j] = saved[j];
-        }
-        partWordBufferIndex = overflow;
-      } else {
-        flushPartWordBuffer();
-      }
+      flushPartWordBufferForCapacity(text[i]);
     }
 
     partWordBuffer[partWordBufferIndex++] = text[i];
+  }
+}
+
+void ChapterHtmlSlimParser::flushPartWordBufferForCapacity(const char nextByte) {
+  if (partWordBufferIndex <= 0) return;
+
+  if (isAsciiWordByte(nextByte) && isAsciiWordByte(partWordBuffer[partWordBufferIndex - 1])) {
+    int wordStart = partWordBufferIndex - 1;
+    while (wordStart > 0 && isAsciiWordByte(partWordBuffer[wordStart - 1])) {
+      --wordStart;
+    }
+    if (wordStart > 0) {
+      char saved[MAX_WORD_SIZE + 1];
+      const int savedLen = partWordBufferIndex - wordStart;
+      for (int j = 0; j < savedLen; ++j) {
+        saved[j] = partWordBuffer[wordStart + j];
+      }
+      partWordBufferIndex = wordStart;
+      flushPartWordBuffer();
+      nextWordContinues = true;
+      for (int j = 0; j < savedLen; ++j) {
+        partWordBuffer[j] = saved[j];
+      }
+      partWordBufferIndex = savedLen;
+      return;
+    }
+  }
+
+  const int safeLen = utf8SafeTruncateBuffer(partWordBuffer, partWordBufferIndex);
+  if (safeLen < partWordBufferIndex && safeLen > 0) {
+    const int overflow = partWordBufferIndex - safeLen;
+    char saved[4];
+    for (int j = 0; j < overflow; j++) {
+      saved[j] = partWordBuffer[safeLen + j];
+    }
+    partWordBufferIndex = safeLen;
+    flushPartWordBuffer();
+    nextWordContinues = true;
+    for (int j = 0; j < overflow; j++) {
+      partWordBuffer[j] = saved[j];
+    }
+    partWordBufferIndex = overflow;
+  } else {
+    flushPartWordBuffer();
+    nextWordContinues = true;
   }
 }
 
@@ -1091,24 +1125,7 @@ void XMLCALL ChapterHtmlSlimParser::characterData(void* userData, const XML_Char
     // otherwise the trailing bytes become orphaned continuation bytes that the
     // decoder can't interpret.
     if (self->partWordBufferIndex >= MAX_WORD_SIZE) {
-      int safeLen = utf8SafeTruncateBuffer(self->partWordBuffer, self->partWordBufferIndex);
-
-      if (safeLen < self->partWordBufferIndex && safeLen > 0) {
-        // Incomplete UTF-8 sequence at the end — save it before flushing
-        int overflow = self->partWordBufferIndex - safeLen;
-        char saved[4];
-        for (int j = 0; j < overflow; j++) {
-          saved[j] = self->partWordBuffer[safeLen + j];
-        }
-        self->partWordBufferIndex = safeLen;
-        self->flushPartWordBuffer();
-        for (int j = 0; j < overflow; j++) {
-          self->partWordBuffer[j] = saved[j];
-        }
-        self->partWordBufferIndex = overflow;
-      } else {
-        self->flushPartWordBuffer();
-      }
+      self->flushPartWordBufferForCapacity(s[i]);
     }
 
     self->partWordBuffer[self->partWordBufferIndex++] = s[i];
