@@ -68,7 +68,7 @@ class ParsedText {
                              bool includeLastLine = true, bool sdAdvancePrewarmed = false);
   void layoutAndExtractVerticalColumns(const GfxRenderer& renderer, int fontId, uint16_t columnHeight,
                                        const std::function<void(std::shared_ptr<TextBlock>)>& processColumn,
-                                       bool sdAdvancePrewarmed = false);
+                                       bool sdAdvancePrewarmed = false, bool includeLastColumn = true);
 };
 
 // Returns true for CJK unified ideographs (kanji) only.

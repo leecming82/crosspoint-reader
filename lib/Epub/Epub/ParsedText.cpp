@@ -90,6 +90,29 @@ uint32_t lastCodepoint(const std::string& word) {
   return utf8NextCodepoint(&ptr);
 }
 
+bool canEndVerticalChunkAfter(const std::string& word, const size_t nextOffset, const uint32_t cp) {
+  if (VerticalTextUtils::isKinsokuTail(cp)) {
+    return false;
+  }
+
+  if (nextOffset >= word.size()) {
+    return true;
+  }
+
+  const auto* nextPtr = reinterpret_cast<const unsigned char*>(word.c_str() + nextOffset);
+  const uint32_t nextCp = utf8NextCodepoint(&nextPtr);
+  if (nextCp == 0) {
+    return true;
+  }
+
+  if (VerticalTextUtils::isAsciiDigit(cp) && VerticalTextUtils::isAsciiDigit(nextCp)) {
+    return false;
+  }
+
+  return VerticalTextUtils::isUprightInVertical(cp) || VerticalTextUtils::isAsciiDigit(cp) ||
+         VerticalTextUtils::isUprightInVertical(nextCp) || VerticalTextUtils::isAsciiDigit(nextCp);
+}
+
 bool containsSoftHyphen(const std::string& word) { return word.find(SOFT_HYPHEN_UTF8) != std::string::npos; }
 
 // Removes every soft hyphen in-place so rendered glyphs match measured widths.
@@ -620,12 +643,13 @@ void ParsedText::layoutAndExtractLines(const GfxRenderer& renderer, const int fo
 void ParsedText::layoutAndExtractVerticalColumns(const GfxRenderer& renderer, const int fontId,
                                                  const uint16_t columnHeight,
                                                  const std::function<void(std::shared_ptr<TextBlock>)>& processColumn,
-                                                 const bool sdAdvancePrewarmed) {
+                                                 const bool sdAdvancePrewarmed, const bool includeLastColumn) {
   if (words.empty()) {
     return;
   }
 
-  if (layoutAndExtractChunkedTategakiColumns(renderer, fontId, columnHeight, processColumn, sdAdvancePrewarmed)) {
+  if (includeLastColumn &&
+      layoutAndExtractChunkedTategakiColumns(renderer, fontId, columnHeight, processColumn, sdAdvancePrewarmed)) {
     return;
   }
 
@@ -792,6 +816,7 @@ void ParsedText::layoutAndExtractVerticalColumns(const GfxRenderer& renderer, co
   };
 
   size_t columnStart = 0;
+  std::vector<size_t> columnEnds;
   while (columnStart < units.size()) {
     int columnUsed = 0;
     size_t bestBreak = columnStart;
@@ -811,15 +836,74 @@ void ParsedText::layoutAndExtractVerticalColumns(const GfxRenderer& renderer, co
     if (columnEnd <= columnStart) {
       columnEnd = columnStart + 1;
     }
-    emitColumn(columnStart, columnEnd);
+    columnEnds.push_back(columnEnd);
     columnStart = columnEnd;
   }
 
-  words.clear();
-  wordStyles.clear();
-  wordContinues.clear();
-  wordIsFocusSuffix.clear();
-  rubyTexts.clear();
+  size_t emitColumnCount = columnEnds.size();
+  if (!includeLastColumn && emitColumnCount > 0) {
+    --emitColumnCount;
+  }
+
+  size_t emitStart = 0;
+  for (size_t columnIndex = 0; columnIndex < emitColumnCount; ++columnIndex) {
+    emitColumn(emitStart, columnEnds[columnIndex]);
+    emitStart = columnEnds[columnIndex];
+  }
+
+  if (emitStart >= units.size()) {
+    words.clear();
+    wordStyles.clear();
+    wordContinues.clear();
+    wordIsFocusSuffix.clear();
+    rubyTexts.clear();
+    return;
+  }
+
+  std::vector<std::string> remainingWords;
+  std::vector<EpdFontFamily::Style> remainingStyles;
+  std::vector<bool> remainingContinues;
+  std::vector<std::string> remainingRubyTexts;
+  remainingWords.reserve(units.size() - emitStart);
+  remainingStyles.reserve(units.size() - emitStart);
+  remainingContinues.reserve(units.size() - emitStart);
+  bool hasRemainingRuby = false;
+  size_t lastWordIndex = std::numeric_limits<size_t>::max();
+  size_t lastEndByte = 0;
+
+  for (size_t i = emitStart; i < units.size(); ++i) {
+    const VerticalUnit& unit = units[i];
+    const std::string& source = words[unit.wordIndex];
+    if (!remainingWords.empty() && unit.wordIndex == lastWordIndex && unit.startByte == lastEndByte &&
+        unit.style == remainingStyles.back()) {
+      remainingWords.back().append(source, unit.startByte, unit.endByte - unit.startByte);
+      lastEndByte = unit.endByte;
+      continue;
+    }
+
+    remainingWords.emplace_back(source, unit.startByte, unit.endByte - unit.startByte);
+    remainingStyles.push_back(unit.style);
+    remainingContinues.push_back(!remainingContinues.empty() && (unit.noBreakBefore || !unit.firstUnitInWord));
+    std::string ruby;
+    if (unit.firstUnitInWord && unit.wordIndex < rubyTexts.size()) {
+      ruby = rubyTexts[unit.wordIndex];
+    }
+    hasRemainingRuby = hasRemainingRuby || !ruby.empty();
+    if (hasRemainingRuby || !remainingRubyTexts.empty()) {
+      if (remainingRubyTexts.size() + 1 < remainingWords.size()) {
+        remainingRubyTexts.resize(remainingWords.size() - 1);
+      }
+      remainingRubyTexts.push_back(std::move(ruby));
+    }
+    lastWordIndex = unit.wordIndex;
+    lastEndByte = unit.endByte;
+  }
+
+  words = std::move(remainingWords);
+  wordStyles = std::move(remainingStyles);
+  wordContinues = std::move(remainingContinues);
+  wordIsFocusSuffix.assign(words.size(), false);
+  rubyTexts = hasRemainingRuby ? std::move(remainingRubyTexts) : std::vector<std::string>{};
 }
 
 bool ParsedText::layoutAndExtractChunkedTategakiColumns(
@@ -856,6 +940,16 @@ bool ParsedText::layoutAndExtractChunkedTategakiColumns(
   auto sourceRubyTexts = std::move(rubyTexts);
   Chunk current;
 
+  const int lineHeight = std::max(1, renderer.getLineHeight(fontId));
+  const int representativeCjkAdvance =
+      std::max(renderer.getTextAdvanceX(fontId, "\xe6\x97\xa5", EpdFontFamily::REGULAR),   // 日
+               renderer.getTextAdvanceX(fontId, "\xe3\x81\x82", EpdFontFamily::REGULAR));  // あ
+  const int cjkCellAdvance = std::max(1, representativeCjkAdvance > 0 ? representativeCjkAdvance : lineHeight * 9 / 10);
+  const size_t estimatedUnitsPerColumn = std::max<size_t>(1, static_cast<size_t>(columnHeight) / cjkCellAdvance);
+  const size_t preferredChunkUnits =
+      std::max(estimatedUnitsPerColumn,
+               (VERTICAL_LAYOUT_CHUNK_TARGET_UNITS / estimatedUnitsPerColumn) * estimatedUnitsPerColumn);
+
   auto finishChunk = [&]() {
     if (current.words.empty()) {
       return;
@@ -867,16 +961,36 @@ bool ParsedText::layoutAndExtractChunkedTategakiColumns(
     wordIsFocusSuffix.assign(words.size(), false);
     rubyTexts = std::move(current.rubyTexts);
     current = Chunk();
-    layoutAndExtractVerticalColumns(renderer, fontId, columnHeight, processColumn, sdAdvancePrewarmed);
+    layoutAndExtractVerticalColumns(renderer, fontId, columnHeight, processColumn, sdAdvancePrewarmed,
+                                    /*includeLastColumn=*/false);
+    if (!words.empty()) {
+      current.words = std::move(words);
+      current.styles = std::move(wordStyles);
+      current.continues = std::move(wordContinues);
+      current.rubyTexts = std::move(rubyTexts);
+      current.units = 0;
+      for (const auto& word : current.words) {
+        const auto* ptr = reinterpret_cast<const unsigned char*>(word.c_str());
+        while (utf8NextCodepoint(&ptr)) {
+          ++current.units;
+        }
+      }
+      wordIsFocusSuffix.clear();
+    }
   };
 
-  auto addSegment = [&](const std::string& word, const size_t start, const size_t end, const EpdFontFamily::Style style,
+  auto addSegment = [&](const size_t wordIndex, const size_t start, const size_t end, const EpdFontFamily::Style style,
                         const bool attachToPrevious, const size_t unitCount, const std::string& ruby) {
+    std::string& word = sourceWords[wordIndex];
     if (start >= end) {
       return;
     }
     const bool wholeWord = start == 0 && end == word.size();
-    current.words.emplace_back(word.substr(start, end - start));
+    if (wholeWord) {
+      current.words.push_back(std::move(word));
+    } else {
+      current.words.emplace_back(word, start, end - start);
+    }
     current.styles.push_back(style);
     current.continues.push_back(current.words.size() > 1 && attachToPrevious);
     if (!ruby.empty() || !current.rubyTexts.empty()) {
@@ -906,11 +1020,11 @@ bool ParsedText::layoutAndExtractChunkedTategakiColumns(
       ++segmentUnits;
 
       const size_t prospectiveUnits = current.units + segmentUnits;
-      const bool preferredBoundary =
-          prospectiveUnits >= VERTICAL_LAYOUT_CHUNK_TARGET_UNITS && !VerticalTextUtils::isKinsokuTail(cp);
-      const bool forcedBoundary = prospectiveUnits >= MAX_VERTICAL_LAYOUT_UNITS;
+      const bool safeBoundary = canEndVerticalChunkAfter(word, nextOffset, cp);
+      const bool preferredBoundary = prospectiveUnits >= preferredChunkUnits && safeBoundary;
+      const bool forcedBoundary = prospectiveUnits >= MAX_VERTICAL_LAYOUT_UNITS && safeBoundary;
       if (preferredBoundary || forcedBoundary) {
-        addSegment(word, segmentStart, nextOffset, sourceStyles[wordIndex],
+        addSegment(wordIndex, segmentStart, nextOffset, sourceStyles[wordIndex],
                    segmentStart > 0 || sourceContinues[wordIndex], segmentUnits, ruby);
         finishChunk();
         segmentStart = nextOffset;
@@ -921,11 +1035,20 @@ bool ParsedText::layoutAndExtractChunkedTategakiColumns(
     }
 
     if (segmentStart < word.size()) {
-      addSegment(word, segmentStart, word.size(), sourceStyles[wordIndex],
+      addSegment(wordIndex, segmentStart, word.size(), sourceStyles[wordIndex],
                  segmentStart > 0 || sourceContinues[wordIndex], segmentUnits, ruby);
     }
   }
-  finishChunk();
+  if (!current.words.empty()) {
+    words = std::move(current.words);
+    wordStyles = std::move(current.styles);
+    wordContinues = std::move(current.continues);
+    wordIsFocusSuffix.assign(words.size(), false);
+    rubyTexts = std::move(current.rubyTexts);
+    current = Chunk();
+    layoutAndExtractVerticalColumns(renderer, fontId, columnHeight, processColumn, sdAdvancePrewarmed,
+                                    /*includeLastColumn=*/true);
+  }
 
   words.clear();
   wordStyles.clear();
@@ -989,7 +1112,7 @@ bool ParsedText::layoutAndExtractChunkedYokogakiCjkLines(
       return;
     }
     const bool wholeWord = start == 0 && end == word.size();
-    current.words.emplace_back(word.substr(start, end - start));
+    current.words.emplace_back(word, start, end - start);
     current.styles.push_back(style);
     current.continues.push_back(!current.words.empty() && current.words.size() > 1 && attachToPrevious);
     if (!ruby.empty() || !current.rubyTexts.empty()) {
