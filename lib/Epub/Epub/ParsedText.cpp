@@ -69,10 +69,30 @@ bool hasLatinLetter(const std::string& word) {
   return false;
 }
 
+bool isVerticalSidewaysPhraseConnector(const uint32_t cp) {
+  switch (cp) {
+    case 0x0020:  // space
+    case 0x0027:  // apostrophe
+    case 0x002D:  // hyphen-minus
+    case 0x2010:  // hyphen
+    case 0x2011:  // non-breaking hyphen
+    case 0x2013:  // en dash
+    case 0x2014:  // em dash
+    case 0x2015:  // horizontal bar
+    case 0xFF0D:  // fullwidth hyphen-minus
+      return true;
+    default:
+      return false;
+  }
+}
+
 bool isVerticalSidewaysPhraseToken(const std::string& word) {
   if (word.empty()) return false;
   const auto* ptr = reinterpret_cast<const unsigned char*>(word.c_str());
   while (const uint32_t cp = utf8NextCodepoint(&ptr)) {
+    if (isVerticalSidewaysPhraseConnector(cp)) {
+      continue;
+    }
     if (VerticalTextUtils::isUprightInVertical(cp) || VerticalTextUtils::isAsciiDigit(cp)) {
       return false;
     }
