@@ -331,7 +331,6 @@ static void renderCharWithSyntheticBold(const GfxRenderer& renderer, GfxRenderer
   renderCharImpl<rotation>(renderer, renderMode, fontFamily, cp, cursorX, cursorY, pixelState, style);
   if (syntheticBold) {
     renderCharImpl<rotation>(renderer, renderMode, fontFamily, cp, cursorX + 1, cursorY, pixelState, style);
-    renderCharImpl<rotation>(renderer, renderMode, fontFamily, cp, cursorX + 2, cursorY, pixelState, style);
   }
 }
 
