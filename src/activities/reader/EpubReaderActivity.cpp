@@ -10,6 +10,7 @@
 #include <I18n.h>
 #include <JapaneseDictionary.h>
 #include <Logging.h>
+#include <Memory.h>
 #include <Utf8.h>
 #include <esp_system.h>
 
@@ -320,7 +321,7 @@ void EpubReaderActivity::onEnter() {
 
   epub->setupCacheDir();
 
-  FsFile f;
+  HalFile f;
   if (Storage.openFileForRead("ERS", epub->getCachePath() + "/progress.bin", f)) {
     uint8_t data[6];
     int dataSize = f.read(data, 6);
@@ -1416,45 +1417,79 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
   }
   const auto tDisplay = millis();
 
-  // Save BW buffer to reset buffer/display state after grayscale data sync.
-  // If fragmented heap prevents this allocation, still render AA and restore the
-  // BW state by re-rendering below. That keeps AA uniform across dense pages.
-  const bool bwBufferStored = SETTINGS.textAntiAliasing && renderer.storeBwBuffer();
-  const auto tBwStore = millis();
+  // Tiled grayscale: render each plane band-by-band into a small scratch and
+  // stream straight to the controller, leaving the BW framebuffer intact so no
+  // full-frame storeBwBuffer is needed; controller RAM is re-synced from the
+  // live framebuffer afterward. The page is re-rendered ceil(H/STRIP_ROWS) times
+  // per plane, but renderCharImpl culls out-of-band glyphs before decode so the
+  // cost stays close to one render. Both text (drawPixel) and images
+  // (DirectPixelWriter) honor the active strip target.
+  if (SETTINGS.textAntiAliasing && renderer.supportsStripGrayscale()) {
+    constexpr int STRIP_ROWS = 80;
+    const int gh = renderer.getDisplayHeight();
+    const int gwBytes = renderer.getDisplayWidthBytes();
 
-  // grayscale rendering
+    auto scratch = makeUniqueNoThrow<uint8_t[]>(static_cast<size_t>(gwBytes) * STRIP_ROWS);
+    if (!scratch) {
+      LOG_ERR("ERS", "OOM: grayscale strip scratch (%d bytes); skipping AA this page", gwBytes * STRIP_ROWS);
+    } else {
+      // Bands may be streamed in any order: X4 windows each via setRamArea, X3
+      // via PTL.
+      renderer.setRenderMode(GfxRenderer::GRAYSCALE_LSB);
+      for (int y = 0; y < gh; y += STRIP_ROWS) {
+        const int rows = (gh - y < STRIP_ROWS) ? (gh - y) : STRIP_ROWS;
+        renderer.beginStripTarget(scratch.get(), y, rows);
+        renderer.clearScreen(0x00);
+        page->render(renderer, effectiveReaderFontId(), orientedMarginLeft, orientedMarginTop, rubyOffsetX,
+                     rubyOffsetY);
+        renderRubyAdjustOverlay();
+        renderer.endStripTarget();
+        renderer.writeGrayscalePlaneStrip(true, scratch.get(), y, rows);
+      }
+      const auto tGrayLsb = millis();
+
+      // MSB plane.
+      renderer.setRenderMode(GfxRenderer::GRAYSCALE_MSB);
+      for (int y = 0; y < gh; y += STRIP_ROWS) {
+        const int rows = (gh - y < STRIP_ROWS) ? (gh - y) : STRIP_ROWS;
+        renderer.beginStripTarget(scratch.get(), y, rows);
+        renderer.clearScreen(0x00);
+        page->render(renderer, effectiveReaderFontId(), orientedMarginLeft, orientedMarginTop, rubyOffsetX,
+                     rubyOffsetY);
+        renderRubyAdjustOverlay();
+        renderer.endStripTarget();
+        renderer.writeGrayscalePlaneStrip(false, scratch.get(), y, rows);
+      }
+      const auto tGrayMsb = millis();
+
+      renderer.setRenderMode(GfxRenderer::BW);
+      renderer.displayGrayBuffer();
+      const auto tGrayDisplay = millis();
+
+      // BW framebuffer is intact; re-sync controller RAM for the next
+      // differential page turn directly from it.
+      renderer.cleanupGrayscaleWithFrameBuffer();
+      const auto tCleanup = millis();
+
+      const auto tEnd = millis();
+      LOG_DBG("ERS",
+              "Page render (tiled): prewarm=%lums bw_render=%lums display=%lums gray_lsb=%lums "
+              "gray_msb=%lums gray_display=%lums cleanup=%lums total=%lums",
+              tPrewarm - t0, tBwRender - tPrewarm, tDisplay - tBwRender, tGrayLsb - tDisplay, tGrayMsb - tGrayLsb,
+              tGrayDisplay - tGrayMsb, tCleanup - tGrayDisplay, tEnd - t0);
+      return;
+    }
+  }
+
+  // Fallback path for a controller without strip support. grayscale rendering
   // TODO: Only do this if font supports it
-  if (SETTINGS.textAntiAliasing && bwBufferStored) {
-    renderer.clearScreen(0x00);
-    renderer.setRenderMode(GfxRenderer::GRAYSCALE_LSB);
-    page->render(renderer, effectiveReaderFontId(), orientedMarginLeft, orientedMarginTop, rubyOffsetX, rubyOffsetY);
-    renderRubyAdjustOverlay();
-    renderer.copyGrayscaleLsbBuffers();
-    const auto tGrayLsb = millis();
+  if (SETTINGS.textAntiAliasing) {
+    // Save the BW frame before the grayscale passes overwrite it, restore
+    // after. Only needed when grayscale actually renders.
+    const bool bwBufferStored = renderer.storeBwBuffer();
+    const auto tBwStore = millis();
 
-    // Render and copy to MSB buffer
-    renderer.clearScreen(0x00);
-    renderer.setRenderMode(GfxRenderer::GRAYSCALE_MSB);
-    page->render(renderer, effectiveReaderFontId(), orientedMarginLeft, orientedMarginTop, rubyOffsetX, rubyOffsetY);
-    renderRubyAdjustOverlay();
-    renderer.copyGrayscaleMsbBuffers();
-    const auto tGrayMsb = millis();
-
-    // display grayscale part
-    renderer.displayGrayBuffer();
-    const auto tGrayDisplay = millis();
-    renderer.setRenderMode(GfxRenderer::BW);
-    renderer.restoreBwBuffer();
-    const auto tBwRestore = millis();
-
-    const auto tEnd = millis();
-    LOG_DBG("ERS",
-            "Page render: prewarm=%lums bw_render=%lums display=%lums bw_store=%lums "
-            "gray_lsb=%lums gray_msb=%lums gray_display=%lums bw_restore=%lums total=%lums",
-            tPrewarm - t0, tBwRender - tPrewarm, tDisplay - tBwRender, tBwStore - tDisplay, tGrayLsb - tBwStore,
-            tGrayMsb - tGrayLsb, tGrayDisplay - tGrayMsb, tBwRestore - tGrayDisplay, tEnd - t0);
-  } else {
-    if (SETTINGS.textAntiAliasing) {
+    if (!bwBufferStored) {
       LOG_ERR("ERS", "Rendering text AA without BW backup (free=%u max=%u)", static_cast<unsigned>(ESP.getFreeHeap()),
               static_cast<unsigned>(ESP.getMaxAllocHeap()));
 
@@ -1491,14 +1526,43 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
               tGrayMsb - tGrayLsb, tGrayDisplay - tGrayMsb, tBwRestore - tGrayDisplay, tEnd - t0);
       return;
     }
+
+    renderer.clearScreen(0x00);
+    renderer.setRenderMode(GfxRenderer::GRAYSCALE_LSB);
+    page->render(renderer, effectiveReaderFontId(), orientedMarginLeft, orientedMarginTop, rubyOffsetX, rubyOffsetY);
+    renderRubyAdjustOverlay();
+    renderer.copyGrayscaleLsbBuffers();
+    const auto tGrayLsb = millis();
+
+    // Render and copy to MSB buffer
+    renderer.clearScreen(0x00);
+    renderer.setRenderMode(GfxRenderer::GRAYSCALE_MSB);
+    page->render(renderer, effectiveReaderFontId(), orientedMarginLeft, orientedMarginTop, rubyOffsetX, rubyOffsetY);
+    renderRubyAdjustOverlay();
+    renderer.copyGrayscaleMsbBuffers();
+    const auto tGrayMsb = millis();
+
+    // display grayscale part
+    renderer.displayGrayBuffer();
+    const auto tGrayDisplay = millis();
+    renderer.setRenderMode(GfxRenderer::BW);
+    renderer.restoreBwBuffer();
     const auto tBwRestore = millis();
 
     const auto tEnd = millis();
     LOG_DBG("ERS",
-            "Page render: prewarm=%lums bw_render=%lums display=%lums bw_store=%lums bw_restore=%lums total=%lums",
-            tPrewarm - t0, tBwRender - tPrewarm, tDisplay - tBwRender, tBwStore - tDisplay, tBwRestore - tBwStore,
-            tEnd - t0);
+            "Page render: prewarm=%lums bw_render=%lums display=%lums bw_store=%lums "
+            "gray_lsb=%lums gray_msb=%lums gray_display=%lums bw_restore=%lums total=%lums",
+            tPrewarm - t0, tBwRender - tPrewarm, tDisplay - tBwRender, tBwStore - tDisplay, tGrayLsb - tBwStore,
+            tGrayMsb - tGrayLsb, tGrayDisplay - tGrayMsb, tBwRestore - tGrayDisplay, tEnd - t0);
+    return;
   }
+
+  // No anti-aliasing: BW frame already displayed above, no grayscale to
+  // render, so no save/restore.
+  const auto tEnd = millis();
+  LOG_DBG("ERS", "Page render: prewarm=%lums bw_render=%lums display=%lums total=%lums", tPrewarm - t0,
+          tBwRender - tPrewarm, tDisplay - tBwRender, tEnd - t0);
 }
 
 void EpubReaderActivity::renderStatusBar() const {

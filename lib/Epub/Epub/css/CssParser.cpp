@@ -522,7 +522,7 @@ void CssParser::processRuleBlockWithStyle(const std::string& selectorGroup, cons
 
 // Main parsing entry point
 
-bool CssParser::loadFromStream(FsFile& source) {
+bool CssParser::loadFromStream(HalFile& source) {
   if (!source) {
     LOG_ERR("CSS", "Cannot read from invalid file");
     return false;
@@ -765,7 +765,7 @@ bool CssParser::saveToCache() const {
     return false;
   }
 
-  FsFile file;
+  HalFile file;
   if (!Storage.openFileForWrite("CSS", cachePath + rulesCache, file)) {
     return false;
   }
@@ -844,7 +844,7 @@ bool CssParser::loadFromCache() {
     return false;
   }
 
-  FsFile file;
+  HalFile file;
   if (!Storage.openFileForRead("CSS", cachePath + rulesCache, file)) {
     return false;
   }

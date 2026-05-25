@@ -21,22 +21,6 @@ class GfxRenderer {
  public:
   enum RenderMode { BW, GRAYSCALE_LSB, GRAYSCALE_MSB };
 
-  struct BwBufferStats {
-    enum class BackupKind : uint8_t { None, RawChunks, CompressedRle };
-
-    BackupKind backupKind = BackupKind::None;
-    uint16_t chunkCount = 0;
-    uint16_t chunkSize = 0;
-    uint32_t bufferBytes = 0;
-    uint16_t allocatedChunks = 0;
-    uint32_t allocatedBytes = 0;
-    int16_t failedChunk = -1;
-    uint16_t failedChunkSize = 0;
-    uint32_t compressedBytes = 0;
-    uint32_t compressedCapacity = 0;
-    uint16_t compressionAborted = 0;
-  };
-
   // Logical screen orientation from the perspective of callers
   enum Orientation {
     Portrait,                  // 480x800 logical coordinates (current default)
@@ -58,9 +42,6 @@ class GfxRenderer {
   uint16_t panelWidthBytes = HalDisplay::DISPLAY_WIDTH_BYTES;
   uint32_t frameBufferSize = HalDisplay::BUFFER_SIZE;
   std::vector<uint8_t*> bwBufferChunks;
-  BwBufferStats lastBwBufferStats;
-  uint8_t* compressedBwBuffer = nullptr;
-  uint32_t compressedBwBufferSize = 0;
   std::map<int, EpdFontFamily> fontMap;
   // Mutable because ensureSdCardFontReady() is const (called from layout code
   // that holds a const GfxRenderer&) but triggers SD card reads and heap
@@ -73,12 +54,21 @@ class GfxRenderer {
   // as before, concentrated in a single pointer instead of four fields.
   mutable FontCacheManager* fontCacheManager_ = nullptr;
 
+  // Tiled grayscale strip target. When active, drawPixel()/clearScreen()
+  // operate on a caller-owned scratch holding one horizontal band of physical
+  // rows [_stripY0, _stripY0 + _stripRows) (panelWidthBytes wide) instead of
+  // the shared framebuffer, clipping pixels outside the band. Lets grayscale
+  // planes render band-by-band straight to the controller without destroying
+  // the BW framebuffer (no storeBwBuffer). Mutable because the render path is
+  // const. See beginStripTarget()/endStripTarget().
+  mutable uint8_t* _stripBuf = nullptr;
+  mutable int _stripY0 = 0;
+  mutable int _stripRows = 0;
+  mutable bool _stripActive = false;
+
   void renderChar(const EpdFontFamily& fontFamily, uint32_t cp, int* x, int* y, bool pixelState,
                   EpdFontFamily::Style style) const;
   void freeBwBufferChunks();
-  void freeCompressedBwBuffer();
-  bool storeCompressedBwBuffer(uint32_t maxBytes);
-  bool restoreCompressedBwBuffer();
   template <Color color>
   void drawPixelDither(int x, int y) const;
   template <Color color>
@@ -87,10 +77,7 @@ class GfxRenderer {
  public:
   explicit GfxRenderer(HalDisplay& halDisplay)
       : display(halDisplay), renderMode(BW), orientation(Portrait), fadingFix(false) {}
-  ~GfxRenderer() {
-    freeBwBufferChunks();
-    freeCompressedBwBuffer();
-  }
+  ~GfxRenderer() { freeBwBufferChunks(); }
 
   static constexpr int VIEWABLE_MARGIN_TOP = 9;
   static constexpr int VIEWABLE_MARGIN_RIGHT = 3;
@@ -138,6 +125,31 @@ class GfxRenderer {
   void invertScreen() const;
   void clearScreen(uint8_t color = 0xFF) const;
   void getOrientedViewableTRBL(int* outTop, int* outRight, int* outBottom, int* outLeft) const;
+
+  // Tiled grayscale strip target. While active, drawPixel() and clearScreen()
+  // operate on `scratch` (panelWidthBytes * stripRows bytes, holding physical
+  // rows [stripY0, stripY0 + stripRows)) instead of the framebuffer; pixels
+  // whose physical row falls outside the band are clipped. The clip is applied
+  // after the orientation rotate, so it is orientation-agnostic. Used to render
+  // grayscale planes band-by-band without a full second buffer.
+  void beginStripTarget(uint8_t* scratch, int stripY0, int stripRows) const;
+  void endStripTarget() const;
+
+  // Band culling for tiled grayscale. Takes a glyph bounding box in logical
+  // screen coords and returns false only when a strip is active AND the box's
+  // physical y-extent lies entirely outside the active band, letting callers
+  // skip an expensive bitmap decode. Returns true when no strip is active.
+  // Corners are rotated to physical, so it is orientation-aware.
+  bool glyphIntersectsStrip(int x0, int y0, int x1, int y1) const;
+
+  // Active pixel-write target for raw writers (DirectPixelWriter) that bypass
+  // drawPixel for speed. When a strip target is active these return the band
+  // scratch plus its physical-row origin and extent; otherwise the full
+  // framebuffer ([0, panelHeight)). Writers subtract the origin and clip to the
+  // extent, so they honor tiled-grayscale banding without per-pixel method calls.
+  uint8_t* getWriteTarget() const { return _stripActive ? _stripBuf : frameBuffer; }
+  int getWriteOriginY() const { return _stripActive ? _stripY0 : 0; }
+  int getWriteRows() const { return _stripActive ? _stripRows : panelHeight; }
 
   // Drawing
   void drawPixel(int x, int y, bool state = true) const;
@@ -205,8 +217,13 @@ class GfxRenderer {
   void copyGrayscaleLsbBuffers() const;
   void copyGrayscaleMsbBuffers() const;
   void displayGrayBuffer() const;
-  bool storeBwBuffer();  // Returns true if buffer was stored successfully
-  const BwBufferStats& getLastBwBufferStats() const { return lastBwBufferStats; }
+
+  // Tiled grayscale (X4): stream one band of a plane straight to controller RAM
+  // from `scratch` (panelWidthBytes * numRows, physical rows [yStart, yStart+
+  // numRows)), bypassing the framebuffer. supportsStripGrayscale() gates use.
+  void writeGrayscalePlaneStrip(bool lsbPlane, const uint8_t* scratch, int yStart, int numRows) const;
+  bool supportsStripGrayscale() const;
+  bool storeBwBuffer();    // Returns true if buffer was stored successfully
   void restoreBwBuffer();  // Restore and free the stored buffer
   void cleanupGrayscaleWithFrameBuffer() const;
 

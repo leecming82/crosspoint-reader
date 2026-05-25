@@ -776,7 +776,7 @@ bool BookMetadataCache::cleanupTmpFiles() const {
   return true;
 }
 
-uint32_t BookMetadataCache::writeSpineEntry(FsFile& file, const SpineEntry& entry) const {
+uint32_t BookMetadataCache::writeSpineEntry(HalFile& file, const SpineEntry& entry) const {
   const uint32_t pos = file.position();
   serialization::writeString(file, entry.href);
   serialization::writePod(file, entry.cumulativeSize);
@@ -789,7 +789,7 @@ uint32_t BookMetadataCache::writeSpineEntry(FsFile& file, const SpineEntry& entr
   return pos;
 }
 
-uint32_t BookMetadataCache::writeTocEntry(FsFile& file, const TocEntry& entry) const {
+uint32_t BookMetadataCache::writeTocEntry(HalFile& file, const TocEntry& entry) const {
   const uint32_t pos = file.position();
   serialization::writeString(file, entry.title);
   serialization::writeString(file, entry.href);
@@ -799,7 +799,7 @@ uint32_t BookMetadataCache::writeTocEntry(FsFile& file, const TocEntry& entry) c
   return pos;
 }
 
-uint32_t BookMetadataCache::writeAnchorEntry(FsFile& file, const AnchorEntry& entry) const {
+uint32_t BookMetadataCache::writeAnchorEntry(HalFile& file, const AnchorEntry& entry) const {
   const uint32_t pos = file.position();
   serialization::writeString(file, entry.href);
   serialization::writeString(file, entry.anchor);
@@ -983,7 +983,7 @@ int BookMetadataCache::resolveAnchorToSpineIndex(const std::string& href, const 
   return -1;
 }
 
-BookMetadataCache::SpineEntry BookMetadataCache::readSpineEntry(FsFile& file) const {
+BookMetadataCache::SpineEntry BookMetadataCache::readSpineEntry(HalFile& file) const {
   SpineEntry entry;
   serialization::readString(file, entry.href);
   serialization::readPod(file, entry.cumulativeSize);
@@ -996,7 +996,7 @@ BookMetadataCache::SpineEntry BookMetadataCache::readSpineEntry(FsFile& file) co
   return entry;
 }
 
-BookMetadataCache::TocEntry BookMetadataCache::readTocEntry(FsFile& file) const {
+BookMetadataCache::TocEntry BookMetadataCache::readTocEntry(HalFile& file) const {
   TocEntry entry;
   serialization::readString(file, entry.title);
   serialization::readString(file, entry.href);
@@ -1006,7 +1006,7 @@ BookMetadataCache::TocEntry BookMetadataCache::readTocEntry(FsFile& file) const 
   return entry;
 }
 
-BookMetadataCache::AnchorEntry BookMetadataCache::readAnchorEntry(FsFile& file) const {
+BookMetadataCache::AnchorEntry BookMetadataCache::readAnchorEntry(HalFile& file) const {
   AnchorEntry entry;
   serialization::readString(file, entry.href);
   serialization::readString(file, entry.anchor);

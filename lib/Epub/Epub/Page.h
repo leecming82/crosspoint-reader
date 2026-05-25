@@ -25,7 +25,7 @@ class PageElement {
   virtual ~PageElement() = default;
   virtual void render(GfxRenderer& renderer, int fontId, int xOffset, int yOffset, int rubyOffsetX = 0,
                       int rubyOffsetY = 0) = 0;
-  virtual bool serialize(FsFile& file) = 0;
+  virtual bool serialize(HalFile& file) = 0;
   virtual PageElementTag getTag() const = 0;  // Add type identification
 };
 
@@ -39,9 +39,9 @@ class PageLine final : public PageElement {
   const std::shared_ptr<TextBlock>& getBlock() const { return block; }
   void render(GfxRenderer& renderer, int fontId, int xOffset, int yOffset, int rubyOffsetX = 0,
               int rubyOffsetY = 0) override;
-  bool serialize(FsFile& file) override;
+  bool serialize(HalFile& file) override;
   PageElementTag getTag() const override { return TAG_PageLine; }
-  static std::unique_ptr<PageLine> deserialize(FsFile& file);
+  static std::unique_ptr<PageLine> deserialize(HalFile& file);
 };
 
 // New PageImage class
@@ -53,9 +53,9 @@ class PageImage final : public PageElement {
       : PageElement(xPos, yPos), imageBlock(std::move(block)) {}
   void render(GfxRenderer& renderer, int fontId, int xOffset, int yOffset, int rubyOffsetX = 0,
               int rubyOffsetY = 0) override;
-  bool serialize(FsFile& file) override;
+  bool serialize(HalFile& file) override;
   PageElementTag getTag() const override { return TAG_PageImage; }
-  static std::unique_ptr<PageImage> deserialize(FsFile& file);
+  static std::unique_ptr<PageImage> deserialize(HalFile& file);
   const ImageBlock& getImageBlock() const { return *imageBlock; }
 };
 
@@ -69,9 +69,9 @@ class PageHorizontalRule final : public PageElement {
 
   void render(GfxRenderer& renderer, int fontId, int xOffset, int yOffset, int rubyOffsetX = 0,
               int rubyOffsetY = 0) override;
-  bool serialize(FsFile& file) override;
+  bool serialize(HalFile& file) override;
   PageElementTag getTag() const override { return TAG_PageHorizontalRule; }
-  static std::unique_ptr<PageHorizontalRule> deserialize(FsFile& file);
+  static std::unique_ptr<PageHorizontalRule> deserialize(HalFile& file);
 };
 
 class Page {
@@ -93,8 +93,8 @@ class Page {
 
   void render(GfxRenderer& renderer, int fontId, int xOffset, int yOffset, int rubyOffsetX = 0,
               int rubyOffsetY = 0) const;
-  bool serialize(FsFile& file) const;
-  static std::unique_ptr<Page> deserialize(FsFile& file);
+  bool serialize(HalFile& file) const;
+  static std::unique_ptr<Page> deserialize(HalFile& file);
 
   // Check if page contains any images (used to force full refresh)
   bool hasImages() const {

@@ -39,7 +39,7 @@ std::string getCachePath(const std::string& imagePath, ImageRotation rotation) {
 
 bool renderFromCache(GfxRenderer& renderer, const std::string& cachePath, ImageRotation rotation, int x, int y,
                      int expectedWidth, int expectedHeight) {
-  FsFile cacheFile;
+  HalFile cacheFile;
   if (!Storage.openFileForRead("IMG", cachePath, cacheFile)) {
     return false;
   }
@@ -140,7 +140,7 @@ void ImageBlock::render(GfxRenderer& renderer, const int x, const int y) {
 
   // No cache - need to decode the image
   // Check if image file exists
-  FsFile file;
+  HalFile file;
   if (!Storage.openFileForRead("IMG", imagePath, file)) {
     LOG_ERR("IMG", "Image file not found: %s", imagePath.c_str());
     return;
@@ -184,7 +184,7 @@ void ImageBlock::render(GfxRenderer& renderer, const int x, const int y) {
   LOG_DBG("IMG", "Decode successful");
 }
 
-bool ImageBlock::serialize(FsFile& file) {
+bool ImageBlock::serialize(HalFile& file) {
   serialization::writeString(file, imagePath);
   serialization::writePod(file, width);
   serialization::writePod(file, height);
@@ -192,7 +192,7 @@ bool ImageBlock::serialize(FsFile& file) {
   return true;
 }
 
-std::unique_ptr<ImageBlock> ImageBlock::deserialize(FsFile& file) {
+std::unique_ptr<ImageBlock> ImageBlock::deserialize(HalFile& file) {
   std::string path;
   serialization::readString(file, path);
   int16_t w, h;

@@ -58,7 +58,7 @@ struct PixelCache {
   bool writeToFile(const std::string& cachePath) {
     if (!buffer) return false;
 
-    FsFile cacheFile;
+    HalFile cacheFile;
     if (!Storage.openFileForWrite("IMG", cachePath, cacheFile)) {
       LOG_ERR("IMG", "Failed to open cache file for writing: %s", cachePath.c_str());
       return false;
@@ -84,7 +84,7 @@ struct PixelCache {
 };
 
 struct StreamingPixelCache {
-  FsFile file;
+  HalFile file;
   std::string path;
   uint8_t* rowBuffer;
   int width;
@@ -220,7 +220,7 @@ struct StreamingPixelCache {
 };
 
 struct SeekablePixelCache {
-  FsFile file;
+  HalFile file;
   std::string path;
   uint8_t* rowBuffer;
   int width;

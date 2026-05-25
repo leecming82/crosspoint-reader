@@ -11,7 +11,7 @@ void PageLine::render(GfxRenderer& renderer, const int fontId, const int xOffset
   block->render(renderer, fontId, xPos + xOffset, yPos + yOffset, rubyOffsetX, rubyOffsetY);
 }
 
-bool PageLine::serialize(FsFile& file) {
+bool PageLine::serialize(HalFile& file) {
   serialization::writePod(file, xPos);
   serialization::writePod(file, yPos);
 
@@ -19,7 +19,7 @@ bool PageLine::serialize(FsFile& file) {
   return block->serialize(file);
 }
 
-std::unique_ptr<PageLine> PageLine::deserialize(FsFile& file) {
+std::unique_ptr<PageLine> PageLine::deserialize(HalFile& file) {
   int16_t xPos;
   int16_t yPos;
   serialization::readPod(file, xPos);
@@ -37,7 +37,7 @@ void PageImage::render(GfxRenderer& renderer, const int fontId, const int xOffse
   imageBlock->render(renderer, xPos + xOffset, yPos + yOffset);
 }
 
-bool PageImage::serialize(FsFile& file) {
+bool PageImage::serialize(HalFile& file) {
   serialization::writePod(file, xPos);
   serialization::writePod(file, yPos);
 
@@ -45,7 +45,7 @@ bool PageImage::serialize(FsFile& file) {
   return imageBlock->serialize(file);
 }
 
-std::unique_ptr<PageImage> PageImage::deserialize(FsFile& file) {
+std::unique_ptr<PageImage> PageImage::deserialize(HalFile& file) {
   int16_t xPos;
   int16_t yPos;
   serialization::readPod(file, xPos);
@@ -67,7 +67,7 @@ void PageHorizontalRule::render(GfxRenderer& renderer, const int fontId, const i
   renderer.drawLine(xPos + xOffset, yPos + yOffset, xPos + xOffset + width - 1, yPos + yOffset, thickness, true);
 }
 
-bool PageHorizontalRule::serialize(FsFile& file) {
+bool PageHorizontalRule::serialize(HalFile& file) {
   serialization::writePod(file, xPos);
   serialization::writePod(file, yPos);
   serialization::writePod(file, width);
@@ -75,7 +75,7 @@ bool PageHorizontalRule::serialize(FsFile& file) {
   return true;
 }
 
-std::unique_ptr<PageHorizontalRule> PageHorizontalRule::deserialize(FsFile& file) {
+std::unique_ptr<PageHorizontalRule> PageHorizontalRule::deserialize(HalFile& file) {
   int16_t xPos = 0;
   int16_t yPos = 0;
   uint16_t width = 0;
@@ -106,7 +106,7 @@ void Page::render(GfxRenderer& renderer, const int fontId, const int xOffset, co
   }
 }
 
-bool Page::serialize(FsFile& file) const {
+bool Page::serialize(HalFile& file) const {
   const uint16_t count = elements.size();
   serialization::writePod(file, count);
 
@@ -134,7 +134,7 @@ bool Page::serialize(FsFile& file) const {
   return true;
 }
 
-std::unique_ptr<Page> Page::deserialize(FsFile& file) {
+std::unique_ptr<Page> Page::deserialize(HalFile& file) {
   auto page = std::unique_ptr<Page>(new Page());
 
   uint16_t count;

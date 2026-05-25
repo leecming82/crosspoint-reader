@@ -14,7 +14,6 @@
 namespace {
 
 const char* resolveVisualText(const char* text, std::string& visualBuffer, int paragraphLevel);
-constexpr uint32_t COMPRESSED_BW_BACKUP_CAP = 32 * 1024;
 constexpr uint32_t CJK_UI_VERTICAL_PROLONGED_SOUND_MARK = 0xE000;
 
 bool shouldUseCjkUiFallback(const int fontId, const uint32_t cp) { return cjkUiHasGlyphForFontId(fontId, cp); }
@@ -241,6 +240,23 @@ static void renderCharImpl(const GfxRenderer& renderer, GfxRenderer::RenderMode 
   const int left = glyph->left;
   const int top = glyph->top;
 
+  // Tiled-grayscale band culling: if this glyph's physical y-extent is entirely
+  // outside the active strip, skip it before the expensive bitmap decode. This
+  // is what makes per-band re-rendering cheap. No-op outside strip mode.
+  if constexpr (rotation == TextRotation::Rotated90CW) {
+    const int ob = cursorX + fontData->ascender - top;
+    const int ib = cursorY - left;
+    if (!renderer.glyphIntersectsStrip(ob, ib - (width - 1), ob + height - 1, ib)) {
+      return;
+    }
+  } else {
+    const int gx0 = cursorX + left;
+    const int gy0 = cursorY - top;
+    if (!renderer.glyphIntersectsStrip(gx0, gy0, gx0 + width - 1, gy0 + height - 1)) {
+      return;
+    }
+  }
+
   const uint8_t* bitmap = renderer.getGlyphBitmap(fontData, glyph);
 
   if (bitmap != nullptr) {
@@ -349,14 +365,26 @@ void GfxRenderer::drawPixel(const int x, const int y, const bool state) const {
     return;
   }
 
+  // Tiled grayscale: redirect writes to the strip scratch and clip to the
+  // current band. Single predictable branch on the hot per-pixel path.
+  uint8_t* target = frameBuffer;
+  uint32_t rowY = static_cast<uint32_t>(phyY);
+  if (_stripActive) {
+    if (phyY < _stripY0 || phyY >= _stripY0 + _stripRows) {
+      return;  // pixel outside the band currently being rendered
+    }
+    target = _stripBuf;
+    rowY = static_cast<uint32_t>(phyY - _stripY0);
+  }
+
   // Calculate byte position and bit position
-  const uint32_t byteIndex = static_cast<uint32_t>(phyY) * panelWidthBytes + (phyX / 8);
+  const uint32_t byteIndex = rowY * panelWidthBytes + (phyX / 8);
   const uint8_t bitPosition = 7 - (phyX % 8);  // MSB first
 
   if (state) {
-    frameBuffer[byteIndex] &= ~(1 << bitPosition);  // Clear bit
+    target[byteIndex] &= ~(1 << bitPosition);  // Clear bit
   } else {
-    frameBuffer[byteIndex] |= 1 << bitPosition;  // Set bit
+    target[byteIndex] |= 1 << bitPosition;  // Set bit
   }
 }
 
@@ -1096,7 +1124,45 @@ static unsigned long start_ms = 0;
 
 void GfxRenderer::clearScreen(const uint8_t color) const {
   start_ms = millis();
+  if (_stripActive) {
+    // Clear only the active band's scratch, not the shared framebuffer.
+    memset(_stripBuf, color, static_cast<size_t>(panelWidthBytes) * _stripRows);
+    return;
+  }
   display.clearScreen(color);
+}
+
+void GfxRenderer::beginStripTarget(uint8_t* scratch, int stripY0, int stripRows) const {
+  // Band is caller-guaranteed in-bounds (the reader's grayscale loop computes
+  // it); assert catches future misuse in debug before it mis-renders or wraps
+  // the downstream uint16_t cast in writeGrayscalePlaneStrip.
+  assert(scratch != nullptr && stripRows > 0 && stripY0 >= 0 && stripY0 <= static_cast<int>(panelHeight) - stripRows);
+  _stripBuf = scratch;
+  _stripY0 = stripY0;
+  _stripRows = stripRows;
+  _stripActive = true;
+}
+
+void GfxRenderer::endStripTarget() const {
+  _stripActive = false;
+  _stripBuf = nullptr;
+  _stripY0 = 0;
+  _stripRows = 0;
+}
+
+bool GfxRenderer::glyphIntersectsStrip(int x0, int y0, int x1, int y1) const {
+  if (!_stripActive) {
+    return true;
+  }
+  // Rotate the two opposite bbox corners to physical coords. For 90-degree
+  // orientations the physical bbox stays axis-aligned, so min/max of the two
+  // rotated corners' Y bounds the glyph's physical y-extent.
+  int ax, ay, bx, by;
+  rotateCoordinates(orientation, x0, y0, &ax, &ay, panelWidth, panelHeight);
+  rotateCoordinates(orientation, x1, y1, &bx, &by, panelWidth, panelHeight);
+  const int minY = ay < by ? ay : by;
+  const int maxY = ay > by ? ay : by;
+  return !(maxY < _stripY0 || minY >= _stripY0 + _stripRows);
 }
 
 void GfxRenderer::invertScreen() const {
@@ -1630,6 +1696,14 @@ void GfxRenderer::copyGrayscaleMsbBuffers() const { display.copyGrayscaleMsbBuff
 
 void GfxRenderer::displayGrayBuffer() const { display.displayGrayBuffer(fadingFix); }
 
+void GfxRenderer::writeGrayscalePlaneStrip(bool lsbPlane, const uint8_t* scratch, int yStart, int numRows) const {
+  // Guard the uint16_t casts below: a negative would wrap to a huge length.
+  assert(yStart >= 0 && numRows > 0 && yStart <= static_cast<int>(panelHeight) - numRows);
+  display.writeGrayscalePlaneStrip(lsbPlane, scratch, static_cast<uint16_t>(yStart), static_cast<uint16_t>(numRows));
+}
+
+bool GfxRenderer::supportsStripGrayscale() const { return display.supportsStripGrayscale(); }
+
 void GfxRenderer::freeBwBufferChunks() {
   for (auto& bwBufferChunk : bwBufferChunks) {
     if (bwBufferChunk) {
@@ -1637,119 +1711,6 @@ void GfxRenderer::freeBwBufferChunks() {
       bwBufferChunk = nullptr;
     }
   }
-}
-
-void GfxRenderer::freeCompressedBwBuffer() {
-  free(compressedBwBuffer);
-  compressedBwBuffer = nullptr;
-  compressedBwBufferSize = 0;
-}
-
-bool GfxRenderer::storeCompressedBwBuffer(const uint32_t maxBytes) {
-  freeCompressedBwBuffer();
-  compressedBwBuffer = static_cast<uint8_t*>(malloc(maxBytes));
-  if (!compressedBwBuffer) {
-    lastBwBufferStats.compressedCapacity = maxBytes;
-    lastBwBufferStats.compressionAborted = 1;
-    return false;
-  }
-
-  auto emitLiteral = [&](const uint8_t* src, uint8_t len, uint32_t& out) {
-    if (len == 0) return true;
-    if (out + 1U + len > maxBytes) return false;
-    compressedBwBuffer[out++] = static_cast<uint8_t>(len - 1);
-    memcpy(&compressedBwBuffer[out], src, len);
-    out += len;
-    return true;
-  };
-
-  auto emitRun = [&](const uint8_t value, uint8_t len, uint32_t& out) {
-    if (len == 0) return true;
-    if (out + 2U > maxBytes) return false;
-    compressedBwBuffer[out++] = static_cast<uint8_t>(0x80 | (len - 1));
-    compressedBwBuffer[out++] = value;
-    return true;
-  };
-
-  uint32_t out = 0;
-  uint32_t i = 0;
-  while (i < frameBufferSize) {
-    uint32_t runLen = 1;
-    while (i + runLen < frameBufferSize && runLen < 128 && frameBuffer[i + runLen] == frameBuffer[i]) {
-      runLen++;
-    }
-
-    if (runLen >= 3) {
-      if (!emitRun(frameBuffer[i], static_cast<uint8_t>(runLen), out)) {
-        lastBwBufferStats.compressionAborted = 2;
-        freeCompressedBwBuffer();
-        return false;
-      }
-      i += runLen;
-      continue;
-    }
-
-    const uint32_t literalStart = i;
-    uint32_t literalLen = 0;
-    while (i < frameBufferSize && literalLen < 128) {
-      runLen = 1;
-      while (i + runLen < frameBufferSize && runLen < 128 && frameBuffer[i + runLen] == frameBuffer[i]) {
-        runLen++;
-      }
-      if (runLen >= 3 && literalLen > 0) break;
-      if (runLen >= 3) break;
-      i++;
-      literalLen++;
-    }
-
-    if (!emitLiteral(&frameBuffer[literalStart], static_cast<uint8_t>(literalLen), out)) {
-      lastBwBufferStats.compressionAborted = 2;
-      freeCompressedBwBuffer();
-      return false;
-    }
-  }
-
-  // A zero-byte marker is not part of the format; the expected output length is frameBufferSize.
-  // Keep compressedBwBufferSize explicit so restore can stop exactly at the encoded length.
-  if (out > 0 && out < maxBytes) {
-    if (auto* shrunk = static_cast<uint8_t*>(realloc(compressedBwBuffer, out))) {
-      compressedBwBuffer = shrunk;
-    }
-  }
-  compressedBwBufferSize = out;
-  lastBwBufferStats.backupKind = BwBufferStats::BackupKind::CompressedRle;
-  lastBwBufferStats.compressedBytes = out;
-  lastBwBufferStats.compressedCapacity = maxBytes;
-  lastBwBufferStats.allocatedBytes = out;
-  return true;
-}
-
-bool GfxRenderer::restoreCompressedBwBuffer() {
-  if (!compressedBwBuffer || compressedBwBufferSize == 0) return false;
-
-  uint32_t in = 0;
-  uint32_t out = 0;
-  while (in < compressedBwBufferSize && out < frameBufferSize) {
-    const uint8_t control = compressedBwBuffer[in++];
-    if (control & 0x80) {
-      if (in >= compressedBwBufferSize) break;
-      const uint8_t len = (control & 0x7F) + 1;
-      const uint8_t value = compressedBwBuffer[in++];
-      if (out + len > frameBufferSize) break;
-      memset(&frameBuffer[out], value, len);
-      out += len;
-    } else {
-      const uint8_t len = control + 1;
-      if (in + len > compressedBwBufferSize || out + len > frameBufferSize) break;
-      memcpy(&frameBuffer[out], &compressedBwBuffer[in], len);
-      in += len;
-      out += len;
-    }
-  }
-
-  const bool ok = out == frameBufferSize && in == compressedBwBufferSize;
-  freeCompressedBwBuffer();
-  return ok;
 }
 
 /**
@@ -1760,21 +1721,8 @@ bool GfxRenderer::restoreCompressedBwBuffer() {
  */
 bool GfxRenderer::storeBwBuffer() {
   freeBwBufferChunks();
-  freeCompressedBwBuffer();
-  lastBwBufferStats = {};
-  lastBwBufferStats.chunkCount = bwBufferChunks.size();
-  lastBwBufferStats.chunkSize = BW_BUFFER_CHUNK_SIZE;
-  lastBwBufferStats.bufferBytes = frameBufferSize;
-
-  // The BW backup only has to survive while the framebuffer is reused for AA
-  // planes. Try a bounded RLE copy first to reduce peak heap pressure; fall back
-  // to raw chunks when a page does not compress enough.
-  if (storeCompressedBwBuffer(COMPRESSED_BW_BACKUP_CAP)) {
-    LOG_DBG("GFX", "Stored BW buffer compressed (%lu/%lu bytes)",
-            static_cast<unsigned long>(lastBwBufferStats.compressedBytes),
-            static_cast<unsigned long>(lastBwBufferStats.compressedCapacity));
-    return true;
-  }
+  // If non-strip grayscale needs more headroom later, a compressed backup can
+  // be reintroduced here as a fallback before allocating raw chunks.
 
   // Allocate and copy each chunk
   for (size_t i = 0; i < bwBufferChunks.size(); i++) {
@@ -1791,19 +1739,14 @@ bool GfxRenderer::storeBwBuffer() {
 
     if (!bwBufferChunks[i]) {
       LOG_ERR("GFX", "!! Failed to allocate BW buffer chunk %zu (%zu bytes)", i, chunkSize);
-      lastBwBufferStats.failedChunk = static_cast<int16_t>(i);
-      lastBwBufferStats.failedChunkSize = static_cast<uint16_t>(chunkSize);
       // Free previously allocated chunks
       freeBwBufferChunks();
       return false;
     }
 
     memcpy(bwBufferChunks[i], frameBuffer + offset, chunkSize);
-    lastBwBufferStats.allocatedChunks++;
-    lastBwBufferStats.allocatedBytes += chunkSize;
   }
 
-  lastBwBufferStats.backupKind = BwBufferStats::BackupKind::RawChunks;
   LOG_DBG("GFX", "Stored BW buffer in %zu chunks (%zu bytes each)", bwBufferChunks.size(), BW_BUFFER_CHUNK_SIZE);
   return true;
 }
@@ -1814,14 +1757,6 @@ bool GfxRenderer::storeBwBuffer() {
  * Uses chunked restoration to match chunked storage.
  */
 void GfxRenderer::restoreBwBuffer() {
-  if (compressedBwBuffer) {
-    const bool restored = restoreCompressedBwBuffer();
-    if (restored) {
-      display.cleanupGrayscaleBuffers(frameBuffer);
-    }
-    return;
-  }
-
   // Check if all chunks are allocated
   bool missingChunks = false;
   for (const auto& bwBufferChunk : bwBufferChunks) {

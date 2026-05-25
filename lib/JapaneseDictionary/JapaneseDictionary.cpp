@@ -331,9 +331,9 @@ void JapaneseDictionary::close() {
   if (bucketsFile.isOpen()) bucketsFile.close();
   if (recordsFile.isOpen()) recordsFile.close();
   if (stringsFile.isOpen()) stringsFile.close();
-  bucketsFile = FsFile();
-  recordsFile = FsFile();
-  stringsFile = FsFile();
+  bucketsFile = HalFile();
+  recordsFile = HalFile();
+  stringsFile = HalFile();
   basePath.clear();
   resetRecordCache(true);
   cachedBucketValid = false;
@@ -343,9 +343,9 @@ void JapaneseDictionary::close() {
 }
 
 bool JapaneseDictionary::openAt(const char* path) {
-  FsFile buckets;
-  FsFile records;
-  FsFile strings;
+  HalFile buckets;
+  HalFile records;
+  HalFile strings;
   const std::string base(path);
   if (!Storage.openFileForRead("JPD", base + "/buckets.bin", buckets)) return false;
   if (!Storage.openFileForRead("JPD", base + "/records.bin", records)) return false;

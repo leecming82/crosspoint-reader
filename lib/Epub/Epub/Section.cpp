@@ -130,7 +130,7 @@ bool scanSectionAdvanceCodepoints(const std::string& tmpHtmlPath, std::vector<ui
   XML_SetElementHandler(parser, SectionAdvanceScan::startElement, SectionAdvanceScan::endElement);
   XML_SetCharacterDataHandler(parser, SectionAdvanceScan::characterData);
 
-  FsFile file;
+  HalFile file;
   if (!Storage.openFileForRead("SCT", tmpHtmlPath, file)) {
     destroyXmlParser(parser);
     return false;
@@ -374,7 +374,7 @@ bool Section::createSectionFile(const int fontId, const float lineCompression, c
       Storage.remove(tmpHtmlPath.c_str());
     }
 
-    FsFile tmpHtml;
+    HalFile tmpHtml;
     if (!Storage.openFileForWrite("SCT", tmpHtmlPath, tmpHtml)) {
       continue;
     }
@@ -569,7 +569,7 @@ std::unique_ptr<Page> Section::loadPageFromSectionFile(const uint16_t pageNumber
 }
 
 std::optional<uint16_t> Section::getPageForAnchor(const std::string& anchor) const {
-  FsFile f;
+  HalFile f;
   if (!Storage.openFileForRead("SCT", filePath, f)) {
     return std::nullopt;
   }
@@ -599,7 +599,7 @@ std::optional<uint16_t> Section::getPageForAnchor(const std::string& anchor) con
 }
 
 std::optional<uint16_t> Section::getPageForParagraphIndex(const uint16_t pIndex) const {
-  FsFile f;
+  HalFile f;
   if (!Storage.openFileForRead("SCT", filePath, f)) {
     return std::nullopt;
   }
@@ -638,7 +638,7 @@ std::optional<uint16_t> Section::getPageForParagraphIndex(const uint16_t pIndex)
 }
 
 std::optional<uint16_t> Section::getParagraphIndexForPage(const uint16_t page) const {
-  FsFile f;
+  HalFile f;
   if (!Storage.openFileForRead("SCT", filePath, f)) {
     return std::nullopt;
   }
@@ -670,7 +670,7 @@ std::optional<uint16_t> Section::getParagraphIndexForPage(const uint16_t page) c
 }
 
 std::optional<uint16_t> Section::getPageForListItemIndex(const uint16_t liIndex) const {
-  FsFile f;
+  HalFile f;
   if (!Storage.openFileForRead("SCT", filePath, f)) {
     return std::nullopt;
   }

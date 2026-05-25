@@ -39,9 +39,9 @@ class JapaneseDictionary {
   };
 
   std::string basePath;
-  FsFile bucketsFile;
-  FsFile recordsFile;
-  FsFile stringsFile;
+  HalFile bucketsFile;
+  HalFile recordsFile;
+  HalFile stringsFile;
   std::array<RecordCacheSlot, RECORD_CACHE_BLOCKS> recordCacheSlots;
   uint32_t recordCacheUseCounter = 0;
   uint32_t cachedBucketCp = UINT32_MAX;
