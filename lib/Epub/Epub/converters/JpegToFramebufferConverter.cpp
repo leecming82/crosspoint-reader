@@ -46,7 +46,7 @@ struct JpegContext {
   int32_t fineScaleFPY{1 << 16};  // Y: src -> dst row mapping
   int32_t invScaleFPY{1 << 16};   // Y: dst -> src row mapping
 
-  StreamingPixelCache cache;
+  SeekablePixelCache cache;
   bool caching{false};
 };
 
@@ -173,7 +173,7 @@ int jpegDrawCallback(JPEGDRAW* pDraw) {
   DirectPixelWriter pw;
   pw.init(renderer);
 
-  StreamingPixelCache& cw = ctx->cache;
+  SeekablePixelCache& cw = ctx->cache;
 
   // === 1:1 fast path: no scaling math ===
   if (fineScaleFPX == FP_ONE && fineScaleFPY == FP_ONE) {
@@ -472,7 +472,7 @@ bool JpegToFramebufferConverter::decodeToFramebuffer(const std::string& imagePat
   jpeg->setPixelType(EIGHT_BIT_GRAYSCALE);
   jpeg->setUserPointer(&ctx);
 
-  // Allocate cache buffer using final output dimensions
+  // JPEGDEC emits image data in block order, not strict row order, so JPEG caching needs random access.
   ctx.caching = !config.cachePath.empty();
   if (ctx.caching) {
     const int cacheWidth = destWidth;
@@ -482,10 +482,10 @@ bool JpegToFramebufferConverter::decodeToFramebuffer(const std::string& imagePat
     snprintf(cacheExtra, sizeof(cacheExtra), "bytes=%u,heap=%u", static_cast<unsigned int>(cacheBytes),
              static_cast<unsigned int>(ESP.getFreeHeap()));
     if (!ctx.cache.begin(config.cachePath, cacheWidth, cacheHeight)) {
-      LOG_ERR("JPG", "Failed to allocate stream cache (%s), continuing without caching", cacheExtra);
+      LOG_ERR("JPG", "Failed to begin seekable cache (%s), continuing without caching", cacheExtra);
       ctx.caching = false;
     } else {
-      LOG_DBG("JPG", "Streaming cache enabled: %s", cacheExtra);
+      LOG_DBG("JPG", "Seekable cache enabled: %s", cacheExtra);
     }
   }
 

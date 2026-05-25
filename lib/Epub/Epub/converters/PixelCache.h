@@ -218,3 +218,142 @@ struct StreamingPixelCache {
     return true;
   }
 };
+
+struct SeekablePixelCache {
+  FsFile file;
+  std::string path;
+  uint8_t* rowBuffer;
+  int width;
+  int height;
+  int bytesPerRow;
+  int currentRow;
+  bool active;
+  bool failed;
+  bool rowDirty;
+
+  SeekablePixelCache()
+      : rowBuffer(nullptr),
+        width(0),
+        height(0),
+        bytesPerRow(0),
+        currentRow(-1),
+        active(false),
+        failed(false),
+        rowDirty(false) {}
+
+  SeekablePixelCache(const SeekablePixelCache&) = delete;
+  SeekablePixelCache& operator=(const SeekablePixelCache&) = delete;
+
+  bool begin(const std::string& cachePath, int w, int h) {
+    path = cachePath;
+    width = w;
+    height = h;
+    bytesPerRow = (w + 3) / 4;
+    currentRow = -1;
+    rowDirty = false;
+
+    rowBuffer = static_cast<uint8_t*>(malloc(bytesPerRow));
+    if (!rowBuffer) {
+      failed = true;
+      return false;
+    }
+
+    Storage.remove(path.c_str());
+    file = Storage.open(path.c_str(), O_RDWR | O_CREAT);
+    if (!file) {
+      free(rowBuffer);
+      rowBuffer = nullptr;
+      failed = true;
+      return false;
+    }
+
+    uint16_t headerWidth = width;
+    uint16_t headerHeight = height;
+    if (file.write(&headerWidth, 2) != 2 || file.write(&headerHeight, 2) != 2) {
+      fail();
+      return false;
+    }
+
+    memset(rowBuffer, 0, bytesPerRow);
+    for (int row = 0; row < height; row++) {
+      if (file.write(rowBuffer, bytesPerRow) != static_cast<size_t>(bytesPerRow)) {
+        fail();
+        return false;
+      }
+    }
+
+    active = true;
+    return true;
+  }
+
+  bool beginRow(int row) {
+    if (!active || failed || row < 0 || row >= height) return false;
+    if (row == currentRow) return true;
+    if (!flushCurrentRow()) return false;
+
+    if (!file.seek(rowOffset(row)) || file.read(rowBuffer, bytesPerRow) != bytesPerRow) {
+      fail();
+      return false;
+    }
+
+    currentRow = row;
+    rowDirty = false;
+    return true;
+  }
+
+  void writePixel(int x, uint8_t value) {
+    if (!active || failed || !rowBuffer || currentRow < 0 || x < 0 || x >= width) return;
+    const int byteIdx = x >> 2;
+    const int bitShift = 6 - (x & 3) * 2;
+    rowBuffer[byteIdx] = (rowBuffer[byteIdx] & ~(0x03 << bitShift)) | ((value & 0x03) << bitShift);
+    rowDirty = true;
+  }
+
+  bool finish() {
+    if (!active || failed) return false;
+    if (!flushCurrentRow()) return false;
+
+    file.close();
+    active = false;
+    LOG_DBG("IMG", "Seekable cache written: %s (%dx%d, %d bytes)", path.c_str(), width, height,
+            4 + bytesPerRow * height);
+    return true;
+  }
+
+  void fail() {
+    failed = true;
+    active = false;
+    if (file) {
+      file.close();
+    }
+    if (!path.empty()) {
+      Storage.remove(path.c_str());
+    }
+  }
+
+  ~SeekablePixelCache() {
+    if (active) {
+      fail();
+    }
+    if (rowBuffer) {
+      free(rowBuffer);
+      rowBuffer = nullptr;
+    }
+  }
+
+ private:
+  size_t rowOffset(int row) const { return 4 + static_cast<size_t>(row) * bytesPerRow; }
+
+  bool flushCurrentRow() {
+    if (currentRow < 0) return true;
+    if (rowDirty) {
+      if (!file.seek(rowOffset(currentRow)) || file.write(rowBuffer, bytesPerRow) != static_cast<size_t>(bytesPerRow)) {
+        fail();
+        return false;
+      }
+    }
+    currentRow = -1;
+    rowDirty = false;
+    return true;
+  }
+};
