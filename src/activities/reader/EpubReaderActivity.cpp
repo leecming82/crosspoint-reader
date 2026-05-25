@@ -1790,8 +1790,12 @@ bool EpubReaderActivity::getKanjiCursorRect(const PageLine& pageLine, const Text
   const auto& xposVec = textBlock.getWordXpos();
   const auto& yposVec = textBlock.getWordYpos();
   const auto& styles = textBlock.getWordStyles();
-  if (entry.wordIdx >= static_cast<int16_t>(words.size()) || entry.wordIdx >= static_cast<int16_t>(styles.size()) ||
-      entry.wordIdx >= static_cast<int16_t>(xposVec.size())) {
+  if (entry.wordIdx >= static_cast<int16_t>(words.size()) || entry.wordIdx >= static_cast<int16_t>(styles.size())) {
+    return false;
+  }
+  if (textBlock.isVertical()) {
+    if (!xposVec.empty() && entry.wordIdx >= static_cast<int16_t>(xposVec.size())) return false;
+  } else if (entry.wordIdx >= static_cast<int16_t>(xposVec.size())) {
     return false;
   }
   if (textBlock.isVertical() && entry.wordIdx >= static_cast<int16_t>(yposVec.size())) return false;
@@ -1801,7 +1805,8 @@ bool EpubReaderActivity::getKanjiCursorRect(const PageLine& pageLine, const Text
   rect.height = cellSize;
 
   if (textBlock.isVertical()) {
-    rect.x = kanjiMarginLeft + pageLine.xPos + xposVec[entry.wordIdx];
+    const int wordX = xposVec.empty() ? 0 : xposVec[entry.wordIdx];
+    rect.x = kanjiMarginLeft + pageLine.xPos + wordX;
     rect.y = kanjiMarginTop + pageLine.yPos + yposVec[entry.wordIdx];
     return true;
   }
