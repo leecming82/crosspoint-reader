@@ -1513,11 +1513,13 @@ bool ParsedText::layoutAndExtractHorizontalCjkLines(const GfxRenderer& renderer,
 
     std::vector<std::string> lineWords;
     std::vector<int16_t> lineXPos;
+    std::vector<uint16_t> lineWordWidths;
     std::vector<EpdFontFamily::Style> lineWordStyles;
     std::vector<std::string> lineRubyTexts;
     const bool hasRubyInSource = !rubyTexts.empty();
     lineWords.reserve(end - start);
     lineXPos.reserve(end - start);
+    lineWordWidths.reserve(end - start);
     lineWordStyles.reserve(end - start);
     if (hasRubyInSource) {
       lineRubyTexts.reserve(end - start);
@@ -1537,9 +1539,12 @@ bool ParsedText::layoutAndExtractHorizontalCjkLines(const GfxRenderer& renderer,
                             lineWordStyles.back() == unit.style;
       if (canMerge) {
         lineWords.back().append(source, unit.startByte, unit.endByte - unit.startByte);
+        lineWordWidths.back() =
+            static_cast<uint16_t>(std::min<int>(UINT16_MAX, xpos - static_cast<int>(lineXPos.back()) + unit.width));
       } else {
         lineWords.emplace_back(source, unit.startByte, unit.endByte - unit.startByte);
         lineXPos.push_back(static_cast<int16_t>(xpos));
+        lineWordWidths.push_back(unit.width);
         lineWordStyles.push_back(unit.style);
         if (hasRubyInSource) {
           const bool wholeSourceWord = unit.startByte == 0 && unit.endByte == source.size();
@@ -1550,9 +1555,18 @@ bool ParsedText::layoutAndExtractHorizontalCjkLines(const GfxRenderer& renderer,
       xpos += unit.width;
     }
 
-    processLine(std::make_shared<TextBlock>(std::move(lineWords), std::move(lineXPos), std::move(lineWordStyles),
-                                            std::vector<uint8_t>{}, std::vector<uint16_t>{}, blockStyle,
-                                            std::move(lineRubyTexts)));
+    bool hasUnderline = false;
+    for (auto style : lineWordStyles) {
+      if ((style & EpdFontFamily::UNDERLINE) != 0) {
+        hasUnderline = true;
+        break;
+      }
+    }
+
+    processLine(std::make_shared<TextBlock>(
+        std::move(lineWords), std::move(lineXPos), std::move(lineWordStyles), std::vector<uint8_t>{},
+        std::vector<uint16_t>{}, blockStyle, std::move(lineRubyTexts), std::vector<int16_t>{}, false,
+        std::vector<uint16_t>{}, 0, hasUnderline ? std::move(lineWordWidths) : std::vector<uint16_t>{}));
   };
 
   auto retainFromUnit = [&](const size_t unitIndex) {
@@ -2089,11 +2103,20 @@ void ParsedText::extractLine(const size_t breakIndex, const int pageWidth, const
   std::vector<std::string> lineWords(std::make_move_iterator(words.begin() + lastBreakAt),
                                      std::make_move_iterator(words.begin() + lineBreak));
   std::vector<EpdFontFamily::Style> lineWordStyles(wordStyles.begin() + lastBreakAt, wordStyles.begin() + lineBreak);
+  std::vector<uint16_t> lineWordWidths(wordWidths.begin() + lastBreakAt, wordWidths.begin() + lineBreak);
   std::vector<std::string> lineRubyTexts = sliceRubyTexts(rubyTexts, lastBreakAt, lineBreak);
 
   for (auto& word : lineWords) {
     if (containsSoftHyphen(word)) {
       stripSoftHyphensInPlace(word);
+    }
+  }
+
+  bool lineHasUnderline = false;
+  for (auto style : lineWordStyles) {
+    if ((style & EpdFontFamily::UNDERLINE) != 0) {
+      lineHasUnderline = true;
+      break;
     }
   }
 
@@ -2109,9 +2132,10 @@ void ParsedText::extractLine(const size_t breakIndex, const int pageWidth, const
   }
 
   if (!lineHasFocusSplit) {
-    processLine(std::make_shared<TextBlock>(std::move(lineWords), std::move(lineXPos), std::move(lineWordStyles),
-                                            std::vector<uint8_t>{}, std::vector<uint16_t>{}, blockStyle,
-                                            std::move(lineRubyTexts)));
+    processLine(std::make_shared<TextBlock>(
+        std::move(lineWords), std::move(lineXPos), std::move(lineWordStyles), std::vector<uint8_t>{},
+        std::vector<uint16_t>{}, blockStyle, std::move(lineRubyTexts), std::vector<int16_t>{}, false,
+        std::vector<uint16_t>{}, 0, lineHasUnderline ? std::move(lineWordWidths) : std::vector<uint16_t>{}));
     return;
   }
 
@@ -2120,6 +2144,7 @@ void ParsedText::extractLine(const size_t breakIndex, const int pageWidth, const
   // applied at render time, cutting the token count significantly when the feature is active.
   std::vector<std::string> outWords;
   std::vector<int16_t> outXPos;
+  std::vector<uint16_t> outWidths;
   std::vector<EpdFontFamily::Style> outStyles;
   std::vector<uint8_t> outBoundaries;
   std::vector<uint16_t> outSuffixX;
@@ -2127,6 +2152,7 @@ void ParsedText::extractLine(const size_t breakIndex, const int pageWidth, const
   const bool lineHasRuby = !lineRubyTexts.empty();
   outWords.reserve(lineWordCount);
   outXPos.reserve(lineWordCount);
+  outWidths.reserve(lineWordCount);
   outStyles.reserve(lineWordCount);
   outBoundaries.reserve(lineWordCount);
   outSuffixX.reserve(lineWordCount);
@@ -2138,6 +2164,8 @@ void ParsedText::extractLine(const size_t breakIndex, const int pageWidth, const
     if (wordIsFocusSuffix[lastBreakAt + i] && !outWords.empty()) {
       // Focus suffix: merge string into the preceding bold-prefix entry.
       outWords.back() += lineWords[i];
+      outWidths.back() =
+          static_cast<uint16_t>(std::min<int>(UINT16_MAX, lineXPos[i] - outXPos.back() + lineWordWidths[i]));
     } else {
       // Normal word: check for a following focus suffix to record the byte boundary.
       uint8_t boundary = 0;
@@ -2149,6 +2177,7 @@ void ParsedText::extractLine(const size_t breakIndex, const int pageWidth, const
       }
       outWords.push_back(std::move(lineWords[i]));
       outXPos.push_back(lineXPos[i]);
+      outWidths.push_back(lineWordWidths[i]);
       // For focus entries with a suffix, strip BOLD from the stored style.
       // Render re-applies it to the prefix portion only, via the boundary field.
       const EpdFontFamily::Style storedStyle =
@@ -2163,7 +2192,8 @@ void ParsedText::extractLine(const size_t breakIndex, const int pageWidth, const
     }
   }
 
-  processLine(std::make_shared<TextBlock>(std::move(outWords), std::move(outXPos), std::move(outStyles),
-                                          std::move(outBoundaries), std::move(outSuffixX), blockStyle,
-                                          std::move(outRubyTexts)));
+  processLine(std::make_shared<TextBlock>(
+      std::move(outWords), std::move(outXPos), std::move(outStyles), std::move(outBoundaries), std::move(outSuffixX),
+      blockStyle, std::move(outRubyTexts), std::vector<int16_t>{}, false, std::vector<uint16_t>{}, 0,
+      lineHasUnderline ? std::move(outWidths) : std::vector<uint16_t>{}));
 }

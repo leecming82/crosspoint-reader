@@ -27,6 +27,9 @@ class TextBlock final : public Block {
   // Eliminates getTextAdvanceX from the render path. 0 when boundary == 0.
   // Empty in lockstep with wordFocusBoundary.
   std::vector<uint16_t> wordFocusSuffixX;
+  // Layout-time word widths, stored only for lines with underlined text so render()
+  // does not need to remeasure every link word on each page flip.
+  std::vector<uint16_t> wordWidths;
   std::vector<std::string> rubyTexts;
   std::vector<uint16_t> rubyBaseAdvances;
   BlockStyle blockStyle;
@@ -39,13 +42,14 @@ class TextBlock final : public Block {
                      std::vector<uint16_t> focus_suffix_x, const BlockStyle& blockStyle = BlockStyle(),
                      std::vector<std::string> ruby_texts = {}, std::vector<int16_t> word_ypos = {},
                      bool vertical = false, std::vector<uint16_t> ruby_base_advances = {},
-                     int16_t vertical_upright_x_offset = 0)
+                     int16_t vertical_upright_x_offset = 0, std::vector<uint16_t> word_widths = {})
       : words(std::move(words)),
         wordXpos(std::move(word_xpos)),
         wordYpos(std::move(word_ypos)),
         wordStyles(std::move(word_styles)),
         wordFocusBoundary(std::move(focus_boundary)),
         wordFocusSuffixX(std::move(focus_suffix_x)),
+        wordWidths(std::move(word_widths)),
         rubyTexts(std::move(ruby_texts)),
         rubyBaseAdvances(std::move(ruby_base_advances)),
         blockStyle(blockStyle),
