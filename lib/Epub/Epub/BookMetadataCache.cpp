@@ -17,6 +17,13 @@ constexpr uint8_t BOOK_CACHE_VERSION = 11;
 constexpr char bookBinFile[] = "/book.bin";
 constexpr char tmpSpineBinFile[] = "/spine.bin.tmp";
 constexpr char tmpTocBinFile[] = "/toc.bin.tmp";
+constexpr char tmpReaderSpineBinFile[] = "/reader_spine.bin.tmp";
+constexpr char tmpResolvedTocBinFile[] = "/resolved_toc.bin.tmp";
+constexpr char tmpAnchorBinFile[] = "/anchor.bin.tmp";
+constexpr char tmpRangeBinFile[] = "/split_range.bin.tmp";
+constexpr char tmpSpinePosBinFile[] = "/spine_pos.bin.tmp";
+constexpr char tmpTocPosBinFile[] = "/toc_pos.bin.tmp";
+constexpr char tmpAnchorPosBinFile[] = "/anchor_pos.bin.tmp";
 
 constexpr uint32_t SPLIT_SOURCE_SIZE_THRESHOLD = 140 * 1024;
 constexpr uint32_t SPLIT_TEXT_UNITS_THRESHOLD = 30000;
@@ -39,6 +46,14 @@ struct HrefTarget {
   std::string href;
   std::string anchor;
 };
+
+struct SplitRangeRecord {
+  uint32_t start = 0;
+  uint32_t end = 0;
+  int16_t readerSpineIndex = -1;
+};
+
+constexpr uint32_t splitRangeRecordSize = sizeof(uint32_t) + sizeof(uint32_t) + sizeof(int16_t);
 
 std::string lowercase(std::string value) {
   for (auto& c : value) {
@@ -473,27 +488,29 @@ bool BookMetadataCache::buildBookBin(const std::string& epubPath, const BookMeta
     return false;
   }
 
-  std::deque<SpineEntry> physicalSpines;
-  physicalSpines.resize(spineCount);
-  spineFile.seek(0);
-  for (int i = 0; i < spineCount; i++) {
-    physicalSpines[i] = readSpineEntry(spineFile);
-    physicalSpines[i].physicalSpineIndex = static_cast<uint16_t>(i);
-  }
-
-  std::deque<TocEntry> tocEntries;
-  tocEntries.resize(tocCount);
-  tocFile.seek(0);
-  for (int i = 0; i < tocCount; i++) {
-    tocEntries[i] = readTocEntry(tocFile);
-  }
-
   const uint16_t physicalSpineCount = spineCount;
+  const uint16_t originalTocCount = tocCount;
+
+  std::deque<uint32_t> physicalSpineOffsets(physicalSpineCount, 0);
+  spineFile.seek(0);
+  for (int i = 0; i < physicalSpineCount; i++) {
+    physicalSpineOffsets[i] = spineFile.position();
+    readSpineEntry(spineFile);
+  }
+
+  auto readPhysicalSpine = [this, &physicalSpineOffsets](const int index) {
+    spineFile.seek(physicalSpineOffsets[index]);
+    auto entry = readSpineEntry(spineFile);
+    entry.physicalSpineIndex = static_cast<uint16_t>(index);
+    return entry;
+  };
 
   // Build physical spineIndex->tocIndex mapping in one pass.
   std::deque<int16_t> physicalSpineToTocIndex(physicalSpineCount, -1);
-  for (int j = 0; j < tocCount; j++) {
-    const auto spineIndex = tocEntries[j].spineIndex;
+  tocFile.seek(0);
+  for (int j = 0; j < originalTocCount; j++) {
+    const auto tocEntry = readTocEntry(tocFile);
+    const auto spineIndex = tocEntry.spineIndex;
     if (spineIndex >= 0 && spineIndex < physicalSpineCount && physicalSpineToTocIndex[spineIndex] == -1) {
       physicalSpineToTocIndex[spineIndex] = static_cast<int16_t>(j);
     }
@@ -514,7 +531,8 @@ bool BookMetadataCache::buildBookBin(const std::string& epubPath, const BookMeta
     std::deque<ZipFile::SizeTarget> targets;
     targets.resize(physicalSpineCount);
     for (int i = 0; i < physicalSpineCount; i++) {
-      std::string path = FsHelpers::normalisePath(physicalSpines[i].href);
+      const auto spineEntry = readPhysicalSpine(i);
+      std::string path = FsHelpers::normalisePath(spineEntry.href);
 
       ZipFile::SizeTarget t;
       t.hash = ZipFile::fnvHash64(path.c_str(), path.size());
@@ -537,7 +555,8 @@ bool BookMetadataCache::buildBookBin(const std::string& epubPath, const BookMeta
   for (int i = 0; i < physicalSpineCount; i++) {
     if (physicalSpineSizes[i] != 0) continue;
 
-    const std::string path = FsHelpers::normalisePath(physicalSpines[i].href);
+    const auto spineEntry = readPhysicalSpine(i);
+    const std::string path = FsHelpers::normalisePath(spineEntry.href);
     size_t itemSize = 0;
     if (zip.getInflatedFileSize(path.c_str(), &itemSize)) {
       physicalSpineSizes[i] = static_cast<uint32_t>(itemSize);
@@ -559,7 +578,9 @@ bool BookMetadataCache::buildBookBin(const std::string& epubPath, const BookMeta
   if (hasSplittableSpines) {
     physicalTocAnchors.resize(physicalSpineCount);
     physicalAnchorOffsets.resize(physicalSpineCount);
-    for (const auto& tocEntry : tocEntries) {
+    tocFile.seek(0);
+    for (int i = 0; i < originalTocCount; i++) {
+      const auto tocEntry = readTocEntry(tocFile);
       if (tocEntry.spineIndex >= 0 && tocEntry.spineIndex < physicalSpineCount && !tocEntry.anchor.empty()) {
         const auto anchor = lowercase(tocEntry.anchor);
         if (!anchorListContains(physicalTocAnchors[tocEntry.spineIndex], anchor)) {
@@ -571,13 +592,75 @@ bool BookMetadataCache::buildBookBin(const std::string& epubPath, const BookMeta
     LOG_DBG("BMC", "No large spine items; skipping virtual split anchor scan");
   }
 
-  std::deque<SpineEntry> readerSpines;
+  std::deque<SpineHrefIndexEntry> physicalHrefIndex;
+  if (hasSplittableSpines && physicalSpineCount >= LARGE_SPINE_THRESHOLD) {
+    physicalHrefIndex.resize(physicalSpineCount);
+    for (int i = 0; i < physicalSpineCount; i++) {
+      const auto spineEntry = readPhysicalSpine(i);
+      physicalHrefIndex[i] = {fnvHash64(spineEntry.href), static_cast<uint16_t>(spineEntry.href.size()),
+                              static_cast<int16_t>(i)};
+    }
+    std::sort(physicalHrefIndex.begin(), physicalHrefIndex.end(),
+              [](const SpineHrefIndexEntry& a, const SpineHrefIndexEntry& b) {
+                return a.hrefHash < b.hrefHash || (a.hrefHash == b.hrefHash && a.hrefLen < b.hrefLen);
+              });
+  }
+
+  auto findPhysicalSpineIndex = [this, &physicalSpineCount, &physicalHrefIndex,
+                                 &readPhysicalSpine](const std::string& href) -> int16_t {
+    if (!physicalHrefIndex.empty()) {
+      const uint64_t targetHash = fnvHash64(href);
+      const uint16_t targetLen = static_cast<uint16_t>(href.size());
+      auto it = std::lower_bound(
+          physicalHrefIndex.begin(), physicalHrefIndex.end(), SpineHrefIndexEntry{targetHash, targetLen, 0},
+          [](const SpineHrefIndexEntry& a, const SpineHrefIndexEntry& b) {
+            return a.hrefHash < b.hrefHash || (a.hrefHash == b.hrefHash && a.hrefLen < b.hrefLen);
+          });
+      while (it != physicalHrefIndex.end() && it->hrefHash == targetHash && it->hrefLen == targetLen) {
+        const auto candidate = readPhysicalSpine(it->spineIndex);
+        if (candidate.href == href) {
+          return it->spineIndex;
+        }
+        ++it;
+      }
+      return -1;
+    }
+
+    for (int i = 0; i < physicalSpineCount; i++) {
+      const auto spineEntry = readPhysicalSpine(i);
+      if (spineEntry.href == href) {
+        return static_cast<int16_t>(i);
+      }
+    }
+    return -1;
+  };
+
+  HalFile readerSpineTmpFile;
+  HalFile rangeTmpFile;
+  if (!Storage.openFileForWrite("BMC", cachePath + tmpReaderSpineBinFile, readerSpineTmpFile)) {
+    zip.close();
+    spineFile.close();
+    tocFile.close();
+    return false;
+  }
+  if (!Storage.openFileForWrite("BMC", cachePath + tmpRangeBinFile, rangeTmpFile)) {
+    readerSpineTmpFile.close();
+    zip.close();
+    spineFile.close();
+    tocFile.close();
+    return false;
+  }
+
   std::deque<int16_t> physicalSpineToFirstReaderIndex(physicalSpineCount, -1);
+  std::deque<uint32_t> physicalRangeStartIndex(physicalSpineCount, 0);
+  std::deque<uint16_t> physicalRangeCount(physicalSpineCount, 0);
   int16_t lastSpineTocIndex = -1;
+  uint32_t readerSpineCount = 0;
+  uint32_t rangeRecordCount = 0;
   uint32_t cumulativeSize = 0;
 
   for (int i = 0; i < physicalSpineCount; i++) {
-    auto baseEntry = physicalSpines[i];
+    auto baseEntry = readPhysicalSpine(i);
     baseEntry.tocIndex = physicalSpineToTocIndex[i];
     if (baseEntry.tocIndex == -1) {
       LOG_DBG("BMC", "Warning: Could not find TOC entry for spine item %d: %s, using title from last section", i,
@@ -596,12 +679,10 @@ bool BookMetadataCache::buildBookBin(const std::string& epubPath, const BookMeta
         physicalAnchorOffsets[i] = scanner.getAnchors();
         for (const auto& target : scanner.getHrefTargets()) {
           const auto targetHref = normaliseRelativeHref(baseEntry.href, target.href);
-          for (int j = 0; j < physicalSpineCount; j++) {
-            if (physicalSpines[j].href == targetHref) {
-              if (!anchorListContains(physicalTocAnchors[j], target.anchor)) {
-                physicalTocAnchors[j].push_back(target.anchor);
-              }
-              break;
+          const int16_t targetSpineIndex = findPhysicalSpineIndex(targetHref);
+          if (targetSpineIndex >= 0 && targetSpineIndex < physicalSpineCount) {
+            if (!anchorListContains(physicalTocAnchors[targetSpineIndex], target.anchor)) {
+              physicalTocAnchors[targetSpineIndex].push_back(target.anchor);
             }
           }
         }
@@ -615,6 +696,8 @@ bool BookMetadataCache::buildBookBin(const std::string& epubPath, const BookMeta
     }
 
     const uint16_t splitCount = static_cast<uint16_t>(std::min<size_t>(ranges.size(), UINT16_MAX));
+    physicalRangeStartIndex[i] = rangeRecordCount;
+    physicalRangeCount[i] = splitCount;
     for (uint16_t splitIndex = 0; splitIndex < splitCount; splitIndex++) {
       auto entry = baseEntry;
       entry.physicalSpineIndex = static_cast<uint16_t>(i);
@@ -629,14 +712,57 @@ bool BookMetadataCache::buildBookBin(const std::string& epubPath, const BookMeta
       entry.cumulativeSize = cumulativeSize;
 
       if (physicalSpineToFirstReaderIndex[i] == -1) {
-        physicalSpineToFirstReaderIndex[i] = static_cast<int16_t>(readerSpines.size());
+        physicalSpineToFirstReaderIndex[i] = static_cast<int16_t>(readerSpineCount);
       }
-      readerSpines.push_back(entry);
+      writeSpineEntry(readerSpineTmpFile, entry);
+
+      serialization::writePod(rangeTmpFile, entry.sourceStartOffset);
+      serialization::writePod(rangeTmpFile, entry.sourceEndOffset);
+      serialization::writePod(rangeTmpFile, static_cast<int16_t>(readerSpineCount));
+      readerSpineCount++;
+      rangeRecordCount++;
     }
   }
   zip.close();
+  readerSpineTmpFile.close();
+  rangeTmpFile.close();
 
-  for (auto& tocEntry : tocEntries) {
+  if (!Storage.openFileForRead("BMC", cachePath + tmpRangeBinFile, rangeTmpFile)) {
+    spineFile.close();
+    tocFile.close();
+    return false;
+  }
+
+  auto findReaderSpineForOffset = [&rangeTmpFile, &physicalRangeStartIndex, &physicalRangeCount](
+                                      const int physicalIndex, const uint32_t offset,
+                                      const int16_t fallbackReaderSpineIndex) -> int16_t {
+    if (physicalIndex < 0 || physicalIndex >= static_cast<int>(physicalRangeStartIndex.size())) {
+      return fallbackReaderSpineIndex;
+    }
+    rangeTmpFile.seek(static_cast<uint32_t>(physicalRangeStartIndex[physicalIndex]) * splitRangeRecordSize);
+    for (int i = 0; i < physicalRangeCount[physicalIndex]; i++) {
+      SplitRangeRecord range;
+      serialization::readPod(rangeTmpFile, range.start);
+      serialization::readPod(rangeTmpFile, range.end);
+      serialization::readPod(rangeTmpFile, range.readerSpineIndex);
+      if (offset >= range.start && offset < range.end) {
+        return range.readerSpineIndex;
+      }
+    }
+    return fallbackReaderSpineIndex;
+  };
+
+  HalFile resolvedTocTmpFile;
+  if (!Storage.openFileForWrite("BMC", cachePath + tmpResolvedTocBinFile, resolvedTocTmpFile)) {
+    rangeTmpFile.close();
+    spineFile.close();
+    tocFile.close();
+    return false;
+  }
+
+  tocFile.seek(0);
+  for (int i = 0; i < originalTocCount; i++) {
+    auto tocEntry = readTocEntry(tocFile);
     if (tocEntry.spineIndex >= 0 && tocEntry.spineIndex < physicalSpineCount) {
       const auto physicalIndex = tocEntry.spineIndex;
       tocEntry.spineIndex = physicalSpineToFirstReaderIndex[physicalIndex];
@@ -644,46 +770,46 @@ bool BookMetadataCache::buildBookBin(const std::string& epubPath, const BookMeta
         auto targetAnchor = lowercase(tocEntry.anchor);
         for (const auto& anchor : physicalAnchorOffsets[physicalIndex]) {
           if (anchor.id != targetAnchor) continue;
-          for (int i = tocEntry.spineIndex; i < static_cast<int>(readerSpines.size()); i++) {
-            const auto& readerSpine = readerSpines[i];
-            if (readerSpine.physicalSpineIndex != physicalIndex) break;
-            if (anchor.offset >= readerSpine.sourceStartOffset && anchor.offset < readerSpine.sourceEndOffset) {
-              tocEntry.spineIndex = static_cast<int16_t>(i);
-              break;
-            }
-          }
+          tocEntry.spineIndex = findReaderSpineForOffset(physicalIndex, anchor.offset, tocEntry.spineIndex);
           break;
         }
       }
     }
+    writeTocEntry(resolvedTocTmpFile, tocEntry);
   }
+  resolvedTocTmpFile.close();
 
-  std::deque<AnchorEntry> anchorEntries;
+  uint32_t resolvedAnchorCount = 0;
+  HalFile anchorTmpFile;
+  if (!Storage.openFileForWrite("BMC", cachePath + tmpAnchorBinFile, anchorTmpFile)) {
+    rangeTmpFile.close();
+    spineFile.close();
+    tocFile.close();
+    return false;
+  }
   if (hasSplittableSpines) {
     for (int physicalIndex = 0; physicalIndex < physicalSpineCount; physicalIndex++) {
       if (physicalTocAnchors[physicalIndex].empty() || physicalAnchorOffsets[physicalIndex].empty()) {
         continue;
       }
+      const auto physicalSpine = readPhysicalSpine(physicalIndex);
       for (const auto& anchor : physicalAnchorOffsets[physicalIndex]) {
         if (!anchorListContains(physicalTocAnchors[physicalIndex], anchor.id)) {
           continue;
         }
         int16_t targetReaderSpineIndex = physicalSpineToFirstReaderIndex[physicalIndex];
-        for (int i = targetReaderSpineIndex; i < static_cast<int>(readerSpines.size()); i++) {
-          const auto& readerSpine = readerSpines[i];
-          if (readerSpine.physicalSpineIndex != physicalIndex) break;
-          if (anchor.offset >= readerSpine.sourceStartOffset && anchor.offset < readerSpine.sourceEndOffset) {
-            targetReaderSpineIndex = static_cast<int16_t>(i);
-            break;
-          }
-        }
-        anchorEntries.push_back({physicalSpines[physicalIndex].href, anchor.id, targetReaderSpineIndex});
+        targetReaderSpineIndex = findReaderSpineForOffset(physicalIndex, anchor.offset, targetReaderSpineIndex);
+        writeAnchorEntry(anchorTmpFile, {physicalSpine.href, anchor.id, targetReaderSpineIndex});
+        resolvedAnchorCount++;
       }
     }
   }
+  anchorTmpFile.close();
+  rangeTmpFile.close();
 
-  spineCount = static_cast<uint16_t>(std::min<size_t>(readerSpines.size(), UINT16_MAX));
-  anchorCount = static_cast<uint16_t>(std::min<size_t>(anchorEntries.size(), UINT16_MAX));
+  spineCount = static_cast<uint16_t>(std::min<uint32_t>(readerSpineCount, UINT16_MAX));
+  tocCount = originalTocCount;
+  anchorCount = static_cast<uint16_t>(std::min<uint32_t>(resolvedAnchorCount, UINT16_MAX));
 
   // Open book.bin after virtual sections are known, because the LUT size depends on the final reader spine count.
   if (!Storage.openFileForWrite("BMC", cachePath + bookBinFile, bookFile)) {
@@ -714,64 +840,112 @@ bool BookMetadataCache::buildBookBin(const std::string& epubPath, const BookMeta
   serialization::writeString(bookFile, metadata.textReferenceHref);
   serialization::writePod(bookFile, metadata.pageProgressionRtl);
 
-  std::deque<uint32_t> spineEntryPositions;
-  spineEntryPositions.resize(spineCount);
   for (int i = 0; i < spineCount; i++) {
     serialization::writePod(bookFile, static_cast<uint32_t>(0));
   }
 
-  std::deque<uint32_t> tocEntryPositions;
-  tocEntryPositions.resize(tocCount);
   for (int i = 0; i < tocCount; i++) {
     serialization::writePod(bookFile, static_cast<uint32_t>(0));
   }
 
-  std::deque<uint32_t> anchorEntryPositions;
-  anchorEntryPositions.resize(anchorCount);
   for (int i = 0; i < anchorCount; i++) {
     serialization::writePod(bookFile, static_cast<uint32_t>(0));
+  }
+
+  HalFile spinePosTmpFile;
+  HalFile tocPosTmpFile;
+  HalFile anchorPosTmpFile;
+  if (!Storage.openFileForRead("BMC", cachePath + tmpReaderSpineBinFile, readerSpineTmpFile) ||
+      !Storage.openFileForRead("BMC", cachePath + tmpResolvedTocBinFile, resolvedTocTmpFile) ||
+      !Storage.openFileForRead("BMC", cachePath + tmpAnchorBinFile, anchorTmpFile) ||
+      !Storage.openFileForWrite("BMC", cachePath + tmpSpinePosBinFile, spinePosTmpFile) ||
+      !Storage.openFileForWrite("BMC", cachePath + tmpTocPosBinFile, tocPosTmpFile) ||
+      !Storage.openFileForWrite("BMC", cachePath + tmpAnchorPosBinFile, anchorPosTmpFile)) {
+    bookFile.close();
+    readerSpineTmpFile.close();
+    resolvedTocTmpFile.close();
+    anchorTmpFile.close();
+    spinePosTmpFile.close();
+    tocPosTmpFile.close();
+    anchorPosTmpFile.close();
+    spineFile.close();
+    tocFile.close();
+    return false;
   }
 
   for (int i = 0; i < spineCount; i++) {
-    spineEntryPositions[i] = writeSpineEntry(bookFile, readerSpines[i]);
+    const uint32_t pos = writeSpineEntry(bookFile, readSpineEntry(readerSpineTmpFile));
+    serialization::writePod(spinePosTmpFile, pos);
   }
 
   for (int i = 0; i < tocCount; i++) {
-    tocEntryPositions[i] = writeTocEntry(bookFile, tocEntries[i]);
+    const uint32_t pos = writeTocEntry(bookFile, readTocEntry(resolvedTocTmpFile));
+    serialization::writePod(tocPosTmpFile, pos);
   }
 
   for (int i = 0; i < anchorCount; i++) {
-    anchorEntryPositions[i] = writeAnchorEntry(bookFile, anchorEntries[i]);
+    const uint32_t pos = writeAnchorEntry(bookFile, readAnchorEntry(anchorTmpFile));
+    serialization::writePod(anchorPosTmpFile, pos);
+  }
+
+  readerSpineTmpFile.close();
+  resolvedTocTmpFile.close();
+  anchorTmpFile.close();
+  spinePosTmpFile.close();
+  tocPosTmpFile.close();
+  anchorPosTmpFile.close();
+
+  if (!Storage.openFileForRead("BMC", cachePath + tmpSpinePosBinFile, spinePosTmpFile) ||
+      !Storage.openFileForRead("BMC", cachePath + tmpTocPosBinFile, tocPosTmpFile) ||
+      !Storage.openFileForRead("BMC", cachePath + tmpAnchorPosBinFile, anchorPosTmpFile)) {
+    bookFile.close();
+    spinePosTmpFile.close();
+    tocPosTmpFile.close();
+    anchorPosTmpFile.close();
+    spineFile.close();
+    tocFile.close();
+    return false;
   }
 
   bookFile.seek(lutOffset);
   for (int i = 0; i < spineCount; i++) {
-    serialization::writePod(bookFile, spineEntryPositions[i]);
+    uint32_t pos = 0;
+    serialization::readPod(spinePosTmpFile, pos);
+    serialization::writePod(bookFile, pos);
   }
   for (int i = 0; i < tocCount; i++) {
-    serialization::writePod(bookFile, tocEntryPositions[i]);
+    uint32_t pos = 0;
+    serialization::readPod(tocPosTmpFile, pos);
+    serialization::writePod(bookFile, pos);
   }
   for (int i = 0; i < anchorCount; i++) {
-    serialization::writePod(bookFile, anchorEntryPositions[i]);
+    uint32_t pos = 0;
+    serialization::readPod(anchorPosTmpFile, pos);
+    serialization::writePod(bookFile, pos);
   }
 
   // Explicit close() required: member variables persist beyond function scope
   bookFile.close();
   spineFile.close();
   tocFile.close();
+  spinePosTmpFile.close();
+  tocPosTmpFile.close();
+  anchorPosTmpFile.close();
 
   LOG_DBG("BMC", "Successfully built book.bin");
   return true;
 }
 
 bool BookMetadataCache::cleanupTmpFiles() const {
-  const auto spineBinFile = cachePath + tmpSpineBinFile;
-  if (Storage.exists(spineBinFile.c_str())) {
-    Storage.remove(spineBinFile.c_str());
-  }
-  const auto tocBinFile = cachePath + tmpTocBinFile;
-  if (Storage.exists(tocBinFile.c_str())) {
-    Storage.remove(tocBinFile.c_str());
+  const char* tmpFiles[] = {
+      tmpSpineBinFile, tmpTocBinFile,      tmpReaderSpineBinFile, tmpResolvedTocBinFile, tmpAnchorBinFile,
+      tmpRangeBinFile, tmpSpinePosBinFile, tmpTocPosBinFile,      tmpAnchorPosBinFile,
+  };
+  for (const auto* tmpFile : tmpFiles) {
+    const auto path = cachePath + tmpFile;
+    if (Storage.exists(path.c_str())) {
+      Storage.remove(path.c_str());
+    }
   }
   return true;
 }
