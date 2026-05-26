@@ -13,7 +13,7 @@
 #include "FsHelpers.h"
 
 namespace {
-constexpr uint8_t BOOK_CACHE_VERSION = 11;
+constexpr uint8_t BOOK_CACHE_VERSION = 12;
 constexpr char bookBinFile[] = "/book.bin";
 constexpr char tmpSpineBinFile[] = "/spine.bin.tmp";
 constexpr char tmpTocBinFile[] = "/toc.bin.tmp";
@@ -134,6 +134,8 @@ class SpineSplitScanner final : public Print {
 
   const std::vector<AnchorOffset>& getAnchors() const { return anchors; }
   const std::vector<HrefTarget>& getHrefTargets() const { return hrefTargets; }
+  const std::string& getFragmentPrefix() const { return fragmentPrefix; }
+  const std::string& getFragmentSuffix() const { return fragmentSuffix; }
 
  private:
   bool inTag = false;
@@ -161,6 +163,10 @@ class SpineSplitScanner final : public Print {
   std::deque<SourceRange> ranges;
   std::vector<AnchorOffset> anchors;
   std::vector<HrefTarget> hrefTargets;
+  std::string bodyOpenTag = "<body>";
+  std::string rootWrapperOpenTag;
+  std::string fragmentPrefix = "<html><body>";
+  std::string fragmentSuffix = "</body></html>";
 
   static bool isAsciiWhitespace(const char c) { return c == ' ' || c == '\r' || c == '\n' || c == '\t'; }
   static bool isAsciiWordByte(const char c) { return std::isalnum(static_cast<unsigned char>(c)) != 0; }
@@ -231,6 +237,8 @@ class SpineSplitScanner final : public Print {
     }
     return false;
   }
+
+  bool capturedCompleteTag() const { return tagLength > 0 && tagBuffer[tagLength - 1] == '>'; }
 
   bool isHeadingTag() const {
     size_t i = 1;
@@ -335,6 +343,10 @@ class SpineSplitScanner final : public Print {
         }
       } else if (!bodyStarted) {
         bodyStarted = true;
+        if (capturedCompleteTag()) {
+          bodyOpenTag.assign(tagBuffer, tagLength);
+        }
+        rebuildFragmentWrapper();
         bodyContentStart = absoluteOffset;
         rangeStart = bodyContentStart;
       }
@@ -348,6 +360,10 @@ class SpineSplitScanner final : public Print {
     if (bodyStarted && !splitInsideRootWrapper && !closing && !bodyTag && bodyDepth == 0 && tagNameIs("div") &&
         !isSelfClosingTag()) {
       splitInsideRootWrapper = true;
+      if (capturedCompleteTag()) {
+        rootWrapperOpenTag.assign(tagBuffer, tagLength);
+      }
+      rebuildFragmentWrapper();
       splitBoundaryDepth = 2;
       bodyContentStart = absoluteOffset;
       rangeStart = bodyContentStart;
@@ -389,6 +405,11 @@ class SpineSplitScanner final : public Print {
     inTag = false;
     tagLength = 0;
     tagBuffer[0] = '\0';
+  }
+
+  void rebuildFragmentWrapper() {
+    fragmentPrefix = "<html>" + bodyOpenTag + rootWrapperOpenTag;
+    fragmentSuffix = rootWrapperOpenTag.empty() ? "</body></html>" : "</div></body></html>";
   }
 };
 }  // namespace
@@ -676,6 +697,10 @@ bool BookMetadataCache::buildBookBin(const std::string& epubPath, const BookMeta
       SpineSplitScanner scanner(baseEntry.href, physicalTocAnchors[i]);
       if (zip.readFileToStream(path.c_str(), scanner, 1024)) {
         ranges = scanner.finish();
+        if (!ranges.empty()) {
+          baseEntry.fragmentPrefix = scanner.getFragmentPrefix();
+          baseEntry.fragmentSuffix = scanner.getFragmentSuffix();
+        }
         physicalAnchorOffsets[i] = scanner.getAnchors();
         for (const auto& target : scanner.getHrefTargets()) {
           const auto targetHref = normaliseRelativeHref(baseEntry.href, target.href);
@@ -960,6 +985,8 @@ uint32_t BookMetadataCache::writeSpineEntry(HalFile& file, const SpineEntry& ent
   serialization::writePod(file, entry.sourceEndOffset);
   serialization::writePod(file, entry.splitIndex);
   serialization::writePod(file, entry.splitCount);
+  serialization::writeString(file, entry.fragmentPrefix);
+  serialization::writeString(file, entry.fragmentSuffix);
   return pos;
 }
 
@@ -1167,6 +1194,8 @@ BookMetadataCache::SpineEntry BookMetadataCache::readSpineEntry(HalFile& file) c
   serialization::readPod(file, entry.sourceEndOffset);
   serialization::readPod(file, entry.splitIndex);
   serialization::readPod(file, entry.splitCount);
+  serialization::readString(file, entry.fragmentPrefix);
+  serialization::readString(file, entry.fragmentSuffix);
   return entry;
 }
 

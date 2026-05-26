@@ -1357,8 +1357,8 @@ bool ChapterHtmlSlimParser::parseAndBuildPages() {
   XML_SetCharacterDataHandler(parser, characterData);
 
   if (parseFragment) {
-    constexpr const char* fragmentPrefix = "<html><body>";
-    if (XML_Parse(parser, fragmentPrefix, static_cast<int>(strlen(fragmentPrefix)), XML_FALSE) == XML_STATUS_ERROR) {
+    const std::string& prefix = fragmentPrefix.empty() ? std::string("<html><body>") : fragmentPrefix;
+    if (XML_Parse(parser, prefix.c_str(), static_cast<int>(prefix.size()), XML_FALSE) == XML_STATUS_ERROR) {
       LOG_ERR("EHP", "Parse error in fragment prefix:\n%s", XML_ErrorString(XML_GetErrorCode(parser)));
       destroyXmlParser(parser);
       file.close();
@@ -1415,8 +1415,8 @@ bool ChapterHtmlSlimParser::parseAndBuildPages() {
   } while (!done);
 
   if (parseFragment) {
-    constexpr const char* fragmentSuffix = "</body></html>";
-    if (XML_Parse(parser, fragmentSuffix, static_cast<int>(strlen(fragmentSuffix)), XML_TRUE) == XML_STATUS_ERROR) {
+    const std::string& suffix = fragmentSuffix.empty() ? std::string("</body></html>") : fragmentSuffix;
+    if (XML_Parse(parser, suffix.c_str(), static_cast<int>(suffix.size()), XML_TRUE) == XML_STATUS_ERROR) {
       LOG_ERR("EHP", "Parse error in fragment suffix at line %lu:\n%s", XML_GetCurrentLineNumber(parser),
               XML_ErrorString(XML_GetErrorCode(parser)));
       destroyXmlParser(parser);

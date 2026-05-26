@@ -21,7 +21,7 @@
 #include "parsers/ChapterHtmlSlimParser.h"
 
 namespace {
-constexpr uint8_t SECTION_FILE_VERSION = 40;
+constexpr uint8_t SECTION_FILE_VERSION = 41;
 constexpr uint32_t HEADER_SIZE = sizeof(uint8_t) + sizeof(int) + sizeof(float) + sizeof(bool) + sizeof(uint8_t) +
                                  sizeof(uint16_t) + sizeof(uint16_t) + sizeof(uint16_t) + sizeof(bool) + sizeof(bool) +
                                  sizeof(uint8_t) + sizeof(bool) + sizeof(uint8_t) + sizeof(uint8_t) + sizeof(uint32_t) +
@@ -118,7 +118,8 @@ void destroyXmlParser(XML_Parser parser) {
 
 bool scanSectionAdvanceCodepoints(const std::string& tmpHtmlPath, std::vector<uint32_t>& codepoints, bool& hitCap,
                                   bool& hasCjk, const uint32_t sourceStartOffset = 0,
-                                  const uint32_t sourceEndOffset = 0) {
+                                  const uint32_t sourceEndOffset = 0, const std::string& fragmentPrefix = {},
+                                  const std::string& fragmentSuffix = {}) {
   XML_Parser parser = XML_ParserCreate(nullptr);
   if (!parser) {
     LOG_ERR("SCT", "Could not allocate advance scan parser");
@@ -144,8 +145,8 @@ bool scanSectionAdvanceCodepoints(const std::string& tmpHtmlPath, std::vector<ui
   const size_t scanSize = scanEnd > scanStart ? scanEnd - scanStart : 0;
 
   if (scanFragment) {
-    constexpr const char* fragmentPrefix = "<html><body>";
-    if (XML_Parse(parser, fragmentPrefix, static_cast<int>(strlen(fragmentPrefix)), XML_FALSE) == XML_STATUS_ERROR) {
+    const std::string& prefix = fragmentPrefix.empty() ? std::string("<html><body>") : fragmentPrefix;
+    if (XML_Parse(parser, prefix.c_str(), static_cast<int>(prefix.size()), XML_FALSE) == XML_STATUS_ERROR) {
       LOG_ERR("SCT", "Advance scan parse error in fragment prefix: %s", XML_ErrorString(XML_GetErrorCode(parser)));
       file.close();
       destroyXmlParser(parser);
@@ -189,8 +190,8 @@ bool scanSectionAdvanceCodepoints(const std::string& tmpHtmlPath, std::vector<ui
   } while (!done);
 
   if (scanFragment) {
-    constexpr const char* fragmentSuffix = "</body></html>";
-    if (XML_Parse(parser, fragmentSuffix, static_cast<int>(strlen(fragmentSuffix)), XML_TRUE) == XML_STATUS_ERROR) {
+    const std::string& suffix = fragmentSuffix.empty() ? std::string("</body></html>") : fragmentSuffix;
+    if (XML_Parse(parser, suffix.c_str(), static_cast<int>(suffix.size()), XML_TRUE) == XML_STATUS_ERROR) {
       LOG_ERR("SCT", "Advance scan parse error in fragment suffix at line %lu: %s", XML_GetCurrentLineNumber(parser),
               XML_ErrorString(XML_GetErrorCode(parser)));
       file.close();
@@ -404,7 +405,8 @@ bool Section::createSectionFile(const int fontId, const float lineCompression, c
     bool hitCodepointCap = false;
     bool hasCjk = false;
     if (scanSectionAdvanceCodepoints(tmpHtmlPath, sectionCodepoints, hitCodepointCap, hasCjk,
-                                     spineItem.sourceStartOffset, spineItem.sourceEndOffset)) {
+                                     spineItem.sourceStartOffset, spineItem.sourceEndOffset, spineItem.fragmentPrefix,
+                                     spineItem.fragmentSuffix)) {
       if (!hasCjk) {
         LOG_DBG("SCT", "Section advance prewarm skipped: no CJK text");
       } else if (hitCodepointCap) {
@@ -468,7 +470,7 @@ bool Section::createSectionFile(const int fontId, const float lineCompression, c
       },
       applyEmbeddedStyle, contentBase, imageBasePath, imageRendering, progressFn, cssParser,
       spineItem.sourceStartOffset, spineItem.sourceEndOffset, static_cast<EpubWritingMode>(writingMode),
-      sdAdvancePrewarmed);
+      sdAdvancePrewarmed, spineItem.fragmentPrefix, spineItem.fragmentSuffix);
   Hyphenator::setPreferredLanguage(epub->getLanguage());
   success = visitor.parseAndBuildPages();
 

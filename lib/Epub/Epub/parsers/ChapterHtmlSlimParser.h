@@ -7,6 +7,7 @@
 #include <functional>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "Epub/FootnoteEntry.h"
@@ -62,6 +63,8 @@ class ChapterHtmlSlimParser {
   uint32_t sourceEndOffset = 0;
   EpubWritingMode writingMode = EpubWritingMode::HorizontalTb;
   bool sdAdvancePrewarmed = false;
+  std::string fragmentPrefix;
+  std::string fragmentSuffix;
   int imageCounter = 0;
 
   // Style tracking (replaces depth-based approach)
@@ -133,7 +136,8 @@ class ChapterHtmlSlimParser {
       const std::string& contentBase, const std::string& imageBasePath, const uint8_t imageRendering = 0,
       const std::function<void(size_t, size_t)>& progressFn = nullptr, const CssParser* cssParser = nullptr,
       const uint32_t sourceStartOffset = 0, const uint32_t sourceEndOffset = 0,
-      const EpubWritingMode writingMode = EpubWritingMode::HorizontalTb, const bool sdAdvancePrewarmed = false)
+      const EpubWritingMode writingMode = EpubWritingMode::HorizontalTb, const bool sdAdvancePrewarmed = false,
+      std::string fragmentPrefix = {}, std::string fragmentSuffix = {})
 
       : epub(epub),
         filepath(filepath),
@@ -156,7 +160,9 @@ class ChapterHtmlSlimParser {
         sourceStartOffset(sourceStartOffset),
         sourceEndOffset(sourceEndOffset),
         writingMode(writingMode),
-        sdAdvancePrewarmed(sdAdvancePrewarmed) {}
+        sdAdvancePrewarmed(sdAdvancePrewarmed),
+        fragmentPrefix(std::move(fragmentPrefix)),
+        fragmentSuffix(std::move(fragmentSuffix)) {}
 
   ~ChapterHtmlSlimParser() = default;
   bool parseAndBuildPages();

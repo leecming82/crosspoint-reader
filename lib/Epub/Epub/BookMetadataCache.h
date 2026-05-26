@@ -26,6 +26,8 @@ class BookMetadataCache {
     uint32_t sourceEndOffset;
     uint16_t splitIndex;
     uint16_t splitCount;
+    std::string fragmentPrefix;
+    std::string fragmentSuffix;
 
     SpineEntry()
         : cumulativeSize(0),
