@@ -15,6 +15,7 @@ namespace {
 
 const char* resolveVisualText(const char* text, std::string& visualBuffer, int paragraphLevel);
 constexpr uint32_t CJK_UI_VERTICAL_PROLONGED_SOUND_MARK = 0xE000;
+constexpr uint32_t CJK_UI_VERTICAL_DOUBLE_HYPHEN = 0xE001;
 
 bool shouldUseCjkUiFallback(const int fontId, const uint32_t cp) { return cjkUiHasGlyphForFontId(fontId, cp); }
 
@@ -1437,6 +1438,9 @@ uint32_t GfxRenderer::getVerticalSubstitution(const int fontId, const uint32_t c
 
   if (cp == 0x30FC && shouldUseCjkUiFallback(fontId, CJK_UI_VERTICAL_PROLONGED_SOUND_MARK)) {
     return CJK_UI_VERTICAL_PROLONGED_SOUND_MARK;
+  }
+  if (cp == 0x30A0 && shouldUseCjkUiFallback(fontId, CJK_UI_VERTICAL_DOUBLE_HYPHEN)) {
+    return CJK_UI_VERTICAL_DOUBLE_HYPHEN;
   }
 
   const uint32_t presentationForm = standardVerticalPresentationForm(cp);

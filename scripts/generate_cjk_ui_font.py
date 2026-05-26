@@ -39,12 +39,13 @@ abcdefghijklmnopqrstuvwxyz|
 ぁぃぅぇぉっゃゅょゔ
 アイウエオカキクケコサシスセソタチツテトナニヌネノハヒフヘホマミムメモヤユヨラリルレロワヲン
 ガギグゲゴザジズゼゾダヂヅデドバビブベボパピプペポ
-ァィゥェォッャュョヴヵヶー
+ァィゥェォッャュョヴヵヶー゠
 一二三四五六七八九十百千万亿
 黎
 """
 
 CJK_UI_VERTICAL_PROLONGED_SOUND_MARK = 0xE000
+CJK_UI_VERTICAL_DOUBLE_HYPHEN = 0xE001
 
 
 def extract_chars_from_translations(translations_dir):
@@ -255,13 +256,18 @@ def generate_font_header(font_path, pixel_size, output_path, translations_dir=No
             widths.append(pixel_size)
         bitmaps.append(bitmap_bytes)
 
-    glyph_id = find_vertical_alternate_glyph_id(font_path, 0x30FC)
-    if glyph_id is not None:
-        img, width = rasterize_glyph_id(font_path, glyph_id, pixel_size, pt_size, baseline, variation_name)
-        codepoints.append(CJK_UI_VERTICAL_PROLONGED_SOUND_MARK)
-        widths.append(width)
-        bitmaps.append(bitmap_bytes_from_image(img, pixel_size))
-        print(f"  Added U+{CJK_UI_VERTICAL_PROLONGED_SOUND_MARK:04X} vertical alternate for U+30FC")
+    vertical_alternates = [
+        (0x30FC, CJK_UI_VERTICAL_PROLONGED_SOUND_MARK),
+        (0x30A0, CJK_UI_VERTICAL_DOUBLE_HYPHEN),
+    ]
+    for source_cp, synthetic_cp in vertical_alternates:
+        glyph_id = find_vertical_alternate_glyph_id(font_path, source_cp)
+        if glyph_id is not None:
+            img, width = rasterize_glyph_id(font_path, glyph_id, pixel_size, pt_size, baseline, variation_name)
+            codepoints.append(synthetic_cp)
+            widths.append(width)
+            bitmaps.append(bitmap_bytes_from_image(img, pixel_size))
+            print(f"  Added U+{synthetic_cp:04X} vertical alternate for U+{source_cp:04X}")
 
     glyph_entries = sorted(zip(codepoints, widths, bitmaps), key=lambda item: item[0])
     codepoints = [entry[0] for entry in glyph_entries]
