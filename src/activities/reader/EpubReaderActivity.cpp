@@ -1370,12 +1370,13 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
   const auto t0 = millis();
   const int rubyOffsetX = static_cast<int>(std::min<uint8_t>(currentRubyOffsetX(), 32)) - 16;
   const int rubyOffsetY = static_cast<int>(std::min<uint8_t>(currentRubyOffsetY(), 32)) - 16;
+  const int contentBottom = renderer.getScreenHeight() - orientedMarginBottom;
 
   // Font prewarm: scan pass accumulates text, then prewarm, then real render
   auto* fcm = renderer.getFontCacheManager();
   auto scope = fcm->createPrewarmScope();
-  page->render(renderer, effectiveReaderFontId(), orientedMarginLeft, orientedMarginTop, rubyOffsetX,
-               rubyOffsetY);  // scan pass
+  page->render(renderer, effectiveReaderFontId(), orientedMarginLeft, orientedMarginTop, rubyOffsetX, rubyOffsetY,
+               contentBottom);  // scan pass
   scope.endScanAndPrewarm();
   const auto tPrewarm = millis();
 
@@ -1383,7 +1384,8 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
   const bool pageHasImages = page->hasImages();
   bool imagePageWithAA = pageHasImages && SETTINGS.textAntiAliasing;
 
-  page->render(renderer, effectiveReaderFontId(), orientedMarginLeft, orientedMarginTop, rubyOffsetX, rubyOffsetY);
+  page->render(renderer, effectiveReaderFontId(), orientedMarginLeft, orientedMarginTop, rubyOffsetX, rubyOffsetY,
+               contentBottom);
   renderStatusBar();
   renderRubyAdjustOverlay();
   const auto tBwRender = millis();
@@ -1402,7 +1404,8 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
 
       // Re-render page content to restore images into the blanked area
       // Status bar is not re-rendered here to avoid reading stale dynamic values (e.g. battery %)
-      page->render(renderer, effectiveReaderFontId(), orientedMarginLeft, orientedMarginTop, rubyOffsetX, rubyOffsetY);
+      page->render(renderer, effectiveReaderFontId(), orientedMarginLeft, orientedMarginTop, rubyOffsetX, rubyOffsetY,
+                   contentBottom);
       renderRubyAdjustOverlay();
       renderer.displayBuffer(HalDisplay::FAST_REFRESH);
     } else {
@@ -1440,8 +1443,8 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
         const int rows = (gh - y < STRIP_ROWS) ? (gh - y) : STRIP_ROWS;
         renderer.beginStripTarget(scratch.get(), y, rows);
         renderer.clearScreen(0x00);
-        page->render(renderer, effectiveReaderFontId(), orientedMarginLeft, orientedMarginTop, rubyOffsetX,
-                     rubyOffsetY);
+        page->render(renderer, effectiveReaderFontId(), orientedMarginLeft, orientedMarginTop, rubyOffsetX, rubyOffsetY,
+                     contentBottom);
         renderRubyAdjustOverlay();
         renderer.endStripTarget();
         renderer.writeGrayscalePlaneStrip(true, scratch.get(), y, rows);
@@ -1454,8 +1457,8 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
         const int rows = (gh - y < STRIP_ROWS) ? (gh - y) : STRIP_ROWS;
         renderer.beginStripTarget(scratch.get(), y, rows);
         renderer.clearScreen(0x00);
-        page->render(renderer, effectiveReaderFontId(), orientedMarginLeft, orientedMarginTop, rubyOffsetX,
-                     rubyOffsetY);
+        page->render(renderer, effectiveReaderFontId(), orientedMarginLeft, orientedMarginTop, rubyOffsetX, rubyOffsetY,
+                     contentBottom);
         renderRubyAdjustOverlay();
         renderer.endStripTarget();
         renderer.writeGrayscalePlaneStrip(false, scratch.get(), y, rows);
@@ -1495,14 +1498,16 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
 
       renderer.clearScreen(0x00);
       renderer.setRenderMode(GfxRenderer::GRAYSCALE_LSB);
-      page->render(renderer, effectiveReaderFontId(), orientedMarginLeft, orientedMarginTop, rubyOffsetX, rubyOffsetY);
+      page->render(renderer, effectiveReaderFontId(), orientedMarginLeft, orientedMarginTop, rubyOffsetX, rubyOffsetY,
+                   contentBottom);
       renderRubyAdjustOverlay();
       renderer.copyGrayscaleLsbBuffers();
       const auto tGrayLsb = millis();
 
       renderer.clearScreen(0x00);
       renderer.setRenderMode(GfxRenderer::GRAYSCALE_MSB);
-      page->render(renderer, effectiveReaderFontId(), orientedMarginLeft, orientedMarginTop, rubyOffsetX, rubyOffsetY);
+      page->render(renderer, effectiveReaderFontId(), orientedMarginLeft, orientedMarginTop, rubyOffsetX, rubyOffsetY,
+                   contentBottom);
       renderRubyAdjustOverlay();
       renderer.copyGrayscaleMsbBuffers();
       const auto tGrayMsb = millis();
@@ -1512,7 +1517,8 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
 
       renderer.setRenderMode(GfxRenderer::BW);
       renderer.clearScreen();
-      page->render(renderer, effectiveReaderFontId(), orientedMarginLeft, orientedMarginTop, rubyOffsetX, rubyOffsetY);
+      page->render(renderer, effectiveReaderFontId(), orientedMarginLeft, orientedMarginTop, rubyOffsetX, rubyOffsetY,
+                   contentBottom);
       renderStatusBar();
       renderRubyAdjustOverlay();
       renderer.cleanupGrayscaleWithFrameBuffer();
@@ -1529,7 +1535,8 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
 
     renderer.clearScreen(0x00);
     renderer.setRenderMode(GfxRenderer::GRAYSCALE_LSB);
-    page->render(renderer, effectiveReaderFontId(), orientedMarginLeft, orientedMarginTop, rubyOffsetX, rubyOffsetY);
+    page->render(renderer, effectiveReaderFontId(), orientedMarginLeft, orientedMarginTop, rubyOffsetX, rubyOffsetY,
+                 contentBottom);
     renderRubyAdjustOverlay();
     renderer.copyGrayscaleLsbBuffers();
     const auto tGrayLsb = millis();
@@ -1537,7 +1544,8 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
     // Render and copy to MSB buffer
     renderer.clearScreen(0x00);
     renderer.setRenderMode(GfxRenderer::GRAYSCALE_MSB);
-    page->render(renderer, effectiveReaderFontId(), orientedMarginLeft, orientedMarginTop, rubyOffsetX, rubyOffsetY);
+    page->render(renderer, effectiveReaderFontId(), orientedMarginLeft, orientedMarginTop, rubyOffsetX, rubyOffsetY,
+                 contentBottom);
     renderRubyAdjustOverlay();
     renderer.copyGrayscaleMsbBuffers();
     const auto tGrayMsb = millis();

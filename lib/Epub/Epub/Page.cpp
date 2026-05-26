@@ -7,8 +7,8 @@
 #include <new>
 
 void PageLine::render(GfxRenderer& renderer, const int fontId, const int xOffset, const int yOffset,
-                      const int rubyOffsetX, const int rubyOffsetY) {
-  block->render(renderer, fontId, xPos + xOffset, yPos + yOffset, rubyOffsetX, rubyOffsetY);
+                      const int rubyOffsetX, const int rubyOffsetY, const int contentBottom) {
+  block->render(renderer, fontId, xPos + xOffset, yPos + yOffset, rubyOffsetX, rubyOffsetY, contentBottom);
 }
 
 bool PageLine::serialize(HalFile& file) {
@@ -30,10 +30,11 @@ std::unique_ptr<PageLine> PageLine::deserialize(HalFile& file) {
 }
 
 void PageImage::render(GfxRenderer& renderer, const int fontId, const int xOffset, const int yOffset,
-                       const int rubyOffsetX, const int rubyOffsetY) {
+                       const int rubyOffsetX, const int rubyOffsetY, const int contentBottom) {
   // Images don't use fontId or text rendering
   (void)rubyOffsetX;
   (void)rubyOffsetY;
+  (void)contentBottom;
   imageBlock->render(renderer, xPos + xOffset, yPos + yOffset);
 }
 
@@ -56,10 +57,11 @@ std::unique_ptr<PageImage> PageImage::deserialize(HalFile& file) {
 }
 
 void PageHorizontalRule::render(GfxRenderer& renderer, const int fontId, const int xOffset, const int yOffset,
-                                const int rubyOffsetX, const int rubyOffsetY) {
+                                const int rubyOffsetX, const int rubyOffsetY, const int contentBottom) {
   (void)fontId;
   (void)rubyOffsetX;
   (void)rubyOffsetY;
+  (void)contentBottom;
   if (width == 0 || thickness == 0) {
     return;
   }
@@ -100,9 +102,9 @@ std::unique_ptr<PageHorizontalRule> PageHorizontalRule::deserialize(HalFile& fil
 }
 
 void Page::render(GfxRenderer& renderer, const int fontId, const int xOffset, const int yOffset, const int rubyOffsetX,
-                  const int rubyOffsetY) const {
+                  const int rubyOffsetY, const int contentBottom) const {
   for (auto& element : elements) {
-    element->render(renderer, fontId, xOffset, yOffset, rubyOffsetX, rubyOffsetY);
+    element->render(renderer, fontId, xOffset, yOffset, rubyOffsetX, rubyOffsetY, contentBottom);
   }
 }
 

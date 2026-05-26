@@ -99,7 +99,7 @@ void drawHorizontalRuby(const GfxRenderer& renderer, const int bodyFontId, const
 
 void drawVerticalRuby(const GfxRenderer& renderer, const int bodyFontId, const int wordX, const int wordY,
                       const int baseAdvance, const int columnWidth, const std::string& ruby, const int rubyOffsetX,
-                      const int rubyOffsetY) {
+                      const int rubyOffsetY, const int contentBottom) {
   if (ruby.empty()) return;
   const int rubyFontId = drawableRubyFontId(renderer, bodyFontId, ruby);
   if (rubyFontId == 0) return;
@@ -108,7 +108,13 @@ void drawVerticalRuby(const GfxRenderer& renderer, const int bodyFontId, const i
       wordX + std::max(0, columnWidth - rubyLineHeight * 5 / 6) + std::max(1, rubyLineHeight / 12) + rubyOffsetX;
   const int rubyAdvance = std::max(1, renderer.getTextAdvanceX(rubyFontId, ruby.c_str(), EpdFontFamily::REGULAR));
   const int span = std::max(1, baseAdvance);
-  const int rubyY = wordY + (rubyAdvance <= span ? (span - rubyAdvance) / 2 : 0) + rubyOffsetY;
+  int rubyY = wordY + (rubyAdvance <= span ? (span - rubyAdvance) / 2 : 0) + rubyOffsetY;
+  if (contentBottom > 0) {
+    const int overflow = rubyY + rubyAdvance - contentBottom;
+    if (overflow > 0) {
+      rubyY -= overflow;
+    }
+  }
   renderer.drawTextVertical(rubyFontId, rubyX, rubyY, ruby.c_str(), true, EpdFontFamily::REGULAR, 0);
 }
 }  // namespace
@@ -123,7 +129,7 @@ bool TextBlock::hasRuby() const {
 }
 
 void TextBlock::render(const GfxRenderer& renderer, const int fontId, const int x, const int y, const int rubyOffsetX,
-                       const int rubyOffsetY) const {
+                       const int rubyOffsetY, const int contentBottom) const {
   if (vertical) {
     if (words.size() != wordYpos.size() || words.size() != wordStyles.size() ||
         (!wordXpos.empty() && words.size() != wordXpos.size()) ||
@@ -163,7 +169,7 @@ void TextBlock::render(const GfxRenderer& renderer, const int fontId, const int 
         const int baseAdvance =
             (!rubyBaseAdvances.empty() && rubyBaseAdvances[i] > 0) ? rubyBaseAdvances[i] : fallbackAdvance;
         drawVerticalRuby(renderer, fontId, wordX, wordY, baseAdvance, columnWidth, rubyTexts[i], rubyOffsetX,
-                         rubyOffsetY);
+                         rubyOffsetY, contentBottom);
       }
     }
     return;
