@@ -1565,6 +1565,29 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
           tBwRender - tPrewarm, tDisplay - tBwRender, tEnd - t0);
 }
 
+std::string EpubReaderActivity::statusBarTitleForCurrentSpine() const {
+  const uint8_t mode = SETTINGS.statusBarTitle;
+  if (mode == CrossPointSettings::STATUS_BAR_TITLE::HIDE_TITLE) {
+    return {};
+  }
+  if (cachedStatusTitleSpineIndex == currentSpineIndex && cachedStatusTitleMode == mode) {
+    return cachedStatusTitle;
+  }
+
+  std::string title;
+  if (mode == CrossPointSettings::STATUS_BAR_TITLE::CHAPTER_TITLE) {
+    title = EpubReaderNavigation::titleForSpine(epub, currentSpineIndex,
+                                                std::string("Section ") + std::to_string(currentSpineIndex + 1));
+  } else if (mode == CrossPointSettings::STATUS_BAR_TITLE::BOOK_TITLE) {
+    title = StringUtils::uiSafeBookTitle(epub->getTitle(), epub->getPath());
+  }
+
+  cachedStatusTitleSpineIndex = currentSpineIndex;
+  cachedStatusTitleMode = mode;
+  cachedStatusTitle = title;
+  return cachedStatusTitle;
+}
+
 void EpubReaderActivity::renderStatusBar() const {
   // Calculate progress in book
   const int currentPage = section->currentPage + 1;
@@ -1587,12 +1610,8 @@ void EpubReaderActivity::renderStatusBar() const {
       textYOffset += UITheme::getInstance().getMetrics().statusBarVerticalMargin;
     }
 
-  } else if (SETTINGS.statusBarTitle == CrossPointSettings::STATUS_BAR_TITLE::CHAPTER_TITLE) {
-    title = EpubReaderNavigation::titleForSpine(epub, currentSpineIndex,
-                                                std::string("Section ") + std::to_string(currentSpineIndex + 1));
-
-  } else if (SETTINGS.statusBarTitle == CrossPointSettings::STATUS_BAR_TITLE::BOOK_TITLE) {
-    title = StringUtils::uiSafeBookTitle(epub->getTitle(), epub->getPath());
+  } else {
+    title = statusBarTitleForCurrentSpine();
   }
 
   GUI.drawStatusBar(renderer, bookProgress, currentPage, pageCount, title, 0, textYOffset);

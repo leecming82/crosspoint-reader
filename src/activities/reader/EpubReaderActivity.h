@@ -36,6 +36,9 @@ class EpubReaderActivity final : public Activity {
   bool pendingScreenshot = false;
   bool pendingSyncSaveError = false;
   bool automaticPageTurnActive = false;
+  mutable int cachedStatusTitleSpineIndex = -1;
+  mutable uint8_t cachedStatusTitleMode = CrossPointSettings::STATUS_BAR_TITLE_COUNT;
+  mutable std::string cachedStatusTitle;
   enum class PendingPageTurnIntent : uint8_t { None, Prev, Next };
   PendingPageTurnIntent pendingPageTurnIntent = PendingPageTurnIntent::None;
   unsigned long pendingPageTurnIntentAt = 0UL;
@@ -120,6 +123,7 @@ class EpubReaderActivity final : public Activity {
   void renderContents(std::unique_ptr<Page> page, int orientedMarginTop, int orientedMarginRight,
                       int orientedMarginBottom, int orientedMarginLeft);
   void renderStatusBar() const;
+  std::string statusBarTitleForCurrentSpine() const;
   void renderRubyAdjustOverlay() const;
   void silentIndexNextChapterIfNeeded(uint16_t viewportWidth, uint16_t viewportHeight);
   bool saveProgress(int spineIndex, int currentPage, int pageCount);
