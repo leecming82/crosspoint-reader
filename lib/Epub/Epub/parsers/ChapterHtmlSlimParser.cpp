@@ -66,6 +66,17 @@ int horizontalTextCellAdvance(const GfxRenderer& renderer, const int fontId) {
 }
 
 ImageRotation imageRotationForViewport(const GfxRenderer& renderer, const ImageDimensions& dims) {
+  if (dims.width <= 0 || dims.height <= 0) {
+    return ImageRotation::None;
+  }
+
+  constexpr int ORIENTATION_RATIO_PERCENT = 115;
+  const int longSide = std::max<int>(dims.width, dims.height);
+  const int shortSide = std::min<int>(dims.width, dims.height);
+  if (longSide * 100 < shortSide * ORIENTATION_RATIO_PERCENT) {
+    return ImageRotation::None;
+  }
+
   const bool imageLandscape = dims.width > dims.height;
   const bool viewportLandscape = renderer.getScreenWidth() > renderer.getScreenHeight();
   if (imageLandscape == viewportLandscape) {

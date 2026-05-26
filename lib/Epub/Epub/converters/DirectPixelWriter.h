@@ -99,35 +99,23 @@ struct DirectPixelWriter {
     rowPhyYBase = phyYBase + logicalY * phyYStepY;
   }
 
-  // Write a single 2-bit dithered pixel value to the framebuffer.
-  // Must be called after beginRow() for the current row.
-  // No bounds checking — caller guarantees coordinates are valid.
-  inline void writePixel(int logicalX, uint8_t pixelValue) const {
-    // Determine whether to draw based on render mode
-    bool draw;
-    bool state;
+  inline bool pixelDrawState(uint8_t pixelValue, bool& state) const {
     switch (mode) {
       case GfxRenderer::BW:
-        draw = (pixelValue < 3);
         state = true;
-        break;
+        return pixelValue < 3;
       case GfxRenderer::GRAYSCALE_MSB:
-        draw = (pixelValue == 1 || pixelValue == 2);
         state = false;
-        break;
+        return pixelValue == 1 || pixelValue == 2;
       case GfxRenderer::GRAYSCALE_LSB:
-        draw = (pixelValue == 1);
         state = false;
-        break;
+        return pixelValue == 1;
       default:
-        return;
+        return false;
     }
+  }
 
-    if (!draw) return;
-
-    const int phyX = rowPhyXBase + logicalX * phyXStepX;
-    const int phyY = rowPhyYBase + logicalX * phyYStepX;
-
+  inline void writePhysicalPixel(int phyX, int phyY, bool state) const {
     // Band-local row. The unsigned compare drops both off-band pixels (strip
     // mode) and any out-of-frame row (full-frame mode) in one branch.
     const int sy = phyY - originY;
@@ -143,40 +131,25 @@ struct DirectPixelWriter {
     }
   }
 
-  inline void writePixelAt(int logicalX, int logicalY, uint8_t pixelValue) const {
-    // Determine whether to draw based on render mode
-    bool draw;
+  // Write a single 2-bit dithered pixel value to the framebuffer.
+  // Must be called after beginRow() for the current row.
+  // No bounds checking — caller guarantees coordinates are valid.
+  inline void writePixel(int logicalX, uint8_t pixelValue) const {
     bool state;
-    switch (mode) {
-      case GfxRenderer::BW:
-        draw = (pixelValue < 3);
-        state = true;
-        break;
-      case GfxRenderer::GRAYSCALE_MSB:
-        draw = (pixelValue == 1 || pixelValue == 2);
-        state = false;
-        break;
-      case GfxRenderer::GRAYSCALE_LSB:
-        draw = (pixelValue == 1);
-        state = false;
-        break;
-      default:
-        return;
-    }
+    if (!pixelDrawState(pixelValue, state)) return;
 
-    if (!draw) return;
+    const int phyX = rowPhyXBase + logicalX * phyXStepX;
+    const int phyY = rowPhyYBase + logicalX * phyYStepX;
+    writePhysicalPixel(phyX, phyY, state);
+  }
+
+  inline void writePixelAt(int logicalX, int logicalY, uint8_t pixelValue) const {
+    bool state;
+    if (!pixelDrawState(pixelValue, state)) return;
 
     const int phyX = phyXBase + logicalX * phyXStepX + logicalY * phyXStepY;
     const int phyY = phyYBase + logicalX * phyYStepX + logicalY * phyYStepY;
-
-    const uint16_t byteIndex = phyY * displayWidthBytes + (phyX >> 3);
-    const uint8_t bitMask = 1 << (7 - (phyX & 7));
-
-    if (state) {
-      fb[byteIndex] &= ~bitMask;  // Clear bit (draw black)
-    } else {
-      fb[byteIndex] |= bitMask;  // Set bit (draw white)
-    }
+    writePhysicalPixel(phyX, phyY, state);
   }
 };
 
