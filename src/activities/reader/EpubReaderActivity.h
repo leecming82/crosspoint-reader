@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "EpubReaderMenuActivity.h"
+#include "ProgressMapper.h"
 #include "activities/Activity.h"
 
 class EpubReaderActivity final : public Activity {
@@ -103,9 +104,11 @@ class EpubReaderActivity final : public Activity {
   void moveKanjiPopupMatch(int direction);
   void hideKanjiPopup();
 
+  bool showBookmarkMessage = false;
   // Tracks whether this book is currently removed from Recent Books by the
   // removeReadBooksFromRecents feature (set at End-of-Book, cleared if paged back in).
   bool recentsEntryRemoved = false;
+  unsigned long bookmarkMessageTime = 0UL;
   // Set when the reader is left at end-of-book and SETTINGS.moveFinishedToReadFolder is on.
   // Consumed in onExit() to relocate the finished book into /Read/.
   bool pendingReadFolderMove = false;
@@ -150,6 +153,7 @@ class EpubReaderActivity final : public Activity {
   void latchPageTurnIntentWhileBusy();
   bool consumeLatchedPageTurnIntent(bool& isForwardTurn);
   void clearLatchedPageTurnIntent();
+  void addBookmark();
 
   // Footnote navigation
   void navigateToHref(const std::string& href, bool savePosition = false);
@@ -164,4 +168,5 @@ class EpubReaderActivity final : public Activity {
   void render(RenderLock&& lock) override;
   bool isReaderActivity() const override { return true; }
   ScreenshotInfo getScreenshotInfo() const override;
+  CrossPointPosition getCurrentPosition() const;
 };

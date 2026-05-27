@@ -462,6 +462,19 @@ bool Section::createSectionFile(const int fontId, const float lineCompression, c
     }
   }
 
+  // Collect TOC anchors for this spine so the parser can insert page breaks at chapter boundaries
+  std::vector<std::string> tocAnchors;
+  const int startTocIndex = epub->getTocIndexForSpineIndex(spineIndex);
+  if (startTocIndex >= 0) {
+    for (int i = startTocIndex; i < epub->getTocItemsCount(); i++) {
+      auto entry = epub->getTocItem(i);
+      if (entry.spineIndex != spineIndex) break;
+      if (!entry.anchor.empty()) {
+        tocAnchors.push_back(std::move(entry.anchor));
+      }
+    }
+  }
+
   ChapterHtmlSlimParser visitor(
       epub, tmpHtmlPath, renderer, fontId, lineCompression, extraParagraphSpacing, paragraphAlignment, viewportWidth,
       viewportHeight, hyphenationEnabled, focusReadingEnabled,
@@ -470,7 +483,7 @@ bool Section::createSectionFile(const int fontId, const float lineCompression, c
       },
       applyEmbeddedStyle, contentBase, imageBasePath, imageRendering, progressFn, cssParser,
       spineItem.sourceStartOffset, spineItem.sourceEndOffset, static_cast<EpubWritingMode>(writingMode),
-      sdAdvancePrewarmed, spineItem.fragmentPrefix, spineItem.fragmentSuffix);
+      sdAdvancePrewarmed, spineItem.fragmentPrefix, spineItem.fragmentSuffix, std::move(tocAnchors));
   Hyphenator::setPreferredLanguage(epub->getLanguage());
   success = visitor.parseAndBuildPages();
 
@@ -568,6 +581,43 @@ std::unique_ptr<Page> Section::loadPageFromSectionFile(const uint16_t pageNumber
   // Explicit close() required: member variable persists beyond function scope
   file.close();
   return page;
+}
+
+std::string Section::getTextFromSectionFile() {
+  std::string fullText;
+  auto p = this->loadPageFromSectionFile();
+  if (p) {
+    for (const auto& el : p->elements) {
+      if (el->getTag() == TAG_PageLine) {
+        const auto& line = static_cast<const PageLine&>(*el);
+        if (line.getBlock()) {
+          const auto& words = line.getBlock()->getWords();
+          for (const auto& w : words) {
+            if (!fullText.empty()) fullText += " ";
+            fullText += w;
+          }
+        }
+      }
+    }
+  }
+  return fullText;
+}
+
+std::optional<uint16_t> Section::getCachedPageCount() const {
+  HalFile f;
+  if (!Storage.openFileForRead("SCT", filePath, f)) {
+    return std::nullopt;
+  }
+
+  const uint32_t fileSize = f.size();
+  if (fileSize < HEADER_SIZE) {
+    return std::nullopt;
+  }
+
+  f.seek(HEADER_SIZE - sizeof(uint32_t) * 4 - sizeof(uint16_t));
+  uint16_t count;
+  serialization::readPod(f, count);
+  return count;
 }
 
 std::optional<uint16_t> Section::getPageForAnchor(const std::string& anchor) const {

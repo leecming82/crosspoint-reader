@@ -74,6 +74,8 @@ class ChapterHtmlSlimParser {
     bool hasItalic = false, italic = false;
     bool hasUnderline = false, underline = false;
     bool hasTextCombine = false, textCombine = false;
+    bool hasSup = false, sup = false;
+    bool hasSub = false, sub = false;
   };
   std::vector<StyleStackEntry> inlineStyleStack;
   std::vector<BlockStyle> blockStyleStack;  // accumulated block styles from open ancestor elements
@@ -82,6 +84,8 @@ class ChapterHtmlSlimParser {
   bool effectiveItalic = false;
   bool effectiveUnderline = false;
   bool effectiveTextCombine = false;
+  bool effectiveSup = false;
+  bool effectiveSub = false;
   int tableDepth = 0;
   int tableRowIndex = 0;
   int tableColIndex = 0;
@@ -91,6 +95,7 @@ class ChapterHtmlSlimParser {
   std::vector<std::pair<std::string, uint16_t>> anchorData;
   std::string pendingAnchorId;  // deferred until after previous text block is flushed
   bool anchorLimitLogged = false;
+  std::vector<std::string> tocAnchors;  // the list of anchors that are TOC chapter boundaries
   uint16_t xpathParagraphIndex = 0;
   uint16_t xpathListItemIndex = 0;
 
@@ -113,6 +118,7 @@ class ChapterHtmlSlimParser {
   void startNewTextBlock(const BlockStyle& blockStyle);
   void appendToPartWordBuffer(const char* text, int len);
   void flushPartWordBufferForCapacity(char nextByte);
+  void flushPendingAnchor();
   void flushPartWordBuffer();
   void commitPendingAnchor();
   void flushLongTextBlock();
@@ -137,7 +143,7 @@ class ChapterHtmlSlimParser {
       const std::function<void(size_t, size_t)>& progressFn = nullptr, const CssParser* cssParser = nullptr,
       const uint32_t sourceStartOffset = 0, const uint32_t sourceEndOffset = 0,
       const EpubWritingMode writingMode = EpubWritingMode::HorizontalTb, const bool sdAdvancePrewarmed = false,
-      std::string fragmentPrefix = {}, std::string fragmentSuffix = {})
+      std::string fragmentPrefix = {}, std::string fragmentSuffix = {}, std::vector<std::string> tocAnchors = {})
 
       : epub(epub),
         filepath(filepath),
@@ -162,7 +168,8 @@ class ChapterHtmlSlimParser {
         writingMode(writingMode),
         sdAdvancePrewarmed(sdAdvancePrewarmed),
         fragmentPrefix(std::move(fragmentPrefix)),
-        fragmentSuffix(std::move(fragmentSuffix)) {}
+        fragmentSuffix(std::move(fragmentSuffix)),
+        tocAnchors(std::move(tocAnchors)) {}
 
   ~ChapterHtmlSlimParser() = default;
   bool parseAndBuildPages();

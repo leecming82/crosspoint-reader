@@ -192,13 +192,24 @@ void TextBlock::render(const GfxRenderer& renderer, const int fontId, const int 
   }
 
   const int baseY = y;
+  const int ascender = renderer.getFontAscenderSize(fontId);
   for (size_t i = 0; i < words.size(); i++) {
     const int wordX = wordXpos[i] + x;
     const EpdFontFamily::Style currentStyle = wordStyles[i];
     const uint8_t boundary = hasFocus ? wordFocusBoundary[i] : 0;
 
+    // SUP/SUB shift the baseline passed to drawText; the glyph is also scaled 50% inside
+    // drawText, so these offsets are chosen relative to the full-size ascender.
+    int wordY = baseY;
+    if ((currentStyle & EpdFontFamily::SUP) != 0) {
+      wordY -= ascender * 2 / 5;
+    } else if ((currentStyle & EpdFontFamily::SUB) != 0) {
+      wordY += ascender / 4;
+    }
+
     if (!rubyTexts.empty() && i < rubyTexts.size() && !rubyTexts[i].empty()) {
-      drawHorizontalRuby(renderer, fontId, wordX, y, words[i], rubyTexts[i], currentStyle, rubyOffsetX, rubyOffsetY);
+      drawHorizontalRuby(renderer, fontId, wordX, baseY, words[i], rubyTexts[i], currentStyle, rubyOffsetX,
+                         rubyOffsetY);
     }
 
     if (boundary > 0) {
@@ -214,11 +225,11 @@ void TextBlock::render(const GfxRenderer& renderer, const int fontId, const int 
       const size_t boldLen = std::min<size_t>({static_cast<size_t>(boundary), words[i].size(), sizeof(boldBuf) - 1});
       memcpy(boldBuf, words[i].c_str(), boldLen);
       boldBuf[boldLen] = '\0';
-      renderer.drawText(fontId, wordX, baseY, boldBuf, true, boldStyle);
+      renderer.drawText(fontId, wordX, wordY, boldBuf, true, boldStyle);
       const int suffixX = wordX + wordFocusSuffixX[i];
-      renderer.drawText(fontId, suffixX, baseY, words[i].c_str() + boldLen, true, currentStyle);
+      renderer.drawText(fontId, suffixX, wordY, words[i].c_str() + boldLen, true, currentStyle);
     } else {
-      renderer.drawText(fontId, wordX, baseY, words[i].c_str(), true, currentStyle);
+      renderer.drawText(fontId, wordX, wordY, words[i].c_str(), true, currentStyle);
     }
 
     if ((currentStyle & EpdFontFamily::UNDERLINE) != 0) {
@@ -227,7 +238,7 @@ void TextBlock::render(const GfxRenderer& renderer, const int fontId, const int 
                                     ? wordWidths[i]
                                     : renderer.getTextWidth(fontId, w.c_str(), currentStyle);
       // y is the top of the text line; add ascender to reach baseline, then offset 2px below
-      const int underlineY = baseY + renderer.getFontAscenderSize(fontId) + 2;
+      const int underlineY = wordY + ascender + 2;
 
       int startX = wordX;
       int underlineWidth = fullWordWidth;

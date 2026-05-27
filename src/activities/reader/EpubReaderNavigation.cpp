@@ -93,16 +93,17 @@ std::vector<Entry> buildEntries(const std::shared_ptr<Epub>& epub) {
     const std::string title = StringUtils::uiSafeLabelOrFallback(tocItem.title, chapterFallback(tocIndex));
 
     if (tocItem.spineIndex < 0 || tocItem.spineIndex >= spineCount) {
-      entries.push_back({title, tocItem.level, tocItem.spineIndex});
+      entries.push_back({title, tocItem.level, tocItem.spineIndex, tocItem.anchor});
       continue;
     }
 
     const auto partSpines = generatedPartSpinesForTocInterval(epub, tocIndex, tocItem.spineIndex, &tocTargetsSpine);
     const bool tocTargetIsSplit = epub->getSpineItem(tocItem.spineIndex).splitCount > 1;
-    entries.push_back({tocTargetIsSplit ? sectionTitle(title, 1) : title, tocItem.level, tocItem.spineIndex});
+    entries.push_back(
+        {tocTargetIsSplit ? sectionTitle(title, 1) : title, tocItem.level, tocItem.spineIndex, tocItem.anchor});
     for (size_t i = 0; i < partSpines.size(); i++) {
       const uint16_t sectionIndex = static_cast<uint16_t>(i + (tocTargetIsSplit ? 2 : 1));
-      entries.push_back({sectionTitle(title, sectionIndex), tocItem.level, partSpines[i]});
+      entries.push_back({sectionTitle(title, sectionIndex), tocItem.level, partSpines[i], ""});
     }
   }
 

@@ -58,16 +58,16 @@ void EpubReaderChapterSelectionActivity::loop() {
   const int totalItems = getTotalItems();
 
   if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
-    const auto newSpineIndex = (selectorIndex >= 0 && selectorIndex < static_cast<int>(navigationEntries.size()))
-                                   ? navigationEntries[selectorIndex].spineIndex
-                                   : -1;
-    if (newSpineIndex == -1) {
+    const auto entry = (selectorIndex >= 0 && selectorIndex < static_cast<int>(navigationEntries.size()))
+                           ? navigationEntries[selectorIndex]
+                           : EpubReaderNavigation::Entry{};
+    if (entry.spineIndex == -1) {
       ActivityResult result;
       result.isCancelled = true;
       setResult(std::move(result));
       finish();
     } else {
-      setResult(ChapterResult{newSpineIndex});
+      setResult(ChapterResult{entry.spineIndex, entry.anchor});
       finish();
     }
   } else if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {

@@ -59,6 +59,9 @@ enum class CssDisplay : uint8_t { Block = 0, None = 1 };
 enum class CssWritingMode : uint8_t { HorizontalTb = 0, VerticalRl = 1, VerticalLr = 2 };
 enum class CssTextCombine : uint8_t { None = 0, Horizontal = 1 };
 
+// Vertical alignment options for inline elements (e.g. superscript/subscript)
+enum class CssVerticalAlign : uint8_t { Baseline = 0, Super = 1, Sub = 2 };
+
 // Bitmask for tracking which properties have been explicitly set
 struct CssPropertyFlags {
   uint32_t textAlign : 1;
@@ -79,6 +82,7 @@ struct CssPropertyFlags {
   uint32_t display : 1;
   uint32_t writingMode : 1;
   uint32_t textCombine : 1;
+  uint32_t verticalAlign : 1;
 
   CssPropertyFlags()
       : textAlign(0),
@@ -98,19 +102,20 @@ struct CssPropertyFlags {
         imageWidth(0),
         display(0),
         writingMode(0),
-        textCombine(0) {}
+        textCombine(0),
+        verticalAlign(0) {}
 
   [[nodiscard]] bool anySet() const {
     return textAlign || fontStyle || fontWeight || textDecoration || textIndent || marginTop || marginBottom ||
            marginLeft || marginRight || paddingTop || paddingBottom || paddingLeft || paddingRight || imageHeight ||
-           imageWidth || display || writingMode || textCombine;
+           imageWidth || display || writingMode || textCombine || verticalAlign;
   }
 
   void clearAll() {
     textAlign = fontStyle = fontWeight = textDecoration = textIndent = 0;
     marginTop = marginBottom = marginLeft = marginRight = 0;
     paddingTop = paddingBottom = paddingLeft = paddingRight = 0;
-    imageHeight = imageWidth = display = writingMode = textCombine = 0;
+    imageHeight = imageWidth = display = writingMode = textCombine = verticalAlign = 0;
   }
 };
 
@@ -137,6 +142,7 @@ struct CssStyle {
   CssDisplay display = CssDisplay::Block;  // display property (Block or None)
   CssWritingMode writingMode = CssWritingMode::HorizontalTb;
   CssTextCombine textCombine = CssTextCombine::None;
+  CssVerticalAlign verticalAlign = CssVerticalAlign::Baseline;  // vertical-align (super/sub positioning)
 
   CssPropertyFlags defined;  // Tracks which properties were explicitly set
 
@@ -215,6 +221,10 @@ struct CssStyle {
       textCombine = base.textCombine;
       defined.textCombine = 1;
     }
+    if (base.hasVerticalAlign()) {
+      verticalAlign = base.verticalAlign;
+      defined.verticalAlign = 1;
+    }
   }
 
   [[nodiscard]] bool hasTextAlign() const { return defined.textAlign; }
@@ -235,6 +245,7 @@ struct CssStyle {
   [[nodiscard]] bool hasDisplay() const { return defined.display; }
   [[nodiscard]] bool hasWritingMode() const { return defined.writingMode; }
   [[nodiscard]] bool hasTextCombine() const { return defined.textCombine; }
+  [[nodiscard]] bool hasVerticalAlign() const { return defined.verticalAlign; }
 
   void reset() {
     textAlign = CssTextAlign::Left;
@@ -248,6 +259,7 @@ struct CssStyle {
     display = CssDisplay::Block;
     writingMode = CssWritingMode::HorizontalTb;
     textCombine = CssTextCombine::None;
+    verticalAlign = CssVerticalAlign::Baseline;
     defined.clearAll();
   }
 };
