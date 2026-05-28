@@ -2186,6 +2186,9 @@ void EpubReaderActivity::addBookmark() {
   entry.percentage = progress.percentage;
   entry.xpath = progress.xpath;
   entry.summary = BookmarkUtil::sanitizeBookmarkSummary(pageText);
+  entry.computedSpineIndex = static_cast<uint16_t>(currentSpineIndex);
+  entry.computedChapterPageCount = static_cast<uint16_t>(pageCount);
+  entry.computedChapterProgress = static_cast<uint16_t>(std::clamp(currentPage, 0, std::max(0, pageCount - 1)));
 
   // Add bookmark
   const std::string path = BookmarkUtil::getBookmarkPath(epub->getPath());

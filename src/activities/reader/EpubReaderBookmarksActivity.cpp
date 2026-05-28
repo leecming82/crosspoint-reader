@@ -21,6 +21,10 @@ constexpr int DELETE_MODE_CONFIRM = 2;
 
 // Layout constants used in renderScreen
 constexpr int LINE_HEIGHT = 60;
+
+bool hasStoredLocalPosition(const BookmarkEntry& bookmark, const std::shared_ptr<Epub>& epub) {
+  return epub && bookmark.computedChapterPageCount > 0 && bookmark.computedSpineIndex < epub->getSpineItemsCount();
+}
 }  // namespace
 
 void EpubReaderBookmarksActivity::onEnter() {
@@ -42,6 +46,12 @@ void EpubReaderBookmarksActivity::onEnter() {
 
       // pre-compute bookmark page values for quicker rendering
       for (auto& bookmark : bookmarks) {
+        if (hasStoredLocalPosition(bookmark, epub)) {
+          if (bookmark.computedChapterProgress >= bookmark.computedChapterPageCount) {
+            bookmark.computedChapterProgress = bookmark.computedChapterPageCount - 1;
+          }
+          continue;
+        }
         CrossPointPosition pos = ProgressMapper::toCrossPoint(epub, {bookmark.xpath, bookmark.percentage}, renderer);
         bookmark.computedSpineIndex = pos.spineIndex;
         bookmark.computedChapterPageCount = pos.totalPages;
@@ -108,8 +118,13 @@ void EpubReaderBookmarksActivity::loop() {
       return;
     }
     auto bookmark = bookmarks.at(selectorIndex);
-    CrossPointPosition pos = ProgressMapper::toCrossPoint(epub, {bookmark.xpath, bookmark.percentage}, renderer);
-    setResult(ProgressChangeResult{pos.spineIndex, pos.pageNumber});
+    if (hasStoredLocalPosition(bookmark, epub)) {
+      const int page = std::min<int>(bookmark.computedChapterProgress, bookmark.computedChapterPageCount - 1);
+      setResult(ProgressChangeResult{static_cast<int>(bookmark.computedSpineIndex), page});
+    } else {
+      CrossPointPosition pos = ProgressMapper::toCrossPoint(epub, {bookmark.xpath, bookmark.percentage}, renderer);
+      setResult(ProgressChangeResult{pos.spineIndex, pos.pageNumber});
+    }
     finish();
     return;
   } else if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
@@ -187,7 +202,7 @@ void EpubReaderBookmarksActivity::render(RenderLock&&) {
     auto tocIndex = epub->getTocIndexForSpineIndex(bookmark.computedSpineIndex);
     auto tocTitle = (tocIndex >= 0) ? (epub->getTocItem(tocIndex)).title : tr(STR_UNNAMED);
     const int percent = static_cast<int>(std::clamp(bookmark.percentage, 0.0f, 1.0f) * 100.0f + 0.5f);
-    return std::to_string(percent) + "% - " + std::to_string(bookmark.computedChapterProgress) + "/" +
+    return std::to_string(percent) + "% - " + std::to_string(bookmark.computedChapterProgress + 1) + "/" +
            std::to_string(bookmark.computedChapterPageCount) + " - " + tocTitle;
   };
   const auto getBookmarkIcon = [isPortrait](int index) {
