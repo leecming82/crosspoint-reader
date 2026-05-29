@@ -14,6 +14,7 @@
 namespace {
 
 const char* resolveVisualText(const char* text, std::string& visualBuffer, int paragraphLevel);
+constexpr uint32_t COMPRESSED_BW_BACKUP_CAP = 32 * 1024;
 constexpr uint32_t CJK_UI_VERTICAL_PROLONGED_SOUND_MARK = 0xE000;
 constexpr uint32_t CJK_UI_VERTICAL_DOUBLE_HYPHEN = 0xE001;
 
@@ -1807,16 +1808,127 @@ void GfxRenderer::freeBwBufferChunks() {
   }
 }
 
+void GfxRenderer::freeCompressedBwBuffer() {
+  free(compressedBwBuffer);
+  compressedBwBuffer = nullptr;
+  compressedBwBufferSize = 0;
+}
+
+bool GfxRenderer::storeCompressedBwBuffer(const uint32_t maxBytes) {
+  freeCompressedBwBuffer();
+  compressedBwBuffer = static_cast<uint8_t*>(malloc(maxBytes));
+  if (!compressedBwBuffer) {
+    return false;
+  }
+
+  auto emitLiteral = [&](const uint8_t* src, uint8_t len, uint32_t& out) {
+    if (len == 0) return true;
+    if (out + 1U + len > maxBytes) return false;
+    compressedBwBuffer[out++] = static_cast<uint8_t>(len - 1);
+    memcpy(&compressedBwBuffer[out], src, len);
+    out += len;
+    return true;
+  };
+
+  auto emitRun = [&](const uint8_t value, uint8_t len, uint32_t& out) {
+    if (len == 0) return true;
+    if (out + 2U > maxBytes) return false;
+    compressedBwBuffer[out++] = static_cast<uint8_t>(0x80 | (len - 1));
+    compressedBwBuffer[out++] = value;
+    return true;
+  };
+
+  uint32_t out = 0;
+  uint32_t i = 0;
+  while (i < frameBufferSize) {
+    uint32_t runLen = 1;
+    while (i + runLen < frameBufferSize && runLen < 128 && frameBuffer[i + runLen] == frameBuffer[i]) {
+      runLen++;
+    }
+
+    if (runLen >= 3) {
+      if (!emitRun(frameBuffer[i], static_cast<uint8_t>(runLen), out)) {
+        freeCompressedBwBuffer();
+        return false;
+      }
+      i += runLen;
+      continue;
+    }
+
+    const uint32_t literalStart = i;
+    uint32_t literalLen = 0;
+    while (i < frameBufferSize && literalLen < 128) {
+      runLen = 1;
+      while (i + runLen < frameBufferSize && runLen < 128 && frameBuffer[i + runLen] == frameBuffer[i]) {
+        runLen++;
+      }
+      if (runLen >= 3) break;
+      i++;
+      literalLen++;
+    }
+
+    if (!emitLiteral(&frameBuffer[literalStart], static_cast<uint8_t>(literalLen), out)) {
+      freeCompressedBwBuffer();
+      return false;
+    }
+  }
+
+  if (out > 0 && out < maxBytes) {
+    if (auto* shrunk = static_cast<uint8_t*>(realloc(compressedBwBuffer, out))) {
+      compressedBwBuffer = shrunk;
+    }
+  }
+  compressedBwBufferSize = out;
+  return true;
+}
+
+bool GfxRenderer::restoreCompressedBwBuffer() {
+  if (!compressedBwBuffer || compressedBwBufferSize == 0) return false;
+
+  uint32_t in = 0;
+  uint32_t out = 0;
+  while (in < compressedBwBufferSize && out < frameBufferSize) {
+    const uint8_t control = compressedBwBuffer[in++];
+    if (control & 0x80) {
+      if (in >= compressedBwBufferSize) break;
+      const uint8_t len = (control & 0x7F) + 1;
+      const uint8_t value = compressedBwBuffer[in++];
+      if (out + len > frameBufferSize) break;
+      memset(&frameBuffer[out], value, len);
+      out += len;
+    } else {
+      const uint8_t len = control + 1;
+      if (in + len > compressedBwBufferSize || out + len > frameBufferSize) break;
+      memcpy(&frameBuffer[out], &compressedBwBuffer[in], len);
+      in += len;
+      out += len;
+    }
+  }
+
+  const bool ok = out == frameBufferSize && in == compressedBwBufferSize;
+  freeCompressedBwBuffer();
+  return ok;
+}
+
 /**
  * This should be called before grayscale buffers are populated.
  * A `restoreBwBuffer` call should always follow the grayscale render if this method was called.
- * Uses chunked allocation to avoid needing 48KB of contiguous memory.
+ * Uses bounded RLE first, then chunked allocation to avoid needing 48KB of contiguous memory.
  * Returns true if buffer was stored successfully, false if allocation failed.
  */
 bool GfxRenderer::storeBwBuffer() {
   freeBwBufferChunks();
-  // If non-strip grayscale needs more headroom later, a compressed backup can
-  // be reintroduced here as a fallback before allocating raw chunks.
+  freeCompressedBwBuffer();
+
+  // The BW backup only has to survive while the framebuffer is reused for AA
+  // planes. Try a bounded RLE copy first to reduce peak heap pressure; fall back
+  // to raw chunks when a page does not compress enough.
+  if (storeCompressedBwBuffer(COMPRESSED_BW_BACKUP_CAP)) {
+    LOG_DBG("GFX", "Stored BW buffer compressed (%lu/%lu bytes)",
+            static_cast<unsigned long>(compressedBwBufferSize),
+            static_cast<unsigned long>(COMPRESSED_BW_BACKUP_CAP));
+    return true;
+  }
 
   // Allocate and copy each chunk
   for (size_t i = 0; i < bwBufferChunks.size(); i++) {
@@ -1851,6 +1963,14 @@ bool GfxRenderer::storeBwBuffer() {
  * Uses chunked restoration to match chunked storage.
  */
 void GfxRenderer::restoreBwBuffer() {
+  if (compressedBwBuffer) {
+    if (restoreCompressedBwBuffer()) {
+      display.cleanupGrayscaleBuffers(frameBuffer);
+      LOG_DBG("GFX", "Restored and freed compressed BW buffer");
+    }
+    return;
+  }
+
   // Check if all chunks are allocated
   bool missingChunks = false;
   for (const auto& bwBufferChunk : bwBufferChunks) {

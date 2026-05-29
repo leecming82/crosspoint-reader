@@ -1461,8 +1461,8 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
     if (!scratch) {
       LOG_ERR("ERS", "OOM: grayscale strip scratch (%d bytes); skipping AA this page", gwBytes * STRIP_ROWS);
     } else {
-      // Bands may be streamed in any order: X4 windows each via setRamArea, X3
-      // via PTL.
+      // Bands may be streamed in any order on displays that support windowed
+      // grayscale plane writes.
       renderer.setRenderMode(GfxRenderer::GRAYSCALE_LSB);
       for (int y = 0; y < gh; y += STRIP_ROWS) {
         const int rows = (gh - y < STRIP_ROWS) ? (gh - y) : STRIP_ROWS;
