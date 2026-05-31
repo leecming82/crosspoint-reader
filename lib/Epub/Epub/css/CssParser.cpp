@@ -394,6 +394,15 @@ void CssParser::parseDeclarationIntoStyle(const std::string& decl, CssStyle& sty
     }
     style.textCombine = interpretTextCombine(propValueBuf);
     style.defined.textCombine = 1;
+  } else if (propNameBuf == "direction") {
+    const std::string_view directionValue = stripTrailingImportant(propValueBuf);
+    if (directionValue == "rtl") {
+      style.direction = CssTextDirection::Rtl;
+      style.defined.direction = 1;
+    } else if (directionValue == "ltr") {
+      style.direction = CssTextDirection::Ltr;
+      style.defined.direction = 1;
+    }
   } else if (propNameBuf == "vertical-align") {
     const std::string v = normalized(propValueBuf);
     if (v == "super") {
@@ -801,6 +810,7 @@ bool CssParser::saveToCache() const {
     file.write(static_cast<uint8_t>(style.textDecoration));
     file.write(static_cast<uint8_t>(style.writingMode));
     file.write(static_cast<uint8_t>(style.textCombine));
+    file.write(static_cast<uint8_t>(style.direction));
 
     // Write CssLength fields (value + unit)
     auto writeLength = [&file](const CssLength& len) {
@@ -822,7 +832,7 @@ bool CssParser::saveToCache() const {
     file.write(static_cast<uint8_t>(style.display));
     file.write(static_cast<uint8_t>(style.verticalAlign));
 
-    // Write defined flags as uint16_t
+    // Write defined flags as uint32_t
     uint32_t definedBits = 0;
     if (style.defined.textAlign) definedBits |= 1 << 0;
     if (style.defined.fontStyle) definedBits |= 1 << 1;
@@ -842,7 +852,8 @@ bool CssParser::saveToCache() const {
     if (style.defined.display) definedBits |= 1 << 15;
     if (style.defined.writingMode) definedBits |= 1UL << 16;
     if (style.defined.textCombine) definedBits |= 1UL << 17;
-    if (style.defined.verticalAlign) definedBits |= 1UL << 18;
+    if (style.defined.direction) definedBits |= 1UL << 18;
+    if (style.defined.verticalAlign) definedBits |= 1UL << 19;
     file.write(reinterpret_cast<const uint8_t*>(&definedBits), sizeof(definedBits));
   }
 
@@ -967,6 +978,12 @@ bool CssParser::loadFromCache() {
     }
     style.textCombine = static_cast<CssTextCombine>(enumVal);
 
+    if (file.read(&enumVal, 1) != 1) {
+      rulesBySelector_.clear();
+      return false;
+    }
+    style.direction = static_cast<CssTextDirection>(enumVal);
+
     // Read CssLength fields
     auto readLength = [&file](CssLength& len) -> bool {
       if (file.read(&len.value, sizeof(len.value)) != sizeof(len.value)) {
@@ -1028,7 +1045,8 @@ bool CssParser::loadFromCache() {
     style.defined.display = (definedBits & 1 << 15) != 0;
     style.defined.writingMode = (definedBits & 1UL << 16) != 0;
     style.defined.textCombine = (definedBits & 1UL << 17) != 0;
-    style.defined.verticalAlign = (definedBits & 1UL << 18) != 0;
+    style.defined.direction = (definedBits & 1UL << 18) != 0;
+    style.defined.verticalAlign = (definedBits & 1UL << 19) != 0;
 
     filterStyleForDebugMode(style);
     rulesBySelector_[selector] = style;

@@ -22,5 +22,5 @@ echo "Running clang-format fix before commit..."
 # staging unrelated tracked modifications from other files in the
 # working tree.
 if ((${#staged_files[@]})); then
-  git add -- "${staged_files[@]}"
+  git add -f -- "${staged_files[@]}"
 fi

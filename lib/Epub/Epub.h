@@ -33,11 +33,11 @@ class Epub {
   EpubWritingMode resolvedWritingMode = EpubWritingMode::HorizontalTb;
 
   bool findContentOpfFile(std::string* contentOpfFile) const;
-  bool parseContentOpf(BookMetadataCache::BookMetadata& bookMetadata);
+  bool parseContentOpf(BookMetadataCache::BookMetadata& bookMetadata, bool writeSpineEntries = true);
   bool parseTocNcxFile() const;
   bool parseTocNavFile() const;
-  void parseCssFiles() const;
   void discoverCssFilesFromZip();
+  void parseCssFiles() const;
 
  public:
   explicit Epub(std::string filepath, const std::string& cacheDir) : filepath(std::move(filepath)) {

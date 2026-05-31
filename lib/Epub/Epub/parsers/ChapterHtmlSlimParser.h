@@ -74,6 +74,8 @@ class ChapterHtmlSlimParser {
     bool hasItalic = false, italic = false;
     bool hasUnderline = false, underline = false;
     bool hasTextCombine = false, textCombine = false;
+    bool hasDirection = false;
+    CssTextDirection direction = CssTextDirection::Ltr;
     bool hasSup = false, sup = false;
     bool hasSub = false, sub = false;
   };
@@ -84,6 +86,8 @@ class ChapterHtmlSlimParser {
   bool effectiveItalic = false;
   bool effectiveUnderline = false;
   bool effectiveTextCombine = false;
+  bool effectiveDirectionDefined = false;
+  CssTextDirection effectiveDirection = CssTextDirection::Ltr;
   bool effectiveSup = false;
   bool effectiveSub = false;
   int tableDepth = 0;
@@ -125,6 +129,7 @@ class ChapterHtmlSlimParser {
   void makePages();
   void addColumnToPage(std::shared_ptr<TextBlock> column);
   bool isVerticalWritingMode() const { return writingMode != EpubWritingMode::HorizontalTb; }
+  static void applyDirectionToEntry(StyleStackEntry& entry, const CssStyle& css);
   void emitHorizontalRule(const BlockStyle& blockStyle);
   // XML callbacks
   static void XMLCALL startElement(void* userData, const XML_Char* name, const XML_Char** atts);
