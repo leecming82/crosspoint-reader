@@ -193,6 +193,7 @@ void TextBlock::render(const GfxRenderer& renderer, const int fontId, const int 
   }
 
   const int baseY = y;
+  const bool scanning = renderer.isFontCacheScanning();
   const int ascender = renderer.getFontAscenderSize(fontId);
   for (size_t i = 0; i < words.size(); i++) {
     const int wordX = wordXpos[i] + x;
@@ -235,7 +236,7 @@ void TextBlock::render(const GfxRenderer& renderer, const int fontId, const int 
       renderer.drawText(fontId, wordX, wordY, words[i].c_str(), true, currentStyle, baseDir);
     }
 
-    if ((currentStyle & EpdFontFamily::UNDERLINE) != 0) {
+    if (!scanning && (currentStyle & EpdFontFamily::UNDERLINE) != 0) {
       const std::string& w = words[i];
       const int fullWordWidth = !wordWidths.empty() && i < wordWidths.size()
                                     ? wordWidths[i]

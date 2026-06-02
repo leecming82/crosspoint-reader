@@ -26,18 +26,18 @@ Welcome to the **CrossPoint** firmware. This guide outlines the hardware control
     - [3.7 Sleep Screen](#37-sleep-screen)
     - [3.8 Custom Fonts (SD Card)](#38-custom-fonts-sd-card)
   - [4. Reading Mode](#4-reading-mode)
-    - [Page Turning](#page-turning)
-    - [Chapter Navigation](#chapter-navigation)
-    - [Auto Page Turn](#auto-page-turn)
-    - [Tilt Page Turn (X3 only)](#tilt-page-turn-x3-only)
-    - [Footnote Navigation](#footnote-navigation)
-    - [System Navigation](#system-navigation)
-    - [Supported Languages](#supported-languages)
-  - [5. Reader Menu](`#5-reader-menu`)
-    - [5.1 Chapter Selection](`#51-chapter-selection`)
-    - [5.2 Bookmarks](`#52-bookmarks`)
-  - [6. Current Limitations & Roadmap](`#6-current-limitations--roadmap`)
-  - [7. Troubleshooting Issues & Escaping Bootloop](`#7-troubleshooting-issues--escaping-bootloop`)
+      - [Page Turning](#page-turning)
+      - [Chapter Navigation](#chapter-navigation)
+      - [Auto Page Turn](#auto-page-turn)
+      - [Tilt Page Turn (X3 only)](#tilt-page-turn-x3-only)
+      - [Footnote Navigation](#footnote-navigation)
+      - [System Navigation](#system-navigation)
+      - [Supported Languages](#supported-languages)
+  - [5. Reader Menu](#5-reader-menu)
+      - [5.1 Chapter Selection](#51-chapter-selection)
+      - [5.2 Bookmarks](#52-bookmarks)
+  - [6. Current Limitations & Roadmap](#6-current-limitations--roadmap)
+  - [7. Troubleshooting Issues & Escaping Bootloop](#7-troubleshooting-issues--escaping-bootloop)
 
 ## 1. Hardware Overview
 
@@ -200,7 +200,6 @@ The Settings screen allows you to configure the device's behavior. There are a f
 
   - "Noto Serif" (default) - Google's serif font
   - "Noto Sans" - Google's sans-serif font
-  - "Open Dyslexic" - Font designed for readers with dyslexia
 - **Reader Font Size**: Adjust the text size for non-Japanese reading; options are "Small", "Medium" (default), "Large", or "X Large".
 - **Japanese Font Size**: Adjust the text size for Japanese Vertical reading; options are "Small", "Medium" (default), "Large", or "X Large".
 
@@ -479,7 +478,7 @@ To use custom sleep images, set the sleep screen mode to **Custom** or **Cover +
 
 ### 3.8 Custom Fonts (SD Card)
 
-CrossPoint supports loading additional fonts from the SD card, extending beyond the three built-in families (Noto Serif, Noto Sans, Open Dyslexic). Custom fonts can include extended Unicode coverage, enabling CJK (Chinese, Japanese, Korean) and other scripts.
+CrossPoint supports loading additional fonts from the SD card, extending beyond the two built-in families (Noto Serif, Noto Sans). Custom fonts can include extended Unicode coverage, enabling CJK (Chinese, Japanese, Korean) and other scripts.
 
 There are three ways to install fonts:
 
