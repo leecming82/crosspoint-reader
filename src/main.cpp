@@ -374,11 +374,26 @@ void setup() {
       break;
   }
 
+  // Resolve the single boot-presentation decision. Skipping the splash also
+  // skips the panel-clearing pass and the X3 initial-full-sync arming (see
+  // HalDisplay::begin), so the first paint is FAST_REFRESH (~500ms) over the
+  // retained frame and input dispatches against a visible UI.
+  const BootResume resume = isSilentReboot              ? BootResume::Silent
+                            : !APP_STATE.showBootScreen ? BootResume::QuickResume
+                                                        : BootResume::Splash;
+
+  if (resume == BootResume::QuickResume) {
+    // One-shot flag: re-arm the splash immediately so a reset during quick
+    // resume does not strand the device in a recovery-chord-skipping loop.
+    APP_STATE.showBootScreen = true;
+    APP_STATE.saveToFile();
+  }
+
   // Recovery firmware mode: hold left side button (BTN_UP) together with the power button at
   // boot to skip directly to the SD-card firmware update screen. Useful on devices where USB
   // flashing has been locked down (e.g. recent X3 firmware).
   bool recoveryFirmwareMode = false;
-  if (wakeupReason == HalGPIO::WakeupReason::PowerButton) {
+  if (wakeupReason == HalGPIO::WakeupReason::PowerButton && resume == BootResume::Splash) {
     // Refresh the cached button state a few times — isPressed() needs ~half a second to settle
     // after boot per the HalGPIO contract. Use a millis-based deadline so we always wait the full
     // settle window even if the loop body takes longer than expected on slow boots.
@@ -396,14 +411,6 @@ void setup() {
   // First serial output only here to avoid timing inconsistencies for power button press duration verification
   LOG_DBG("MAIN", "Starting CrossPoint version " CROSSPOINT_VERSION);
 
-  // Resolve the single boot-presentation decision. Skipping the splash also
-  // skips the panel-clearing pass and the X3 initial-full-sync arming (see
-  // HalDisplay::begin), so the first paint is FAST_REFRESH (~500ms) over the
-  // retained frame and input dispatches against a visible UI.
-  const BootResume resume = isSilentReboot              ? BootResume::Silent
-                            : !APP_STATE.showBootScreen ? BootResume::QuickResume
-                                                        : BootResume::Splash;
-
   setupDisplayAndFonts(resume != BootResume::Splash);
 
   switch (resume) {
@@ -412,11 +419,6 @@ void setup() {
       // panel keeps showing the pre-reboot popup until that first paint lands.
       break;
     case BootResume::QuickResume:
-      // One-shot flag: re-arm the splash for the next non-quick-resume boot. Save
-      // before any painting so a hang in the blocking paint path can't strand
-      // us in a quick-resume-with-no-frame loop on the next boot.
-      APP_STATE.showBootScreen = true;
-      APP_STATE.saveToFile();
       if (loadSleepFrameBuffer()) {
         // Frame restored in memory; leave the retained panel image alone until
         // the routed activity's first paint lands. The loading-icon refresh is
