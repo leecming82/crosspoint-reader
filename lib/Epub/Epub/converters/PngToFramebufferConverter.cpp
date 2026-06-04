@@ -36,7 +36,7 @@ struct PngContext {
   int dstHeight{0};
   int lastDstY{-1};  // Track last rendered destination Y to avoid duplicates
 
-  StreamingPixelCache cache;
+  PixelCache cache;
   bool caching{false};
 
   uint8_t* grayLineBuffer{nullptr};
@@ -202,7 +202,20 @@ int pngDrawCallback(PNGDRAW* pDraw) {
   pw.init(*ctx->renderer);
   pw.beginRow(outY);
 
-  StreamingPixelCache& cw = ctx->cache;
+  // The cache streams to disk one row at a time. Flushing rows below this one
+  // (PNGdec delivers scanlines top to bottom) repositions the single-row band.
+  // A flush failure stops caching for the rest of the decode so we never write
+  // past the band buffer; finalize() then drops the partial file.
+  DirectCacheWriter cw;
+  if (caching) {
+    if (!ctx->cache.advanceTo(dstY)) {
+      caching = false;
+      ctx->caching = false;
+    } else {
+      cw.init(ctx->cache.buffer, ctx->cache.bytesPerRow, ctx->cache.bandRows, ctx->cache.originX);
+      cw.beginRow(dstY, ctx->cache.bandStart);
+    }
+  }
 
   int srcX = 0;
   int error = 0;
@@ -220,7 +233,12 @@ int pngDrawCallback(PNGDRAW* pDraw) {
         ditheredGray = gray / 85;
         if (ditheredGray > 3) ditheredGray = 3;
       }
-      writeImagePixelAndCacheSource(pw, cw, caching, *ctx->config, dstX, dstY, ditheredGray);
+      if (imageIsRotated(*ctx->config)) {
+        pw.writePixelAt(outX, outYForPixel, ditheredGray);
+      } else {
+        pw.writePixel(outX, ditheredGray);
+      }
+      if (caching) cw.writePixel(dstX, ditheredGray);
     }
 
     // Bresenham-style stepping: advance srcX based on ratio srcWidth/dstWidth
@@ -350,20 +368,19 @@ bool PngToFramebufferConverter::decodeToFramebuffer(const std::string& imagePath
     return false;
   }
 
-  // Stream cache rows directly to SD so large images do not need a full-size RAM cache.
+  // Stream the pixel cache to disk. PNGdec delivers source scanlines top to
+  // bottom and we emit at most one (downscaled) output row per callback, so the
+  // band only needs a single row. Streaming keeps the working set tiny, so
+  // unlike the old full-image buffer it neither competes with the ~44KB decoder
+  // nor forces larger images to skip caching - which previously meant a full
+  // re-decode on every one of an image page's ~14 render passes.
   ctx.caching = !config.cachePath.empty();
   if (ctx.caching) {
-    const int cacheWidth = ctx.dstWidth;
-    const int cacheHeight = ctx.dstHeight;
-    size_t cacheSize = (size_t)((cacheWidth + 3) / 4) * cacheHeight;
-    char cacheExtra[96];
-    snprintf(cacheExtra, sizeof(cacheExtra), "bytes=%u,heap=%u", static_cast<unsigned int>(cacheSize),
-             static_cast<unsigned int>(ESP.getFreeHeap()));
-    if (!ctx.cache.begin(config.cachePath, cacheWidth, cacheHeight)) {
-      LOG_ERR("PNG", "Failed to allocate stream cache (%s), continuing without caching", cacheExtra);
+    if (!ctx.cache.begin(config.cachePath, ctx.dstWidth, ctx.dstHeight, 0, 0, 1)) {
+      LOG_ERR("PNG", "Failed to start cache stream, continuing without caching");
       ctx.caching = false;
     } else {
-      LOG_DBG("PNG", "Streaming cache enabled: %s", cacheExtra);
+      LOG_DBG("PNG", "Streaming cache enabled");
     }
   }
 
@@ -376,14 +393,15 @@ bool PngToFramebufferConverter::decodeToFramebuffer(const std::string& imagePath
 
   if (rc != PNG_SUCCESS) {
     LOG_ERR("PNG", "Decode failed: %d", rc);
+    if (ctx.caching) ctx.cache.abort();
     return false;
   }
 
   LOG_DBG("PNG", "PNG decoding complete - render time: %lu ms", decodeTime);
 
-  // Write cache file if caching was enabled and buffer was allocated
+  // Finalize the streamed cache (caching may have been cleared on a flush error).
   if (ctx.caching) {
-    ctx.cache.finish();
+    ctx.cache.finalize();
   }
 
   return true;

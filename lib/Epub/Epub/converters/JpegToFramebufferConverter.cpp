@@ -134,7 +134,7 @@ int jpegDrawCallback(JPEGDRAW* pDraw) {
   if (stride <= 0 || blockH <= 0 || validW <= 0) return 1;
 
   const bool useDithering = ctx->config->useDithering;
-  const bool caching = ctx->caching;
+  bool caching = ctx->caching;
   const int32_t fineScaleFPX = ctx->fineScaleFPX;
   const int32_t invScaleFPX = ctx->invScaleFPX;
   const int32_t fineScaleFPY = ctx->fineScaleFPY;
@@ -495,12 +495,14 @@ bool JpegToFramebufferConverter::decodeToFramebuffer(const std::string& imagePat
 
   if (rc != 1) {
     LOG_ERR("JPG", "Decode failed (rc=%d, lastError=%d)", rc, jpeg->getLastError());
+    if (ctx.caching) ctx.cache.abort();
     return false;
   }
 
   LOG_DBG("JPG", "JPEG decoding complete - render time: %lu ms", decodeTime);
 
-  // Write cache file if caching was enabled
+  // Finalize the seekable cache file. JPEG callbacks may revisit rows, so the
+  // cache is closed only after the decoder completes.
   if (ctx.caching) {
     ctx.cache.finish();
   }

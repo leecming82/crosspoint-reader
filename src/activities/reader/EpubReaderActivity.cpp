@@ -634,12 +634,22 @@ void EpubReaderActivity::loop() {
   }
 
   if (longPress && SETTINGS.longPressButtonBehavior == SETTINGS.CHAPTER_SKIP) {
+    if (!nextTriggered && section && section->currentPage > 0) {
+      section->currentPage = 0;
+      requestUpdate();
+      return;
+    }
+
     // We don't want to delete the section mid-render, so grab the semaphore
     {
       RenderLock lock(*this);
       clearKanjiCursorState(/*saveResumePosition=*/false, /*requestRedraw=*/false);
       nextPageNumber = 0;
-      currentSpineIndex = nextTriggered ? currentSpineIndex + 1 : currentSpineIndex - 1;
+      if (nextTriggered) {
+        currentSpineIndex++;
+      } else if (currentSpineIndex > 0) {
+        currentSpineIndex--;
+      }
       section.reset();
     }
     requestUpdate();
