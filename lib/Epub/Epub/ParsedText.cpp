@@ -21,7 +21,8 @@ namespace {
 // Soft hyphen byte pattern used throughout EPUBs (UTF-8 for U+00AD).
 constexpr char SOFT_HYPHEN_UTF8[] = "\xC2\xAD";
 constexpr size_t SOFT_HYPHEN_BYTES = 2;
-constexpr size_t MIN_FREE_HEAP_FOR_HORIZONTAL_CJK_LAYOUT = 48 * 1024;
+constexpr size_t MIN_FREE_HEAP_AFTER_HORIZONTAL_CJK_LAYOUT = 24 * 1024;
+constexpr size_t HORIZONTAL_CJK_ALLOC_SAFETY_MARGIN = 4 * 1024;
 constexpr size_t MAX_HORIZONTAL_CJK_LAYOUT_UNITS = 1024;
 constexpr size_t HORIZONTAL_CJK_LAYOUT_CHUNK_TARGET_UNITS = 768;
 constexpr size_t MAX_TATEGAKI_LAYOUT_UNITS = 768;
@@ -59,6 +60,11 @@ static_assert(MAX_HORIZONTAL_CJK_LAYOUT_UNITS <= UINT16_MAX, "Horizontal CJK lay
 static_assert(MAX_TATEGAKI_LAYOUT_UNITS <= UINT16_MAX, "Tategaki layout unit indexes must fit in uint16_t");
 static_assert(sizeof(HorizontalCjkUnit) <= 20, "HorizontalCjkUnit should stay compact");
 static_assert(sizeof(TategakiUnit) <= 14, "TategakiUnit should stay compact");
+
+bool hasHeapForHorizontalCjkLayout(const size_t estimatedBytes) {
+  return ESP.getMaxAllocHeap() >= estimatedBytes + HORIZONTAL_CJK_ALLOC_SAFETY_MARGIN &&
+         ESP.getFreeHeap() >= estimatedBytes + MIN_FREE_HEAP_AFTER_HORIZONTAL_CJK_LAYOUT;
+}
 
 bool hasLatinLetter(const std::string& word) {
   const auto* ptr = reinterpret_cast<const unsigned char*>(word.c_str());
@@ -1315,8 +1321,8 @@ bool ParsedText::layoutAndExtractChunkedHorizontalCjkLines(
   }
 
   for (const auto& chunk : chunks) {
-    if (chunk.units > MAX_HORIZONTAL_CJK_LAYOUT_UNITS || ESP.getMaxAllocHeap() < estimatedChunkBytes(chunk) ||
-        ESP.getFreeHeap() < MIN_FREE_HEAP_FOR_HORIZONTAL_CJK_LAYOUT) {
+    const size_t estimatedBytes = estimatedChunkBytes(chunk);
+    if (chunk.units > MAX_HORIZONTAL_CJK_LAYOUT_UNITS || !hasHeapForHorizontalCjkLayout(estimatedBytes)) {
       return false;
     }
   }
@@ -1402,8 +1408,7 @@ bool ParsedText::layoutAndExtractHorizontalCjkLines(const GfxRenderer& renderer,
   }
   const size_t estimatedUnits = byteCount / 3 + words.size();
   const size_t estimatedBytes = estimatedUnits * sizeof(HorizontalCjkUnit);
-  if (estimatedUnits > MAX_HORIZONTAL_CJK_LAYOUT_UNITS || ESP.getFreeHeap() < MIN_FREE_HEAP_FOR_HORIZONTAL_CJK_LAYOUT ||
-      ESP.getMaxAllocHeap() < estimatedBytes) {
+  if (estimatedUnits > MAX_HORIZONTAL_CJK_LAYOUT_UNITS || !hasHeapForHorizontalCjkLayout(estimatedBytes)) {
     if (estimatedUnits > MAX_HORIZONTAL_CJK_LAYOUT_UNITS &&
         layoutAndExtractChunkedHorizontalCjkLines(renderer, fontId, pageWidth, processLine, includeLastLine,
                                                   sdAdvancePrewarmed)) {
