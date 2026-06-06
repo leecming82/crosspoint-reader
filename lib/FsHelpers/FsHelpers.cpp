@@ -2,46 +2,42 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstdint>
 #include <cstring>
 #include <vector>
 
 namespace FsHelpers {
 
 namespace {
+bool isHexDigit(const char c) { return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F'); }
 
-int hexValue(const char c) {
-  if (c >= '0' && c <= '9') {
-    return c - '0';
-  }
-  if (c >= 'a' && c <= 'f') {
-    return c - 'a' + 10;
-  }
-  if (c >= 'A' && c <= 'F') {
-    return c - 'A' + 10;
-  }
-  return -1;
+uint8_t hexValue(const char c) {
+  if (c >= '0' && c <= '9') return static_cast<uint8_t>(c - '0');
+  if (c >= 'a' && c <= 'f') return static_cast<uint8_t>(10 + (c - 'a'));
+  return static_cast<uint8_t>(10 + (c - 'A'));
 }
-
 }  // namespace
 
-std::string decodePercentEscapes(const std::string& value) {
-  std::string result;
-  result.reserve(value.size());
+std::string decodeUriEscapes(const std::string& path) {
+  std::string decoded;
+  decoded.reserve(path.size());
 
-  for (size_t i = 0; i < value.size(); i++) {
-    if (value[i] == '%' && i + 2 < value.size()) {
-      const int hi = hexValue(value[i + 1]);
-      const int lo = hexValue(value[i + 2]);
-      if (hi >= 0 && lo >= 0) {
-        result.push_back(static_cast<char>((hi << 4) | lo));
-        i += 2;
-        continue;
-      }
+  for (size_t i = 0; i < path.size(); i++) {
+    if (path[i] == '%' && i + 2 < path.size() && isHexDigit(path[i + 1]) && isHexDigit(path[i + 2])) {
+      const uint8_t value = static_cast<uint8_t>((hexValue(path[i + 1]) << 4) | hexValue(path[i + 2]));
+      decoded += static_cast<char>(value);
+      i += 2;
+      continue;
     }
-    result.push_back(value[i]);
+
+    decoded += path[i];
   }
 
-  return result;
+  return decoded;
+}
+
+std::string decodePercentEscapes(const std::string& value) {
+  return decodeUriEscapes(value);
 }
 
 std::string normalisePath(const std::string& path) {
