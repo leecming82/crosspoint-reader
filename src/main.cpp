@@ -10,6 +10,7 @@
 #include <HalStorage.h>
 #include <HalSystem.h>
 #include <HalTiltSensor.h>
+#include <HalTouch.h>
 #include <I18n.h>
 #include <Logging.h>
 #include <MurphyFlashLog.h>
@@ -35,7 +36,7 @@
 #include "util/ButtonNavigator.h"
 #include "util/ScreenshotUtil.h"
 
-MappedInputManager mappedInputManager(gpio);
+MappedInputManager mappedInputManager(gpio, halTouch);
 GfxRenderer renderer(display);
 ActivityManager activityManager(renderer, mappedInputManager);
 FontDecompressor fontDecompressor;
@@ -348,6 +349,7 @@ void setup() {
   silentRebootTarget = 0;
 
   gpio.begin();
+  mappedInputManager.beginTouch();
   powerManager.begin();
   halClock.begin();
   halTiltSensor.begin();
@@ -528,7 +530,7 @@ void loop() {
     return;
   }
 
-  gpio.update();
+  mappedInputManager.update();
   halTiltSensor.update(SETTINGS.tiltPageTurn, SETTINGS.orientation, activityManager.isReaderActivity());
 
   renderer.setFadingFix(SETTINGS.fadingFix);
@@ -558,7 +560,7 @@ void loop() {
 
   // Check for any user activity (button press or release) or active background work
   static unsigned long lastActivityTime = millis();
-  if (gpio.wasAnyPressed() || gpio.wasAnyReleased() || halTiltSensor.hadActivity() ||
+  if (gpio.wasAnyPressed() || gpio.wasAnyReleased() || mappedInputManager.hadTouchActivity() || halTiltSensor.hadActivity() ||
       activityManager.preventAutoSleep()) {
     lastActivityTime = millis();         // Reset inactivity timer
     powerManager.setPowerSaving(false);  // Restore normal CPU frequency on user activity

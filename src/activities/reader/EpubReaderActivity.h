@@ -138,6 +138,8 @@ class EpubReaderActivity final : public Activity {
   int effectiveReaderFontId() const;
   // Jump to a percentage of the book (0-100), mapping it to spine and page.
   void jumpToPercent(int percent);
+  void openReaderMenu();
+  bool handleTouchZones();
   void onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction action);
   void applyOrientation(uint8_t orientation);
   void applyWritingModePreference(uint8_t writingModePreference);

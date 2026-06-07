@@ -2,6 +2,11 @@
 
 #include "CrossPointSettings.h"
 
+void MappedInputManager::update() const {
+  gpio.update();
+  touch.update();
+}
+
 bool MappedInputManager::mapButton(const Button button, bool (HalGPIO::*fn)(uint8_t) const) const {
   const auto sideLayout = SETTINGS.sideButtonLayout;
 
@@ -63,6 +68,12 @@ bool MappedInputManager::isPressed(const Button button) const { return mapButton
 bool MappedInputManager::wasAnyPressed() const { return gpio.wasAnyPressed(); }
 
 bool MappedInputManager::wasAnyReleased() const { return gpio.wasAnyReleased(); }
+
+bool MappedInputManager::hadTouchActivity() const { return touch.hadActivity(); }
+
+bool MappedInputManager::wasTapped() const { return touch.wasTapped(); }
+
+MappedInputManager::TouchPoint MappedInputManager::lastTap() const { return touch.lastTap(); }
 
 unsigned long MappedInputManager::getHeldTime() const { return gpio.getHeldTime(); }
 

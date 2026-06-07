@@ -7,6 +7,7 @@
 #include <FsHelpers.h>
 #include <GfxRenderer.h>
 #include <HalStorage.h>
+#include <HalTouch.h>
 #include <I18n.h>
 #include <JapaneseDictionary.h>
 #include <JsonSettingsIO.h>
@@ -555,32 +556,15 @@ void EpubReaderActivity::loop() {
     requestUpdate();
   }
 
+  if (handleTouchZones()) {
+    return;
+  }
+
   // Enter reader menu activity.
   if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
     clearLatchedPageTurnIntent();
-    const int currentPage = section ? section->currentPage + 1 : 0;
-    const int totalPages = section ? section->pageCount : 0;
-    float bookProgress = 0.0f;
-    if (epub->getBookSize() > 0 && section && section->pageCount > 0) {
-      const float chapterProgress = static_cast<float>(section->currentPage) / static_cast<float>(section->pageCount);
-      bookProgress = epub->calculateProgress(currentSpineIndex, chapterProgress) * 100.0f;
-    }
-    const int bookProgressPercent = clampPercent(static_cast<int>(bookProgress + 0.5f));
-    const std::string menuTitle = StringUtils::uiSafeBookTitle(epub->getTitle(), epub->getPath());
-    startActivityForResult(
-        std::make_unique<EpubReaderMenuActivity>(
-            renderer, mappedInput, menuTitle, currentPage, totalPages, bookProgressPercent, SETTINGS.orientation,
-            SETTINGS.writingModePreference, !currentPageFootnotes.empty(), allowsManualVerticalWritingMode()),
-        [this](const ActivityResult& result) {
-          // Apply in-menu preference changes even if the menu was cancelled.
-          const auto& menu = std::get<MenuResult>(result.data);
-          applyOrientation(menu.orientation);
-          applyWritingModePreference(menu.writingModePreference);
-          toggleAutoPageTurn(menu.pageTurnOption);
-          if (!result.isCancelled) {
-            onReaderMenuConfirm(static_cast<EpubReaderMenuActivity::MenuAction>(menu.action));
-          }
-        });
+    openReaderMenu();
+    return;
   }
 
   // Long press BACK (1s+) goes to file selection
@@ -676,6 +660,79 @@ void EpubReaderActivity::loop() {
   } else {
     pageTurn(true);
   }
+}
+
+void EpubReaderActivity::openReaderMenu() {
+  const int currentPage = section ? section->currentPage + 1 : 0;
+  const int totalPages = section ? section->pageCount : 0;
+  float bookProgress = 0.0f;
+  if (epub->getBookSize() > 0 && section && section->pageCount > 0) {
+    const float chapterProgress = static_cast<float>(section->currentPage) / static_cast<float>(section->pageCount);
+    bookProgress = epub->calculateProgress(currentSpineIndex, chapterProgress) * 100.0f;
+  }
+  const int bookProgressPercent = clampPercent(static_cast<int>(bookProgress + 0.5f));
+  const std::string menuTitle = StringUtils::uiSafeBookTitle(epub->getTitle(), epub->getPath());
+  startActivityForResult(
+      std::make_unique<EpubReaderMenuActivity>(
+          renderer, mappedInput, menuTitle, currentPage, totalPages, bookProgressPercent, SETTINGS.orientation,
+          SETTINGS.writingModePreference, !currentPageFootnotes.empty(), allowsManualVerticalWritingMode()),
+      [this](const ActivityResult& result) {
+        const auto& menu = std::get<MenuResult>(result.data);
+        applyOrientation(menu.orientation);
+        applyWritingModePreference(menu.writingModePreference);
+        toggleAutoPageTurn(menu.pageTurnOption);
+        if (!result.isCancelled) {
+          onReaderMenuConfirm(static_cast<EpubReaderMenuActivity::MenuAction>(menu.action));
+        }
+      });
+}
+
+bool EpubReaderActivity::handleTouchZones() {
+  if (!mappedInput.wasTapped()) {
+    return false;
+  }
+
+  clearLatchedPageTurnIntent();
+  const auto tap = mappedInput.lastTap();
+  const int screenWidth = HalTouch::ScreenWidth;
+  const int screenHeight = HalTouch::ScreenHeight;
+  const int centerLeft = screenWidth / 3;
+  const int centerRight = (screenWidth * 2) / 3;
+  const int centerTop = screenHeight / 3;
+  const int centerBottom = (screenHeight * 2) / 3;
+
+  if (tap.x >= centerLeft && tap.x < centerRight && tap.y >= centerTop && tap.y < centerBottom) {
+    openReaderMenu();
+    return true;
+  }
+
+  if (currentSpineIndex > 0 && currentSpineIndex >= epub->getSpineItemsCount()) {
+    if (tap.x >= centerRight) {
+      onGoHome();
+    } else if (tap.x < centerLeft) {
+      currentSpineIndex = epub->getSpineItemsCount() - 1;
+      nextPageNumber = 0;
+      pendingPageJump = std::numeric_limits<uint16_t>::max();
+      requestUpdate();
+    }
+    return true;
+  }
+
+  if (!section) {
+    requestUpdate();
+    return true;
+  }
+
+  if (tap.x < centerLeft) {
+    pageTurn(false);
+    return true;
+  }
+  if (tap.x >= centerRight) {
+    pageTurn(true);
+    return true;
+  }
+
+  return true;
 }
 
 // Translate an absolute percent into a spine index plus a normalized position
