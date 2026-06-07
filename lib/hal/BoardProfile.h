@@ -33,6 +33,16 @@ struct BoardCapabilityProfile {
   bool hasChargerControl;
   bool hasTiltSensor;
   bool sdRequired;
+  bool sdUsesSdMmc;
+  bool sdMmc4Bit;
+  int8_t sdEnablePin;
+  bool sdEnableActiveLow;
+  int8_t sdClkPin;
+  int8_t sdCmdPin;
+  int8_t sdD0Pin;
+  int8_t sdD1Pin;
+  int8_t sdD2Pin;
+  int8_t sdD3Pin;
 };
 
 const BoardCapabilityProfile& boardProfileFor(BoardModel model);

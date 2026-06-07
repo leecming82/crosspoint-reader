@@ -26,6 +26,16 @@ constexpr BoardCapabilityProfile X4_PROFILE = {
     .hasChargerControl = false,
     .hasTiltSensor = false,
     .sdRequired = true,
+    .sdUsesSdMmc = false,
+    .sdMmc4Bit = false,
+    .sdEnablePin = -1,
+    .sdEnableActiveLow = false,
+    .sdClkPin = -1,
+    .sdCmdPin = -1,
+    .sdD0Pin = -1,
+    .sdD1Pin = -1,
+    .sdD2Pin = -1,
+    .sdD3Pin = -1,
 };
 
 constexpr BoardCapabilityProfile X3_PROFILE = {
@@ -52,6 +62,16 @@ constexpr BoardCapabilityProfile X3_PROFILE = {
     .hasChargerControl = true,
     .hasTiltSensor = true,
     .sdRequired = true,
+    .sdUsesSdMmc = false,
+    .sdMmc4Bit = false,
+    .sdEnablePin = -1,
+    .sdEnableActiveLow = false,
+    .sdClkPin = -1,
+    .sdCmdPin = -1,
+    .sdD0Pin = -1,
+    .sdD1Pin = -1,
+    .sdD2Pin = -1,
+    .sdD3Pin = -1,
 };
 
 constexpr BoardCapabilityProfile MURPHY_M4_PROFILE = {
@@ -78,6 +98,16 @@ constexpr BoardCapabilityProfile MURPHY_M4_PROFILE = {
     .hasChargerControl = false,
     .hasTiltSensor = false,
     .sdRequired = true,
+    .sdUsesSdMmc = true,
+    .sdMmc4Bit = true,
+    .sdEnablePin = 10,
+    .sdEnableActiveLow = true,
+    .sdClkPin = 16,
+    .sdCmdPin = 15,
+    .sdD0Pin = 17,
+    .sdD1Pin = 18,
+    .sdD2Pin = 11,
+    .sdD3Pin = 14,
 };
 
 }  // namespace

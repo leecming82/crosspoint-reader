@@ -32,7 +32,7 @@ The received Murphy M4 is now concrete enough to plan around: ESP32-S3, 16 MB fl
 
    Result: custom Murphy firmware boots after a manual reset and reaches setup. Because USB serial and SD logging were not reliable on the bring-up unit, Murphy diagnostic builds now mirror `LOG_*` output into a bounded 64 KB scratch log at the start of the blank `app1` slot (`0x6e0000`). The log captures reset reason, wakeup cause, CPU/SDK, heap/internal heap, PSRAM, storage init result, and diagnostic heartbeats. Storage still needs the real Murphy SD pin map, but failures are now observable without serial, SD, or display output.
 
-4. Display bring-up and app integration — in progress
+4. Display bring-up and app integration — done
 
    Reuse the X4 e-paper driver model on the Murphy M4 4.26 inch panel, changing only board integration where hardware evidence requires it. Keep physical scan dimensions, logical reader orientation, and viewport metrics separate.
 
@@ -46,15 +46,21 @@ The received Murphy M4 is now concrete enough to plan around: ESP32-S3, 16 MB fl
 
    Timing note: the SPI-backed HAL writes each 48 KB RAM plane in about `11 ms`; visible refresh time is dominated by panel BUSY. Full-screen black/white probe timings are useful for safety checks, but they are not the same as real text page-turn quality because normal page turns use differential RAM state and the controller's refresh policy.
 
-   App integration status: `murphy_m4` now builds with the M4 display pins, X4 display model, 2-bit grayscale capability enabled, and partial refresh enabled. The regular app can render the `SD card error` screen; the remaining display-side check is that the normal app no longer falls into refresh loops while storage remains unresolved.
+   Result: `murphy_m4` builds with the M4 display pins, X4 display model, 2-bit grayscale capability enabled, and partial refresh enabled. The regular app can render the `SD card error` screen. The observed repeated flashing at that screen is treated as a Step 5 storage/app-lifecycle issue, not a display-driver blocker.
 
-5. SD card and storage bring-up
+5. SD card and storage bring-up — done
 
    Identify the Murphy SD wiring and storage mode without relying on full app startup. Keep app1 flash logging as the primary diagnostic path until storage mounts reliably.
 
    Exit criteria: SD/card storage mounts under custom firmware; root listing and a small read/write sanity test succeed; the confirmed pin map and bus mode are reflected in the board profile or storage HAL; failure paths do not trigger display refresh loops.
 
-   Current result: minimal `murphy_m4_probe` firmware now avoids the full app and avoids e-ink refreshes while probing storage. It tried the mined SD_MMC candidates `CLK=16`, `CMD=15`, `D0=17`, plus 4-bit variants using `18`, `11`, and `14`, with GPIO10/GPIO21 power-enable candidates. No tested SD_MMC combination mounted yet. GPIO10 passively idles high and should not be driven low; GPIO21 stayed low even when selected as an enable candidate. Artifacts include `test/murphy-m4-baseline/murphy_m4_minimal_display_sd_probe_flash_log_readback.bin` and `test/murphy-m4-baseline/murphy_m4_minimal_display_sd_power_hiz_probe_flash_log_readback.bin`.
+   Current result: static mining has cross-version SD evidence in `test/murphy-m4-baseline/stock-firmware-mining/sdmmc-cross-version-evidence.md`. Cloud `1.3.0` explicitly shows a 1-bit SDMMC setup consistent with `SD_MMC.setPins(clk=16, cmd=15, d0=17)` and the error string `Mofei SD_MMC (1-bit) setPins failed`. Retained stock plus old `1.2.4`/`1.2.8`/`1.2.11`/`1.2.15` firmwares repeat a wider six-pin neighborhood consistent with `16,15,17,18,11,14`.
+
+   Hardware result: standalone no-display firmware confirms SD mounts in 1-bit SDMMC mode with `CLK=16`, `CMD=15`, `D0=17`, and `GPIO10` driven `LOW` before `SD_MMC.begin()`. GPIO21 can remain input. The successful power-matrix probe mounted a 31.3 GB card in `52 ms`, listed the root directory, and saved the APP1 artifact at `test/murphy-m4-baseline/murphy_m4_sdmmc_power_matrix_reordered_app1_readback.bin`. GPIO10 high/pull-up and GPIO21 high/pull-up did not mount; the earlier `both-high` case appeared to hang inside `SD_MMC.begin()`.
+
+   Read/write sanity: 1-bit mode mounted in `51 ms`, created `/murphy_m4_sd_sanity.txt`, wrote `26` bytes, read back matching content, deleted the file, and confirmed it no longer existed. 4-bit mode also mounts with `CLK=16`, `CMD=15`, `D0=17`, `D1=18`, `D2=11`, `D3=14`; it mounted in `54 ms` and passed the same create/read/delete check. APP1 artifacts: `test/murphy-m4-baseline/murphy_m4_sdmmc_rw_sanity_app1_readback.bin` and `test/murphy-m4-baseline/murphy_m4_sdmmc_4bit_probe_app1_readback_2.bin`.
+
+   Integration result: the Murphy board profile now carries the confirmed active-low SD enable and 4-bit SDMMC pin map, and `HalStorage` selects an SD_MMC backend for Murphy while X3/X4 continue using the existing SdFat/SPI backend. The integrated `murphy_m4` app mounted SD successfully (`SD_MMC begin: ok=1 mode=4-bit`, `Storage begin: ok, ready=1`) and wrote APP1 evidence to `test/murphy-m4-baseline/murphy_m4_integrated_sdmmc_app1_readback.bin`.
 
 6. Physical button input
 
@@ -173,7 +179,7 @@ Important implication: this unit uses `app0` at `0x10000`, not the public Murphy
 These are the key facts that still need hardware evidence:
 
 - PSRAM speed and stable allocation budget.
-- Display controller variant, rail sequencing details, partial-refresh limits, and grayscale behavior. Full-frame content is now visibly validated with `SCK=4`, `MOSI=3`, `CS=5`, `DC=6`, `RST=7`, `BUSY=8`, X4-style pixel-addressed X `0..799`, reversed Y `479..0`, the X4 factory quality LUT, and `0x22/0xf4`.
+- Display rail sequencing details and long-run partial-refresh limits. Full-frame content, normal X4-style page turns, and grayscale/AA cleanup are validated enough to move forward.
 - Touch I2C pins, interrupt pin, reset pin, FT6336U address, coordinate transform, and calibration offsets.
 - Warm/cool frontlight PWM pins, frequency, polarity, driver topology, safe duty range, and shutdown requirements.
 - SD wiring and whether stock firmware uses external SD, internal SPIFFS, USB MSC, or a mix.
