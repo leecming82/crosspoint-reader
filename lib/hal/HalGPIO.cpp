@@ -216,21 +216,46 @@ void HalGPIO::update() {
 
 bool HalGPIO::wasUsbStateChanged() const { return usbStateChanged; }
 
-bool HalGPIO::isPressed(uint8_t buttonIndex) const { return inputMgr.isPressed(buttonIndex); }
+bool HalGPIO::isPressed(uint8_t buttonIndex) const {
+  if (deviceIsMurphyM4() && buttonIndex == BTN_POWER) {
+    return false;
+  }
+  return inputMgr.isPressed(buttonIndex);
+}
 
-bool HalGPIO::wasPressed(uint8_t buttonIndex) const { return inputMgr.wasPressed(buttonIndex); }
+bool HalGPIO::wasPressed(uint8_t buttonIndex) const {
+  if (deviceIsMurphyM4() && buttonIndex == BTN_POWER) {
+    return false;
+  }
+  return inputMgr.wasPressed(buttonIndex);
+}
 
 bool HalGPIO::wasAnyPressed() const { return inputMgr.wasAnyPressed(); }
 
-bool HalGPIO::wasReleased(uint8_t buttonIndex) const { return inputMgr.wasReleased(buttonIndex); }
+bool HalGPIO::wasReleased(uint8_t buttonIndex) const {
+  if (deviceIsMurphyM4() && buttonIndex == BTN_POWER) {
+    return false;
+  }
+  return inputMgr.wasReleased(buttonIndex);
+}
 
 bool HalGPIO::wasAnyReleased() const { return inputMgr.wasAnyReleased(); }
 
 unsigned long HalGPIO::getHeldTime() const { return inputMgr.getHeldTime(); }
 
-unsigned long HalGPIO::getPowerButtonHeldTime() const { return inputMgr.getPowerButtonHeldTime(); }
+unsigned long HalGPIO::getPowerButtonHeldTime() const {
+  if (deviceIsMurphyM4()) {
+    return 0;
+  }
+  return inputMgr.getPowerButtonHeldTime();
+}
 
 void HalGPIO::startDeepSleep() {
+  if (deviceIsMurphyM4()) {
+    LOG_INF("GPIO", "Deep sleep skipped on Murphy M4: power wake GPIO is not identified yet");
+    return;
+  }
+
   // Ensure that the power button has been released to avoid immediately turning back on if you're holding it
   while (inputMgr.isPressed(BTN_POWER)) {
     delay(50);

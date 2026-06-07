@@ -68,6 +68,8 @@ The received Murphy M4 is now concrete enough to plan around: ESP32-S3, 16 MB fl
 
    Exit criteria: file browser, menus, page turns, selection, back/lock behavior, and recovery into download mode remain usable without touch.
 
+   Current note: the X4 `InputManager` assumes `POWER_BUTTON_PIN=3`, but GPIO3 is the Murphy display MOSI pin. The Murphy HAL currently masks `BTN_POWER` so display traffic is not misread as a held power button and the app does not immediately enter sleep after Home renders. Real Murphy button pins still need to be identified.
+
 7. Japanese reader validation
 
    Validate the existing reader on the Murphy viewport before adding Murphy-only features. This is the first real product milestone, because display and input are only useful if Japanese EPUB semantics survive.
@@ -93,6 +95,8 @@ The received Murphy M4 is now concrete enough to plan around: ESP32-S3, 16 MB fl
    Exit criteria: sleep/off paths release display, storage, radios, touch, and frontlight; charging/battery data is shown only when reliable; wake sources are explicit; unknown sensors remain disabled.
 
    Note: Murphy Cloud firmware confirms temperature/humidity support via an SHT40 path plus AHT20-style probe/fallback on shared I2C plumbing. Battery telemetry strings exist, but the low-level battery sense or gauge path still needs to be identified before enabling battery UI.
+
+   Current note: Murphy deep sleep is disabled in the HAL until wake/power pins are known. The inherited X4/C3 sleep path assumes `InputManager::POWER_BUTTON_PIN=3` for wake and drives GPIO13 low as a power-latch/shutdown pin; both are unsafe assumptions on Murphy because GPIO3 is display MOSI and GPIO13 is unverified.
 
 11. Optional accelerators and Murphy features
 

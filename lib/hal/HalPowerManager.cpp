@@ -17,7 +17,7 @@ void HalPowerManager::begin() {
     Wire.begin(X3_I2C_SDA, X3_I2C_SCL, X3_I2C_FREQ);
     Wire.setTimeOut(4);
     _batteryUseI2C = true;
-  } else {
+  } else if (gpio.deviceIsX4()) {
     pinMode(BAT_GPIO0, INPUT);
   }
   normalFreq = getCpuFrequencyMhz();
@@ -61,6 +61,11 @@ void HalPowerManager::setPowerSaving(bool enabled) {
 }
 
 void HalPowerManager::startDeepSleep(HalGPIO& gpio) const {
+  if (gpio.deviceIsMurphyM4()) {
+    LOG_INF("PWR", "Deep sleep skipped on Murphy M4: power latch and wake GPIOs are not identified yet");
+    return;
+  }
+
   // Ensure that the power button has been released to avoid immediately turning back on if you're holding it
   while (gpio.isPressed(HalGPIO::BTN_POWER)) {
     delay(50);
@@ -99,6 +104,10 @@ void HalPowerManager::startDeepSleep(HalGPIO& gpio) const {
 }
 
 uint16_t HalPowerManager::getBatteryPercentage() const {
+  if (!gpio.deviceIsX3() && !gpio.deviceIsX4()) {
+    return 0;
+  }
+
   if (_batteryUseI2C) {
     const unsigned long now = millis();
     if (_batteryLastPollMs != 0 && (now - _batteryLastPollMs) < BATTERY_POLL_MS) {
