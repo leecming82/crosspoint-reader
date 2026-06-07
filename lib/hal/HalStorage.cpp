@@ -4,7 +4,11 @@
 #include <FS.h>  // need to be included before SdFat.h for compatibility with FS.h's File class
 #include <Logging.h>
 #include <SDCardManager.h>
+
+#ifdef CROSSPOINT_BOARD_MURPHY_M4
 #include <SD_MMC.h>
+#define CROSSPOINT_HAS_SD_MMC_BACKEND 1
+#endif
 
 #include <cassert>
 #include <cstring>
@@ -31,6 +35,7 @@ const char* modeForOflag(const oflag_t oflag) {
   return FILE_READ;
 }
 
+#ifdef CROSSPOINT_HAS_SD_MMC_BACKEND
 bool openSdMmcForRead(const char* moduleName, const char* path, fs::File& file) {
   if (!SD_MMC.exists(path)) {
     LOG_ERR(moduleName, "File does not exist: %s", path);
@@ -53,6 +58,7 @@ bool openSdMmcForWrite(const char* moduleName, const char* path, fs::File& file)
   }
   return true;
 }
+#endif
 
 }  // namespace
 
@@ -75,6 +81,7 @@ bool HalStorage::begin() {
     return initialized;
   }
 
+#ifdef CROSSPOINT_HAS_SD_MMC_BACKEND
   const auto& board = activeBoardProfile();
   if (board.sdEnablePin >= 0) {
     pinMode(board.sdEnablePin, OUTPUT);
@@ -99,6 +106,10 @@ bool HalStorage::begin() {
           board.sdMmc4Bit ? "4-bit" : "1-bit", static_cast<int>(SD_MMC.cardType()),
           static_cast<unsigned long long>(SD_MMC.cardSize()));
   return initialized;
+#else
+  initialized = false;
+  return false;
+#endif
 }
 
 bool HalStorage::ready() const { return useSdMmcBackend() ? initialized : SDCard.ready(); }
@@ -120,6 +131,7 @@ std::vector<String> HalStorage::listFiles(const char* path, int maxFiles) {
   if (!useSdMmcBackend()) return SDCard.listFiles(path, maxFiles);
 
   std::vector<String> ret;
+#ifdef CROSSPOINT_HAS_SD_MMC_BACKEND
   if (!initialized) return ret;
 
   fs::File root = SD_MMC.open(path, FILE_READ);
@@ -137,12 +149,14 @@ std::vector<String> HalStorage::listFiles(const char* path, int maxFiles) {
     file.close();
   }
   root.close();
+#endif
   return ret;
 }
 
 String HalStorage::readFile(const char* path) {
   StorageLock lock;
   if (!useSdMmcBackend()) return SDCard.readFile(path);
+#ifdef CROSSPOINT_HAS_SD_MMC_BACKEND
   if (!initialized) return {""};
 
   fs::File f;
@@ -157,11 +171,15 @@ String HalStorage::readFile(const char* path) {
   }
   f.close();
   return content;
+#else
+  return {""};
+#endif
 }
 
 bool HalStorage::readFileToStream(const char* path, Print& out, size_t chunkSize) {
   StorageLock lock;
   if (!useSdMmcBackend()) return SDCard.readFileToStream(path, out, chunkSize);
+#ifdef CROSSPOINT_HAS_SD_MMC_BACKEND
   if (!initialized) return false;
 
   fs::File f;
@@ -180,12 +198,16 @@ bool HalStorage::readFileToStream(const char* path, Print& out, size_t chunkSize
   }
   f.close();
   return true;
+#else
+  return false;
+#endif
 }
 
 size_t HalStorage::readFileToBuffer(const char* path, char* buffer, size_t bufferSize, size_t maxBytes) {
   StorageLock lock;
   if (!useSdMmcBackend()) return SDCard.readFileToBuffer(path, buffer, bufferSize, maxBytes);
   if (!buffer || bufferSize == 0) return 0;
+#ifdef CROSSPOINT_HAS_SD_MMC_BACKEND
   if (!initialized) {
     buffer[0] = '\0';
     return 0;
@@ -214,11 +236,16 @@ size_t HalStorage::readFileToBuffer(const char* path, char* buffer, size_t buffe
   buffer[total] = '\0';
   f.close();
   return total;
+#else
+  buffer[0] = '\0';
+  return 0;
+#endif
 }
 
 bool HalStorage::writeFile(const char* path, const String& content) {
   StorageLock lock;
   if (!useSdMmcBackend()) return SDCard.writeFile(path, content);
+#ifdef CROSSPOINT_HAS_SD_MMC_BACKEND
   if (!initialized) return false;
 
   if (SD_MMC.exists(path)) SD_MMC.remove(path);
@@ -227,11 +254,15 @@ bool HalStorage::writeFile(const char* path, const String& content) {
   const size_t written = f.print(content);
   f.close();
   return written == content.length();
+#else
+  return false;
+#endif
 }
 
 bool HalStorage::ensureDirectoryExists(const char* path) {
   StorageLock lock;
   if (!useSdMmcBackend()) return SDCard.ensureDirectoryExists(path);
+#ifdef CROSSPOINT_HAS_SD_MMC_BACKEND
   if (!initialized) return false;
 
   if (SD_MMC.exists(path)) {
@@ -241,6 +272,9 @@ bool HalStorage::ensureDirectoryExists(const char* path) {
     return ok;
   }
   return SD_MMC.mkdir(path);
+#else
+  return false;
+#endif
 }
 
 class HalFile::Impl {
@@ -314,21 +348,27 @@ class HalFile::Impl {
 
   bool rename(const char* newPath) {
     if (backend == Backend::SdFat) return fsFile.rename(newPath);
+#ifdef CROSSPOINT_HAS_SD_MMC_BACKEND
     if (path.empty() || !newPath) return false;
     flush();
     close();
     const bool ok = SD_MMC.rename(path.c_str(), newPath);
     if (ok) path = newPath;
     return ok;
+#else
+    return false;
+#endif
   }
 
   bool isDirectory() { return backend == Backend::SdFat ? fsFile.isDirectory() : mmcFile.isDirectory(); }
   void rewindDirectory() {
     if (backend == Backend::SdFat) {
       fsFile.rewindDirectory();
+#ifdef CROSSPOINT_HAS_SD_MMC_BACKEND
     } else if (!path.empty()) {
       mmcFile.close();
       mmcFile = SD_MMC.open(path.c_str(), FILE_READ);
+#endif
     }
   }
 
@@ -361,45 +401,74 @@ HalFile& HalFile::operator=(HalFile&&) = default;
 HalFile HalStorage::open(const char* path, const oflag_t oflag) {
   StorageLock lock;  // ensure thread safety for the duration of this function
   if (!useSdMmcBackend()) return HalFile(std::make_unique<HalFile::Impl>(SDCard.open(path, oflag)));
+#ifdef CROSSPOINT_HAS_SD_MMC_BACKEND
   return HalFile(std::make_unique<HalFile::Impl>(SD_MMC.open(path, modeForOflag(oflag)), path));
+#else
+  return HalFile();
+#endif
 }
 
 bool HalStorage::mkdir(const char* path, const bool pFlag) {
   StorageLock lock;
   if (!useSdMmcBackend()) return SDCard.mkdir(path, pFlag);
+#ifdef CROSSPOINT_HAS_SD_MMC_BACKEND
   return SD_MMC.mkdir(path);
+#else
+  return false;
+#endif
 }
 
 bool HalStorage::exists(const char* path) {
   StorageLock lock;
   if (!useSdMmcBackend()) return SDCard.exists(path);
+#ifdef CROSSPOINT_HAS_SD_MMC_BACKEND
   return SD_MMC.exists(path);
+#else
+  return false;
+#endif
 }
 
 bool HalStorage::remove(const char* path) {
   StorageLock lock;
   if (!useSdMmcBackend()) return SDCard.remove(path);
+#ifdef CROSSPOINT_HAS_SD_MMC_BACKEND
   return SD_MMC.remove(path);
+#else
+  return false;
+#endif
 }
 bool HalStorage::rename(const char* oldPath, const char* newPath) {
   StorageLock lock;
   if (!useSdMmcBackend()) return SDCard.rename(oldPath, newPath);
+#ifdef CROSSPOINT_HAS_SD_MMC_BACKEND
   return SD_MMC.rename(oldPath, newPath);
+#else
+  return false;
+#endif
 }
 
 bool HalStorage::rmdir(const char* path) {
   StorageLock lock;
   if (!useSdMmcBackend()) return SDCard.rmdir(path);
+#ifdef CROSSPOINT_HAS_SD_MMC_BACKEND
   return SD_MMC.rmdir(path);
+#else
+  return false;
+#endif
 }
 
 bool HalStorage::openFileForRead(const char* moduleName, const char* path, HalFile& file) {
   StorageLock lock;  // ensure thread safety for the duration of this function
   if (useSdMmcBackend()) {
+#ifdef CROSSPOINT_HAS_SD_MMC_BACKEND
     fs::File mmcFile;
     const bool ok = openSdMmcForRead(moduleName, path, mmcFile);
     file = HalFile(std::make_unique<HalFile::Impl>(std::move(mmcFile), path));
     return ok;
+#else
+    file = HalFile();
+    return false;
+#endif
   }
 
   FsFile fsFile;
@@ -419,10 +488,15 @@ bool HalStorage::openFileForRead(const char* moduleName, const String& path, Hal
 bool HalStorage::openFileForWrite(const char* moduleName, const char* path, HalFile& file) {
   StorageLock lock;  // ensure thread safety for the duration of this function
   if (useSdMmcBackend()) {
+#ifdef CROSSPOINT_HAS_SD_MMC_BACKEND
     fs::File mmcFile;
     const bool ok = openSdMmcForWrite(moduleName, path, mmcFile);
     file = HalFile(std::make_unique<HalFile::Impl>(std::move(mmcFile), path));
     return ok;
+#else
+    file = HalFile();
+    return false;
+#endif
   }
 
   FsFile fsFile;
@@ -443,6 +517,7 @@ bool HalStorage::removeDir(const char* path) {
   StorageLock lock;
   if (!useSdMmcBackend()) return SDCard.removeDir(path);
 
+#ifdef CROSSPOINT_HAS_SD_MMC_BACKEND
   fs::File dir = SD_MMC.open(path, FILE_READ);
   if (!dir || !dir.isDirectory()) {
     if (dir) dir.close();
@@ -463,6 +538,9 @@ bool HalStorage::removeDir(const char* path) {
   }
   dir.close();
   return SD_MMC.rmdir(path);
+#else
+  return false;
+#endif
 }
 
 // HalFile implementation
