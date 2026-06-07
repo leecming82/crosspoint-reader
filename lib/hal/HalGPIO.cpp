@@ -118,6 +118,10 @@ namespace {
 constexpr char HW_NAMESPACE[] = "cphw";
 constexpr char NVS_KEY_DEV_OVERRIDE[] = "dev_ovr";  // 0=auto, 1=x4, 2=x3
 constexpr char NVS_KEY_DEV_CACHED[] = "dev_det";    // 0=unknown, 1=x4, 2=x3
+constexpr unsigned long MURPHY_DEBOUNCE_DELAY_MS = 5;
+constexpr uint8_t MURPHY_BTN_TOP = 1 << 0;
+constexpr uint8_t MURPHY_BTN_MIDDLE = 1 << 1;
+constexpr uint8_t MURPHY_BTN_BOTTOM = 1 << 2;
 
 enum class NvsDeviceValue : uint8_t { Unknown = 0, X4 = 1, X3 = 2 };
 
@@ -193,13 +197,65 @@ HalGPIO::DeviceType detectDeviceTypeWithFingerprint() {
 #endif
 }
 
+uint8_t murphyReadPhysicalButtons() {
+  uint8_t state = 0;
+  if (digitalRead(1) == LOW) {
+    state |= MURPHY_BTN_TOP;
+  }
+  if (digitalRead(2) == LOW) {
+    state |= MURPHY_BTN_MIDDLE;
+  }
+  if (digitalRead(0) == LOW) {
+    state |= MURPHY_BTN_BOTTOM;
+  }
+  return state;
+}
+
+uint8_t murphyShortPressButton(uint8_t physicalButton) {
+  switch (physicalButton) {
+    case MURPHY_BTN_TOP:
+      return HalGPIO::BTN_UP;
+    case MURPHY_BTN_MIDDLE:
+      return HalGPIO::BTN_DOWN;
+    case MURPHY_BTN_BOTTOM:
+      return HalGPIO::BTN_CONFIRM;
+    default:
+      return 0xFF;
+  }
+}
+
+uint8_t murphyLongPressButton(uint8_t physicalButton) {
+  switch (physicalButton) {
+    case MURPHY_BTN_TOP:
+      return HalGPIO::BTN_BACK;
+    case MURPHY_BTN_MIDDLE:
+      return HalGPIO::BTN_CONFIRM;
+    case MURPHY_BTN_BOTTOM:
+      return HalGPIO::BTN_POWER;
+    default:
+      return 0xFF;
+  }
+}
+
 }  // namespace
 
 void HalGPIO::begin() {
-  inputMgr.begin();
   SPI.begin(EPD_SCLK, SPI_MISO, EPD_MOSI, EPD_CS);
 
   _deviceType = detectDeviceTypeWithFingerprint();
+
+  if (deviceIsMurphyM4()) {
+    pinMode(1, INPUT_PULLUP);
+    pinMode(2, INPUT_PULLUP);
+    pinMode(0, INPUT_PULLUP);
+    murphyRawState = murphyReadPhysicalButtons();
+    murphyLastRawState = murphyRawState;
+    murphyPhysicalState = murphyRawState;
+    LOG_INF("GPIO", "Murphy M4 buttons: top=GPIO1, middle=GPIO2, bottom=GPIO0");
+    return;
+  }
+
+  inputMgr.begin();
 
   if (deviceIsX4()) {
     pinMode(BAT_GPIO0, INPUT);
@@ -208,6 +264,62 @@ void HalGPIO::begin() {
 }
 
 void HalGPIO::update() {
+  if (deviceIsMurphyM4()) {
+    const unsigned long now = millis();
+    const uint8_t rawState = murphyReadPhysicalButtons();
+    murphyPressedEvents = 0;
+    murphyReleasedEvents = 0;
+
+    if (rawState != murphyLastRawState) {
+      murphyLastDebounceTime = now;
+      murphyLastRawState = rawState;
+    }
+
+    if ((now - murphyLastDebounceTime) > MURPHY_DEBOUNCE_DELAY_MS && rawState != murphyRawState) {
+      const uint8_t previousPhysicalState = murphyRawState;
+      murphyRawState = rawState;
+
+      if (previousPhysicalState == 0 && rawState != 0) {
+        murphyPhysicalState = rawState;
+        murphyPressStart = now;
+        murphyPowerLongPressActive = false;
+        murphyCurrentState = 0;
+      } else if (previousPhysicalState != 0 && rawState == 0) {
+        const unsigned long heldTime = now - murphyPressStart;
+        const uint8_t logicalButton = heldTime >= MURPHY_LONG_PRESS_MS ? murphyLongPressButton(murphyPhysicalState)
+                                                                       : murphyShortPressButton(murphyPhysicalState);
+        if (logicalButton <= BTN_POWER) {
+          const uint8_t logicalMask = 1 << logicalButton;
+          if ((murphyCurrentState & logicalMask) == 0) {
+            murphyPressedEvents |= logicalMask;
+          }
+          murphyReleasedEvents |= logicalMask;
+          murphyCurrentState &= ~logicalMask;
+          if (logicalButton == BTN_POWER) {
+            murphyPowerPressFinish = now;
+          }
+        }
+        murphyPressFinish = now;
+        murphyPhysicalState = 0;
+        murphyPowerLongPressActive = false;
+      }
+    }
+
+    if (murphyRawState == MURPHY_BTN_BOTTOM && !murphyPowerLongPressActive &&
+        (now - murphyPressStart) >= MURPHY_LONG_PRESS_MS) {
+      const uint8_t powerMask = 1 << BTN_POWER;
+      murphyPowerLongPressActive = true;
+      murphyPowerPressStart = murphyPressStart;
+      murphyCurrentState |= powerMask;
+      murphyPressedEvents |= powerMask;
+    }
+
+    const bool connected = isUsbConnected();
+    usbStateChanged = (connected != lastUsbConnected);
+    lastUsbConnected = connected;
+    return;
+  }
+
   inputMgr.update();
   const bool connected = isUsbConnected();
   usbStateChanged = (connected != lastUsbConnected);
@@ -217,35 +329,56 @@ void HalGPIO::update() {
 bool HalGPIO::wasUsbStateChanged() const { return usbStateChanged; }
 
 bool HalGPIO::isPressed(uint8_t buttonIndex) const {
-  if (deviceIsMurphyM4() && buttonIndex == BTN_POWER) {
-    return false;
+  if (deviceIsMurphyM4()) {
+    return buttonIndex <= BTN_POWER && (murphyCurrentState & (1 << buttonIndex));
   }
   return inputMgr.isPressed(buttonIndex);
 }
 
 bool HalGPIO::wasPressed(uint8_t buttonIndex) const {
-  if (deviceIsMurphyM4() && buttonIndex == BTN_POWER) {
-    return false;
+  if (deviceIsMurphyM4()) {
+    return buttonIndex <= BTN_POWER && (murphyPressedEvents & (1 << buttonIndex));
   }
   return inputMgr.wasPressed(buttonIndex);
 }
 
-bool HalGPIO::wasAnyPressed() const { return inputMgr.wasAnyPressed(); }
+bool HalGPIO::wasAnyPressed() const {
+  if (deviceIsMurphyM4()) {
+    return murphyPressedEvents > 0;
+  }
+  return inputMgr.wasAnyPressed();
+}
 
 bool HalGPIO::wasReleased(uint8_t buttonIndex) const {
-  if (deviceIsMurphyM4() && buttonIndex == BTN_POWER) {
-    return false;
+  if (deviceIsMurphyM4()) {
+    return buttonIndex <= BTN_POWER && (murphyReleasedEvents & (1 << buttonIndex));
   }
   return inputMgr.wasReleased(buttonIndex);
 }
 
-bool HalGPIO::wasAnyReleased() const { return inputMgr.wasAnyReleased(); }
+bool HalGPIO::wasAnyReleased() const {
+  if (deviceIsMurphyM4()) {
+    return murphyReleasedEvents > 0;
+  }
+  return inputMgr.wasAnyReleased();
+}
 
-unsigned long HalGPIO::getHeldTime() const { return inputMgr.getHeldTime(); }
+unsigned long HalGPIO::getHeldTime() const {
+  if (deviceIsMurphyM4()) {
+    if (murphyRawState != 0) {
+      return millis() - murphyPressStart;
+    }
+    return murphyPressFinish - murphyPressStart;
+  }
+  return inputMgr.getHeldTime();
+}
 
 unsigned long HalGPIO::getPowerButtonHeldTime() const {
   if (deviceIsMurphyM4()) {
-    return 0;
+    if (isPressed(BTN_POWER)) {
+      return millis() - murphyPowerPressStart;
+    }
+    return murphyPowerPressFinish - murphyPowerPressStart;
   }
   return inputMgr.getPowerButtonHeldTime();
 }

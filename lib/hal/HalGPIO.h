@@ -56,6 +56,21 @@ class HalGPIO {
   bool lastUsbConnected = false;
   bool usbStateChanged = false;
 
+  static constexpr unsigned long MURPHY_LONG_PRESS_MS = 700;
+
+  uint8_t murphyRawState = 0;
+  uint8_t murphyLastRawState = 0;
+  uint8_t murphyPhysicalState = 0;
+  uint8_t murphyCurrentState = 0;
+  uint8_t murphyPressedEvents = 0;
+  uint8_t murphyReleasedEvents = 0;
+  unsigned long murphyLastDebounceTime = 0;
+  unsigned long murphyPressStart = 0;
+  unsigned long murphyPressFinish = 0;
+  unsigned long murphyPowerPressStart = 0;
+  unsigned long murphyPowerPressFinish = 0;
+  bool murphyPowerLongPressActive = false;
+
  public:
   using DeviceType = BoardModel;
 
