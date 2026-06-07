@@ -148,6 +148,10 @@ HalGPIO::DeviceType nvsToDeviceType(NvsDeviceValue value) {
 }
 
 HalGPIO::DeviceType detectDeviceTypeWithFingerprint() {
+#ifdef CROSSPOINT_BOARD_MURPHY_M4
+  LOG_INF("HW", "Board profile forced by build: Murphy M4");
+  return HalGPIO::DeviceType::MurphyM4;
+#else
   // Explicit override for recovery/support:
   // 0 = auto, 1 = force X4, 2 = force X3
   const NvsDeviceValue overrideValue = readNvsDeviceValue(NVS_KEY_DEV_OVERRIDE, NvsDeviceValue::Unknown);
@@ -186,6 +190,7 @@ HalGPIO::DeviceType detectDeviceTypeWithFingerprint() {
 
   // Conservative fallback for first boot with inconclusive probes.
   return HalGPIO::DeviceType::X4;
+#endif
 }
 
 }  // namespace
@@ -232,7 +237,11 @@ void HalGPIO::startDeepSleep() {
     inputMgr.update();
   }
   // Arm the wakeup trigger *after* the button is released
+#if defined(CONFIG_IDF_TARGET_ESP32C3)
   esp_deep_sleep_enable_gpio_wakeup(1ULL << InputManager::POWER_BUTTON_PIN, ESP_GPIO_WAKEUP_GPIO_LOW);
+#else
+  esp_sleep_enable_ext1_wakeup(1ULL << InputManager::POWER_BUTTON_PIN, ESP_EXT1_WAKEUP_ANY_LOW);
+#endif
   // Enter Deep Sleep
   esp_deep_sleep_start();
 }
@@ -270,6 +279,9 @@ void HalGPIO::verifyPowerButtonWakeup(uint16_t requiredDurationMs, bool shortPre
 }
 
 bool HalGPIO::isUsbConnected() const {
+  if (deviceIsMurphyM4()) {
+    return true;
+  }
   if (deviceIsX3()) {
     // X3: infer USB/charging via BQ27220 Current() register (0x0C, signed mA).
     // Positive current means charging.
@@ -287,6 +299,10 @@ bool HalGPIO::isUsbConnected() const {
 }
 
 HalGPIO::WakeupReason HalGPIO::getWakeupReason() const {
+  if (deviceIsMurphyM4()) {
+    return WakeupReason::Other;
+  }
+
   const auto wakeupCause = esp_sleep_get_wakeup_cause();
   const auto resetReason = esp_reset_reason();
 

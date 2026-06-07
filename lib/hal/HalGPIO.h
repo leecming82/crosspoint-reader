@@ -2,6 +2,7 @@
 
 #include <Arduino.h>
 #include <InputManager.h>
+#include <BoardProfile.h>
 
 // Display SPI pins (custom pins for XteinkX4, not hardware SPI defaults)
 #define EPD_SCLK 8   // SPI Clock
@@ -47,7 +48,7 @@ class HalGPIO {
   bool usbStateChanged = false;
 
  public:
-  enum class DeviceType : uint8_t { X4, X3 };
+  using DeviceType = BoardModel;
 
  private:
   DeviceType _deviceType = DeviceType::X4;
@@ -58,6 +59,8 @@ class HalGPIO {
   // Inline device type helpers for cleaner downstream checks
   inline bool deviceIsX3() const { return _deviceType == DeviceType::X3; }
   inline bool deviceIsX4() const { return _deviceType == DeviceType::X4; }
+  inline bool deviceIsMurphyM4() const { return _deviceType == DeviceType::MurphyM4; }
+  inline const BoardCapabilityProfile& getBoardProfile() const { return boardProfileFor(_deviceType); }
 
   // Start button GPIO and setup SPI for screen and SD card
   void begin();

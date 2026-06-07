@@ -1,5 +1,7 @@
 #include "Logging.h"
 
+#include "MurphyFlashLog.h"
+
 #include <string>
 
 #define MAX_ENTRY_LEN 256
@@ -59,10 +61,17 @@ void logPrintf(const char* level, const char* origin, const char* format, ...) {
     }
   }
   va_end(args);
+#ifdef CROSSPOINT_BOARD_MURPHY_M4
+  logSerial.print(buf);
+#else
   if (logSerial) {
     logSerial.print(buf);
   }
+#endif
   addToLogRingBuffer(buf);
+#ifdef CROSSPOINT_MURPHY_APP1_FLASH_LOG
+  MurphyFlashLog::append(buf);
+#endif
 }
 
 std::string getLastLogs() {

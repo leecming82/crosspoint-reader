@@ -12,6 +12,7 @@
 #include <HalTiltSensor.h>
 #include <I18n.h>
 #include <Logging.h>
+#include <MurphyFlashLog.h>
 #include <SPI.h>
 #include <WiFi.h>
 #include <builtinFonts/all.h>
@@ -114,6 +115,8 @@ unsigned long t2 = 0;
 // Definitions for SilentRestart.h. RTC_NOINIT survives ESP.restart() but not power loss.
 RTC_NOINIT_ATTR uint32_t silentRebootMagic;
 RTC_NOINIT_ATTR uint32_t silentRebootTarget;
+
+bool bootDiagnosticsOnly = false;
 constexpr uint32_t SILENT_REBOOT_MAGIC = 0xC1EAB007;
 constexpr uint32_t SILENT_REBOOT_TARGET_HOME = 0;
 constexpr uint32_t SILENT_REBOOT_TARGET_READER = 1;
@@ -271,8 +274,11 @@ void enterDeepSleep(bool fromTimeout = false) {
 }
 
 void setupDisplayAndFonts(bool seamless = false) {
+  LOG_INF("DISP", "Display/font setup begin seamless=%d", seamless);
   display.begin(seamless);
+  LOG_INF("DISP", "Display begin complete");
   renderer.begin();
+  LOG_INF("DISP", "Renderer begin complete");
   activityManager.begin();
   LOG_DBG("MAIN", "Display initialized");
 
@@ -301,6 +307,7 @@ void setupDisplayAndFonts(bool seamless = false) {
   sdFontSystem.begin(renderer);
 
   LOG_DBG("MAIN", "Fonts setup");
+  LOG_INF("DISP", "Display/font setup complete");
 }
 
 void setup() {
@@ -317,7 +324,15 @@ void setup() {
   logSerial.setTxTimeoutMs(1);  // This is a load-bearing 1. Do not modify.
 #endif
 
+#ifdef CROSSPOINT_MURPHY_APP1_FLASH_LOG
+  const bool flashLogReady = MurphyFlashLog::begin();
+#endif
+
   HalSystem::begin();
+
+#ifdef CROSSPOINT_MURPHY_APP1_FLASH_LOG
+  LOG_INF("BOOT", "Murphy app1 flash log ready=%d", flashLogReady);
+#endif
 
   // Read-and-clear so a panic later in setup() does not loop into silent reboot.
   // Bound the target range too; RTC_NOINIT memory is uninitialized on cold boot.
@@ -333,11 +348,26 @@ void setup() {
   halTiltSensor.begin();
   halClock.begin();
 
-  LOG_INF("MAIN", "Hardware detect: %s", gpio.deviceIsX3() ? "X3" : "X4");
+  const auto& board = gpio.getBoardProfile();
+  LOG_INF("MAIN",
+          "Board profile: %s (%s), soc=%s, display=%ux%u visible=%ux%u, psram=%d budget=%lu, touch=%d/%s, "
+          "frontlight=%d channels=%u, rtc=%d, batteryGauge=%d, charger=%d, tilt=%d",
+          board.label, board.id, socFamilyName(board.socFamily), board.displayWidth, board.displayHeight,
+          board.visibleWidth, board.visibleHeight, board.hasPsram, static_cast<unsigned long>(board.psramCacheBudgetBytes),
+          board.inputHasTouch, board.touchController, board.hasFrontlight, board.frontlightChannels, board.hasRtc,
+          board.hasBatteryGauge, board.hasChargerControl, board.hasTiltSensor);
+  HalSystem::logBootDiagnostics(board);
 
   // SD Card Initialization
   // We need 6 open files concurrently when parsing a new chapter
-  if (!Storage.begin()) {
+  const bool storageReady = Storage.begin();
+  HalSystem::logStorageDiagnostics(storageReady);
+  if (gpio.deviceIsMurphyM4()) {
+    LOG_INF("MAIN", "Murphy M4 diagnostic-only boot: stopping before display init");
+    bootDiagnosticsOnly = true;
+    return;
+  }
+  if (!storageReady) {
     LOG_ERR("MAIN", "SD card initialization failed");
     setupDisplayAndFonts(isSilentReboot);
     activityManager.goToFullScreenMessage("SD card error", EpdFontFamily::BOLD);
@@ -487,6 +517,16 @@ void loop() {
   static unsigned long maxLoopDuration = 0;
   const unsigned long loopStartTime = millis();
   static unsigned long lastMemPrint = 0;
+
+  if (bootDiagnosticsOnly) {
+    if (millis() - lastMemPrint >= 5000) {
+      LOG_INF("DIAG", "Heartbeat uptime=%lu storage=%d heap=%u psramFree=%u", millis(), Storage.ready(), ESP.getFreeHeap(),
+              ESP.getFreePsram());
+      lastMemPrint = millis();
+    }
+    delay(50);
+    return;
+  }
 
   gpio.update();
   halTiltSensor.update(SETTINGS.tiltPageTurn, SETTINGS.orientation, activityManager.isReaderActivity());

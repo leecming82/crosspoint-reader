@@ -8,23 +8,29 @@ The received Murphy M4 is now concrete enough to plan around: ESP32-S3, 16 MB fl
 
 ## Milestones
 
-1. Evidence and recovery baseline
+1. Evidence and recovery baseline — done
 
-   Capture normal boot logs, full flash, partition table, OTA data, bootloader, NVS/SPIFFS, app descriptors, and physical board photos before writing custom firmware. This gives us a rollback path and may reveal PSRAM, display, touch, frontlight, sensor, battery, and power details from stock logs, diagnostics, or saved settings.
+   Captured serial/download-mode evidence, full flash, partition table, OTA data, bootloader, SPIFFS, coredump, and app descriptors before writing custom firmware. This gives us a rollback path and revealed PSRAM, active app slot, partition layout, security posture, and stock firmware lineage.
 
-   Exit criteria: full flash backup is saved and restorable in principle; boot and partition metadata are decoded; panel/touch/frontlight/IC markings are photographed where practical; the current stock firmware version and app slot are known.
+   Exit criteria: full flash backup is saved and restorable in principle; boot and partition metadata are decoded; the current stock firmware version and app slot are known.
 
-2. Murphy M4 board profile
+   Result: artifacts are saved under `test/murphy-m4-baseline/`. The full 16 MB rollback image is `murphy-m4-full-flash-20260607.bin`, SHA-256 `b68c4d8a911d57c97ac238990c6f08d00efb27c352d97076ba52601af68e2a1e`. `app0` is selected and valid; `app1` is blank. Stock app metadata reports `arduino-lib-builder`, `esp-idf: v4.4.7 38eeba213a`, compile time `Mar  5 2024 12:12:53`, with MoFei strings and version-like strings `1.2.13`/`1.2.11`. Passive normal firmware serial logs were quiet at 115200; ROM download-mode logs were captured.
+
+2. Murphy M4 board profile — done
 
    Add an ESP32-S3 Murphy M4 PlatformIO environment and board capability descriptor without changing the C3/X3/X4 baseline. Start conservatively: mark touch, frontlight, PSRAM, RTC, charger, gauge, and sensors as unknown or disabled until proven by hardware or logs.
 
    Exit criteria: the Murphy environment compiles, has the correct flash/partition posture for this unit, emits a board-profile banner over serial, and leaves existing C3 environments behaviorally unchanged.
 
-3. Boot, diagnostics, and storage
+   Result: added `env:murphy_m4`, `partitions_murphy_m4.csv`, and a `BoardCapabilityProfile` descriptor. The Murphy profile targets ESP32-S3, 16 MB flash, captured app offsets, `800x480` viewport, confirmed 8 MB PSRAM with zero cache budget until allocation is tested, touch disabled with `FT6336U-unverified`, frontlight disabled, RTC/battery/charger/sensors disabled, and SD required. Startup emits a board-profile banner through the existing serial logging path. `pio run -e murphy_m4` and `pio run -e default` pass.
+
+3. Boot, diagnostics, and storage — done
 
    Bring up serial diagnostics, basic task/activity startup, NVS/SPIFFS handling, and SD/storage detection before display work. The firmware should be diagnosable even if the e-paper panel stays blank.
 
-   Exit criteria: custom firmware boots, logs reset reason and memory state, can mount or report storage state, and can recover enough diagnostics over serial to continue hardware bring-up safely.
+   Exit criteria: custom firmware boots, logs reset reason and memory state, can mount or report storage state, and can recover enough diagnostics to continue hardware bring-up safely even when serial/display/SD are unavailable.
+
+   Result: custom Murphy firmware boots after a manual reset and reaches setup. Because USB serial and SD logging were not reliable on the bring-up unit, Murphy diagnostic builds now mirror `LOG_*` output into a bounded 64 KB scratch log at the start of the blank `app1` slot (`0x6e0000`). The log captures reset reason, wakeup cause, CPU/SDK, heap/internal heap, PSRAM, storage init result, and diagnostic heartbeats. Storage still needs the real Murphy SD pin map, but failures are now observable without serial, SD, or display output.
 
 4. Display full-refresh bring-up
 
@@ -72,15 +78,15 @@ The received Murphy M4 is now concrete enough to plan around: ESP32-S3, 16 MB fl
 
 The received unit entered ESP32-S3 download mode using the public Murphy sequence: hold `Lock/Back`, briefly press `Reset`, keep holding `Lock/Back` for about one second, then release it.
 
-Read-only probes through Windows `usbipd` and WSL found:
+Read-only probes from Fedora Linux found:
 
 | Item | Result |
 | --- | --- |
 | USB VID:PID | `303a:1001` |
-| USB description | `USB Serial Device (COM7), USB JTAG/serial debug unit` |
-| WSL serial path | `/dev/ttyACM0` |
+| USB description | `USB JTAG/serial debug unit` |
+| Linux serial path | `/dev/ttyACM0` |
 | Chip | ESP32-S3 revision v0.2 |
-| Features | WiFi, BLE |
+| Features | WiFi, BLE, 8 MB embedded PSRAM |
 | Crystal | 40 MHz |
 | Factory MAC / USB serial | `48:ca:43:a4:b1:8c` |
 | Flash manufacturer/device | `c8:4018` |
@@ -91,6 +97,19 @@ Read-only probes through Windows `usbipd` and WSL found:
 | Download mode | Enabled |
 | USB serial/JTAG | Enabled |
 | Hardware JTAG disable | False |
+
+Full flash backup:
+
+| Item | Result |
+| --- | --- |
+| Artifact | `test/murphy-m4-baseline/murphy-m4-full-flash-20260607.bin` |
+| Size | `16777216` bytes |
+| SHA-256 | `b68c4d8a911d57c97ac238990c6f08d00efb27c352d97076ba52601af68e2a1e` |
+| Active app slot | `app0` |
+| Inactive app slot | `app1`, blank/`0xff` |
+| Stock app project | `arduino-lib-builder` |
+| Stock app version | `esp-idf: v4.4.7 38eeba213a` |
+| Stock app compile time | `Mar  5 2024 12:12:53` |
 
 Actual partition table read from this unit at `0x8000`:
 
@@ -109,7 +128,7 @@ Important implication: this unit uses `app0` at `0x10000`, not the public Murphy
 
 These are the key facts that still need hardware evidence:
 
-- PSRAM presence, size, speed, and stable allocation budget.
+- PSRAM speed and stable allocation budget.
 - Display controller, panel/flex variant, full init sequence, busy pin, reset pin, DC/CS/SCK/MOSI pins, rail sequencing, and partial-refresh limits.
 - Touch I2C pins, interrupt pin, reset pin, FT6336U address, coordinate transform, and calibration offsets.
 - Warm/cool frontlight PWM pins, frequency, polarity, driver topology, safe duty range, and shutdown requirements.
@@ -123,7 +142,6 @@ These are the key facts that still need hardware evidence:
 - Read a full flash backup and decode bootloader, OTA data, app descriptors, coredump area, NVS, and SPIFFS offline. SPIFFS may contain settings, calibration, diagnostics, or cached hardware facts absent from the OTA image.
 - If stock firmware can join Wi-Fi or enter a USB/transfer mode, query local diagnostics and settings APIs before replacing it. Embedded strings suggest diagnostics, screenshot, settings, font, OTA, and EPUB capability endpoints.
 - Exercise stock frontlight and touch settings, then compare saved settings or diagnostics. This may reveal warm/cool ranges, touch calibration, refresh settings, and whether settings live in NVS or SPIFFS.
-- Photograph the board, panel flex, touch flex, frontlight connector, and visible IC markings. Hardware markings are more reliable than firmware strings for panel, touch, charger, gauge, RTC, and frontlight driver identification.
 
 Avoid GPIO brute-force probing on the e-paper or frontlight until a full backup exists and display power sequencing is understood. Wrong rail or PWM assumptions can stress the panel or frontlight hardware.
 
