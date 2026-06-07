@@ -4,15 +4,24 @@
 #include <InputManager.h>
 #include <BoardProfile.h>
 
-// Display SPI pins (custom pins for XteinkX4, not hardware SPI defaults)
+// Display SPI pins (custom pins for XteinkX4/Murphy, not hardware SPI defaults)
+#ifdef CROSSPOINT_BOARD_MURPHY_M4
+#define EPD_SCLK 4   // SPI Clock
+#define EPD_MOSI 3   // SPI MOSI / panel DIN
+#define EPD_CS 5     // Chip Select
+#define EPD_DC 6     // Data/Command
+#define EPD_RST 7    // Reset
+#define EPD_BUSY 8   // Busy
+#define SPI_MISO -1  // Murphy display SPI is write-only; SD wiring is separate.
+#else
 #define EPD_SCLK 8   // SPI Clock
 #define EPD_MOSI 10  // SPI MOSI (Master Out Slave In)
 #define EPD_CS 21    // Chip Select
 #define EPD_DC 4     // Data/Command
 #define EPD_RST 5    // Reset
 #define EPD_BUSY 6   // Busy
-
-#define SPI_MISO 7  // SPI MISO, shared between SD card and display (Master In Slave Out)
+#define SPI_MISO 7   // SPI MISO, shared between SD card and display (Master In Slave Out)
+#endif
 
 #define BAT_GPIO0 0  // Battery voltage
 

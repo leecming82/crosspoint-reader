@@ -362,11 +362,6 @@ void setup() {
   // We need 6 open files concurrently when parsing a new chapter
   const bool storageReady = Storage.begin();
   HalSystem::logStorageDiagnostics(storageReady);
-  if (gpio.deviceIsMurphyM4()) {
-    LOG_INF("MAIN", "Murphy M4 diagnostic-only boot: stopping before display init");
-    bootDiagnosticsOnly = true;
-    return;
-  }
   if (!storageReady) {
     LOG_ERR("MAIN", "SD card initialization failed");
     setupDisplayAndFonts(isSilentReboot);

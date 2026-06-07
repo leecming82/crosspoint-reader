@@ -4,7 +4,7 @@ Date: 2026-06-07
 
 This document tracks the port of this Japanese CrossPoint branch to the Murphy M4 e-reader. The Japanese reader remains the source of truth: ruby/furigana, EPUB writing-mode metadata, vertical tategaki layout, dictionary cursor geometry, SD-backed dictionaries, `.cpfont` fonts, and bounded-memory caches must keep their current semantics.
 
-The received Murphy M4 is now concrete enough to plan around: ESP32-S3, 16 MB flash, native USB serial/JTAG download mode, an `800x480` display class, FT6336U touch evidence, warm/cool frontlight evidence, and a device-specific partition table that differs from the public Murphy Cloud manifest.
+The received Murphy M4 is now concrete enough to plan around: ESP32-S3, 16 MB flash, native USB serial/JTAG download mode, a 4.26 inch `800x480`/`EPD426` display class, FT6336U touch evidence, warm/cool frontlight evidence, and a device-specific partition table that differs from the public Murphy Cloud manifest. Murphy/Corogoo also appears to have a separate 3.7 inch M4 line, so the shared public repo name `3.7-inch-ink-screen-reader` is treated as a distribution breadcrumb, not target-hardware identity.
 
 ## Milestones
 
@@ -14,7 +14,7 @@ The received Murphy M4 is now concrete enough to plan around: ESP32-S3, 16 MB fl
 
    Exit criteria: full flash backup is saved and restorable in principle; boot and partition metadata are decoded; the current stock firmware version and app slot are known.
 
-   Result: artifacts are saved under `test/murphy-m4-baseline/`. The full 16 MB rollback image is `murphy-m4-full-flash-20260607.bin`, SHA-256 `b68c4d8a911d57c97ac238990c6f08d00efb27c352d97076ba52601af68e2a1e`. `app0` is selected and valid; `app1` is blank. Stock app metadata reports `arduino-lib-builder`, `esp-idf: v4.4.7 38eeba213a`, compile time `Mar  5 2024 12:12:53`, with MoFei strings and version-like strings `1.2.13`/`1.2.11`. Passive normal firmware serial logs were quiet at 115200; ROM download-mode logs were captured.
+   Result: artifacts are saved under `test/murphy-m4-baseline/`. The full 16 MB rollback image is `murphy-m4-full-flash-20260607.bin`, SHA-256 `b68c4d8a911d57c97ac238990c6f08d00efb27c352d97076ba52601af68e2a1e`. `app0` is selected and valid; `app1` is blank. Stock app metadata reports `arduino-lib-builder`, `esp-idf: v4.4.7 38eeba213a`, compile time `Mar  5 2024 12:12:53`, with MoFei strings and version-like strings `1.2.13`/`1.2.11`. Stock firmware mining found an embedded `EPD426-v1` update URL and public EPD426 OTA sibling, confirming 4.26 inch lineage but not exposing source-level GPIO definitions. Passive normal firmware serial logs were quiet at 115200; ROM download-mode logs were captured.
 
 2. Murphy M4 board profile — done
 
@@ -32,43 +32,63 @@ The received Murphy M4 is now concrete enough to plan around: ESP32-S3, 16 MB fl
 
    Result: custom Murphy firmware boots after a manual reset and reaches setup. Because USB serial and SD logging were not reliable on the bring-up unit, Murphy diagnostic builds now mirror `LOG_*` output into a bounded 64 KB scratch log at the start of the blank `app1` slot (`0x6e0000`). The log captures reset reason, wakeup cause, CPU/SDK, heap/internal heap, PSRAM, storage init result, and diagnostic heartbeats. Storage still needs the real Murphy SD pin map, but failures are now observable without serial, SD, or display output.
 
-4. Display full-refresh bring-up
+4. Display bring-up and app integration — in progress
 
-   Port the smallest viable e-paper HAL for the suspected `800x480` GDEQ/X4-class panel and validate full refresh before partial refresh. Keep physical scan dimensions, logical reader orientation, and viewport metrics separate.
+   Reuse the X4 e-paper driver model on the Murphy M4 4.26 inch panel, changing only board integration where hardware evidence requires it. Keep physical scan dimensions, logical reader orientation, and viewport metrics separate.
 
-   Exit criteria: test patterns and simple menus render reliably without obvious panel stress; rotation/orientation is understood; busy timing is bounded; no partial-refresh assumptions are required yet.
+   Exit criteria: test patterns and simple app screens render reliably without obvious panel stress; rotation/orientation is understood; busy timing is bounded; normal BW page turns use the X4 refresh commands; grayscale/AA behavior has an acceptable cleanup policy.
 
-5. Physical button input
+   Current result: the Murphy M4 display is an `800x480` GDEQ0426T82/SSD1677-style panel that matches the X4 display model. Confirmed differences are board-level: `SCK=4`, `MOSI=3`, `CS=5`, `DC=6`, `RST=7`, `BUSY=8`, no display MISO. RAM addressing also matches the working X4 path: X is pixel-addressed `0..799`, and Y is reversed `479..0`.
+
+   Confirmed driver model: use the X4 init, RAM window/counter setup, BW RAM `0x24`, RED RAM `0x26`, and refresh commands. Normal BW page turns do not load custom factory LUTs; they write the two RAM planes and invoke the controller update path (`FAST`, `HALF`, or `FULL`). Cold/wake updates need the X4 stronger activation path before later condensed updates behave correctly.
+
+   Grayscale/AA finding: the default X4 grayscale/AA path works on M4. A plain FAST page immediately after AA can leave visible residue, while the X4/base post-AA cleanup behavior using a stronger HALF-style refresh clears it. Keep that X4 post-AA policy for now and revisit only after real reader pages show a problem.
+
+   Timing note: the SPI-backed HAL writes each 48 KB RAM plane in about `11 ms`; visible refresh time is dominated by panel BUSY. Full-screen black/white probe timings are useful for safety checks, but they are not the same as real text page-turn quality because normal page turns use differential RAM state and the controller's refresh policy.
+
+   App integration status: `murphy_m4` now builds with the M4 display pins, X4 display model, 2-bit grayscale capability enabled, and partial refresh enabled. The regular app can render the `SD card error` screen; the remaining display-side check is that the normal app no longer falls into refresh loops while storage remains unresolved.
+
+5. SD card and storage bring-up
+
+   Identify the Murphy SD wiring and storage mode without relying on full app startup. Keep app1 flash logging as the primary diagnostic path until storage mounts reliably.
+
+   Exit criteria: SD/card storage mounts under custom firmware; root listing and a small read/write sanity test succeed; the confirmed pin map and bus mode are reflected in the board profile or storage HAL; failure paths do not trigger display refresh loops.
+
+   Current result: minimal `murphy_m4_probe` firmware now avoids the full app and avoids e-ink refreshes while probing storage. It tried the mined SD_MMC candidates `CLK=16`, `CMD=15`, `D0=17`, plus 4-bit variants using `18`, `11`, and `14`, with GPIO10/GPIO21 power-enable candidates. No tested SD_MMC combination mounted yet. GPIO10 passively idles high and should not be driven low; GPIO21 stayed low even when selected as an enable candidate. Artifacts include `test/murphy-m4-baseline/murphy_m4_minimal_display_sd_probe_flash_log_readback.bin` and `test/murphy-m4-baseline/murphy_m4_minimal_display_sd_power_hiz_probe_flash_log_readback.bin`.
+
+6. Physical button input
 
    Map Enter, Next, and Lock/Back to existing logical actions while treating Reset as hardware-only. Keep all primary navigation reachable by buttons before adding touch.
 
    Exit criteria: file browser, menus, page turns, selection, back/lock behavior, and recovery into download mode remain usable without touch.
 
-6. Japanese reader validation
+7. Japanese reader validation
 
    Validate the existing reader on the Murphy viewport before adding Murphy-only features. This is the first real product milestone, because display and input are only useful if Japanese EPUB semantics survive.
 
    Exit criteria: horizontal and vertical EPUBs render correctly; ruby/furigana survives parse, cache, layout, and render; dictionary cursor geometry follows logical text order; SD fonts and cache keys include board/layout metrics; bookmarks and page progression remain metadata-driven.
 
-7. Touch input
+8. Touch input
 
    Add FT6336U as an optional input provider that emits activity-level taps and logical actions. Touch should improve navigation and dictionary cursor placement, not replace the button workflow.
 
    Exit criteria: list row taps, reader tap zones, menu taps, and dictionary cursor placement work with calibrated coordinates; all primary flows still have button equivalents; touch calibration lives in the board profile.
 
-8. Two-channel frontlight
+9. Two-channel frontlight
 
    Add warm/cool frontlight as a board capability with off-by-default settings and explicit shutdown behavior. Brightness and color temperature should be stored separately from reader layout and hidden on boards without frontlight.
 
    Exit criteria: brightness and color temperature can be changed safely, persisted, restored at boot, turned off before sleep/update/shutdown, and disabled cleanly on non-frontlight boards.
 
-9. Power, battery, and sensors
+10. Power, battery, and sensors
 
    Identify and implement battery, charger, wake sources, RTC, buzzer, BMI270, and SHT40/AHT20 only where hardware evidence exists. Power UI should degrade gracefully when a chip is absent or not yet understood.
 
    Exit criteria: sleep/off paths release display, storage, radios, touch, and frontlight; charging/battery data is shown only when reliable; wake sources are explicit; unknown sensors remain disabled.
 
-10. Optional accelerators and Murphy features
+   Note: Murphy Cloud firmware confirms temperature/humidity support via an SHT40 path plus AHT20-style probe/fallback on shared I2C plumbing. Battery telemetry strings exist, but the low-level battery sense or gauge path still needs to be identified before enabling battery UI.
+
+11. Optional accelerators and Murphy features
 
    Add PSRAM-backed caches, screenshots, USB MSC, BLE remote/ring, dashboard widgets, and Murphy package ideas only after the Japanese reader works without them. These should be capability-gated accelerators or affordances, not dependencies.
 
@@ -124,12 +144,36 @@ Actual partition table read from this unit at `0x8000`:
 
 Important implication: this unit uses `app0` at `0x10000`, not the public Murphy Cloud `0x20000` app offset. Always read the target device's partition table before flashing, and never write an app image at `0x0`.
 
+## GPIO Findings
+
+| Subsystem | Signal | GPIO | Status | Evidence / Notes |
+| --- | --- | --- | --- | --- |
+| E-paper display | SCK / CLK | `4` | Confirmed | Mined from Murphy `1.2.4` display-constructor tuple, repeated in `1.2.8`/`1.2.11`; visibly validated by full-frame bar/white probes. |
+| E-paper display | MOSI / DIN | `3` | Confirmed | Same display tuple and full-frame validation. |
+| E-paper display | CS | `5` | Confirmed | Same display tuple and full-frame validation. |
+| E-paper display | DC | `6` | Confirmed | Same display tuple and full-frame validation. |
+| E-paper display | RST | `7` | Confirmed | Same display tuple; electrical probe showed `BUSY=8` responding while `RST=7` was held low/released; full-frame validation. |
+| E-paper display | BUSY | `8` | Confirmed | Same display tuple; electrical reset response and measured BUSY-high intervals during LUT/update probes. |
+| E-paper display | MISO | None / `-1` | Confirmed for display SPI | Murphy Cloud `1.3.0` SPI setup showed no display MISO; probes use write-only SPI. |
+| E-paper display | RAM addressing | X `0..799`, Y `479..0` | Confirmed behavior | Not GPIO, but critical display wiring behavior: X4-style pixel-addressed X plus reversed Y is required for correct full-frame content. |
+| SD / storage | CLK | `16` | Likely | Stock-firmware mining found an SD_MMC-style tuple around `16,15,17,18,11,14`; not yet mounted on hardware. |
+| SD / storage | CMD | `15` | Likely | Same SD_MMC tuple; not yet hardware-validated. |
+| SD / storage | D0 | `17` | Likely | Same SD_MMC tuple; not yet hardware-validated. |
+| SD / storage | D1 / D2 / D3 or drive pins | `18`, `11`, `14` | Candidate | Same tuple, but exact SD bus width and role split still need validation. |
+| Touch | I2C SDA | `13` | Likely | Firmware/string mining points to FT6336U on shared I2C plumbing; pin tuple inferred from cross-version analysis, not yet hardware-validated. |
+| Touch | I2C SCL | `12` | Likely | Same touch/I2C evidence; not yet hardware-validated. |
+| Frontlight | Cool / warm channels | `47`, `48` | Likely on newer firmware | Murphy Cloud `1.3.0` frontlight evidence anchors `GPIO47`/`GPIO48`; polarity/frequency/channel order still unknown. |
+| Frontlight | Cool / warm channels | `38`, `39` | Historical/conflicting candidate | Older `1.2.4` code has a `Frontlight ready: cool=GPIO%d warm=GPIO%d` neighborhood using `GPIO38`/`GPIO39`; reconcile before enabling. |
+| Buzzer | PWM / LEDC | `46` | Firmware clue | Public changelog mentions buzzer on `GPIO46` / LEDC channel 2; not yet hardware-validated. |
+| Temp/humidity | I2C sensor path | TBD | Confirmed feature, pins unresolved | Murphy Cloud firmware confirms SHT40 plus AHT20-style fallback, likely on shared I2C, but low-level pins/address behavior still need probing. |
+| Battery / charger | Sense or gauge path | TBD | Unknown | Battery telemetry strings exist, but no reliable GPIO/ADC/I2C gauge mapping yet. |
+
 ## Still Unknown
 
 These are the key facts that still need hardware evidence:
 
 - PSRAM speed and stable allocation budget.
-- Display controller, panel/flex variant, full init sequence, busy pin, reset pin, DC/CS/SCK/MOSI pins, rail sequencing, and partial-refresh limits.
+- Display controller variant, rail sequencing details, partial-refresh limits, and grayscale behavior. Full-frame content is now visibly validated with `SCK=4`, `MOSI=3`, `CS=5`, `DC=6`, `RST=7`, `BUSY=8`, X4-style pixel-addressed X `0..799`, reversed Y `479..0`, the X4 factory quality LUT, and `0x22/0xf4`.
 - Touch I2C pins, interrupt pin, reset pin, FT6336U address, coordinate transform, and calibration offsets.
 - Warm/cool frontlight PWM pins, frequency, polarity, driver topology, safe duty range, and shutdown requirements.
 - SD wiring and whether stock firmware uses external SD, internal SPIFFS, USB MSC, or a mix.
