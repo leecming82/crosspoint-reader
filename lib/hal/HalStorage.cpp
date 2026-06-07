@@ -92,7 +92,9 @@ bool HalStorage::begin() {
     return false;
   }
 
-  initialized = SD_MMC.begin("/sdcard", !board.sdMmc4Bit, false, SDMMC_FREQ_DEFAULT, 5);
+  // EPUB cache finalization can hold book.bin plus several temporary index files
+  // open at once. The SD_MMC VFS default is too small for that workload.
+  initialized = SD_MMC.begin("/sdcard", !board.sdMmc4Bit, false, SDMMC_FREQ_DEFAULT, 12);
   LOG_INF("STOR", "SD_MMC begin: ok=%d mode=%s cardType=%d cardSize=%llu", initialized,
           board.sdMmc4Bit ? "4-bit" : "1-bit", static_cast<int>(SD_MMC.cardType()),
           static_cast<unsigned long long>(SD_MMC.cardSize()));
@@ -555,7 +557,9 @@ void HalFile::rewindDirectory() {
 }
 bool HalFile::close() {
   HalStorage::StorageLock lock;
-  assert(impl != nullptr);
+  if (impl == nullptr) {
+    return false;
+  }
   return impl->close();
 }
 HalFile HalFile::openNextFile() {
