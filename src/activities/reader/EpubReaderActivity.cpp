@@ -986,25 +986,31 @@ void EpubReaderActivity::onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction 
 }
 
 void EpubReaderActivity::applyOrientation(const uint8_t orientation) {
-  if (SETTINGS.orientation == orientation) {
+  const bool settingsChanged = SETTINGS.orientation != orientation;
+  const bool rendererChanged = ReaderUtils::settingsOrientationForRenderer(renderer.getOrientation()) != orientation;
+  if (!settingsChanged && !rendererChanged) {
     return;
   }
 
   {
     RenderLock lock(*this);
-    clearKanjiCursorState(/*saveResumePosition=*/false, /*requestRedraw=*/false);
-    if (section) {
-      cachedSpineIndex = currentSpineIndex;
-      cachedChapterTotalPageCount = section->pageCount;
-      nextPageNumber = section->currentPage;
+    if (settingsChanged) {
+      clearKanjiCursorState(/*saveResumePosition=*/false, /*requestRedraw=*/false);
+      if (section) {
+        cachedSpineIndex = currentSpineIndex;
+        cachedChapterTotalPageCount = section->pageCount;
+        nextPageNumber = section->currentPage;
+      }
+
+      SETTINGS.orientation = orientation;
+      SETTINGS.saveToFile();
     }
 
-    SETTINGS.orientation = orientation;
-    SETTINGS.saveToFile();
+    ReaderUtils::applyOrientation(renderer, orientation);
 
-    ReaderUtils::applyOrientation(renderer, SETTINGS.orientation);
-
-    section.reset();
+    if (settingsChanged) {
+      section.reset();
+    }
   }
 }
 

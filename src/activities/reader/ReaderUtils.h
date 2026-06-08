@@ -32,6 +32,21 @@ inline void applyOrientation(GfxRenderer& renderer, const uint8_t orientation) {
   }
 }
 
+inline uint8_t settingsOrientationForRenderer(const GfxRenderer::Orientation orientation) {
+  switch (orientation) {
+    case GfxRenderer::Orientation::Portrait:
+      return CrossPointSettings::ORIENTATION::PORTRAIT;
+    case GfxRenderer::Orientation::LandscapeClockwise:
+      return CrossPointSettings::ORIENTATION::LANDSCAPE_CW;
+    case GfxRenderer::Orientation::PortraitInverted:
+      return CrossPointSettings::ORIENTATION::INVERTED;
+    case GfxRenderer::Orientation::LandscapeCounterClockwise:
+      return CrossPointSettings::ORIENTATION::LANDSCAPE_CCW;
+    default:
+      return CrossPointSettings::ORIENTATION::PORTRAIT;
+  }
+}
+
 class ScopedRendererOrientation {
  public:
   ScopedRendererOrientation(GfxRenderer& renderer, const GfxRenderer::Orientation orientation)

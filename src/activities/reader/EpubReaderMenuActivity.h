@@ -39,27 +39,48 @@ class EpubReaderMenuActivity final : public Activity {
   void onExit() override;
   void loop() override;
   void render(RenderLock&&) override;
+  bool allowsGlobalTouchBack() const override { return false; }
 
  private:
+  enum class MenuTab { Navigate = 0, Reading, Tools, Count };
+
   struct MenuItem {
     MenuAction action;
     StrId labelId;
   };
 
   static std::vector<MenuItem> buildMenuItems(bool hasFootnotes);
+  static std::vector<std::vector<MenuItem>> buildTabbedMenuItems(bool hasFootnotes);
   uint8_t normalizeOrientation(uint8_t orientation) const;
   uint8_t normalizeWritingModePreference(uint8_t writingModePreference) const;
   uint8_t writingModeOptionCount() const;
+  const std::vector<MenuItem>& activeMenuItems() const;
   void activateSelectedAction();
   void cancelMenu();
   bool handleTouch();
+  Rect screenRect() const;
   Rect contentRect() const;
   Rect headerBackRect() const;
+  Rect backButtonRect() const;
+  Rect progressRect() const;
+  Rect tabBarRect() const;
   Rect footerHintsRect() const;
+  int listPageItems() const;
+  int currentListPageStart() const;
+  int visibleMenuItemCount() const;
+  int visibleListRowCount() const;
+  bool hasPreviousListPage() const;
+  bool hasNextListPage() const;
+  bool isPreviousPageRow(int visibleRow) const;
+  bool isNextPageRow(int visibleRow) const;
+  int visibleRowToMenuIndex(int visibleRow) const;
+  void selectTab(int tabIndex);
 
   // Fixed menu layout
   const std::vector<MenuItem> menuItems;
+  const std::vector<std::vector<MenuItem>> tabMenuItems;
 
+  int selectedTabIndex = 0;
   int selectedIndex = 0;
 
   ButtonNavigator buttonNavigator;
