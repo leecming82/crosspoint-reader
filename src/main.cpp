@@ -556,8 +556,10 @@ void loop() {
     return;
   }
   if (gpio.wasScreenshotButtonReleased()) {
-    RenderLock lock;
-    ScreenshotUtil::takeScreenshot(renderer);
+    if (!activityManager.handleScreenshotRequest()) {
+      RenderLock lock;
+      ScreenshotUtil::takeScreenshot(renderer);
+    }
     return;
   }
   if (gpio.wasSleepButtonReleased()) {

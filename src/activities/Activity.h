@@ -45,6 +45,7 @@ class Activity {
   virtual bool preventAutoSleep() { return false; }
   virtual bool isReaderActivity() const { return false; }
   virtual bool allowsGlobalTouchBack() const { return true; }
+  virtual bool handleScreenshotRequest() { return false; }
   virtual ScreenshotInfo getScreenshotInfo() const { return {}; }
 
   // Start a new activity without destroying the current one

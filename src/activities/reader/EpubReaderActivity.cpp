@@ -2482,6 +2482,12 @@ ScreenshotInfo EpubReaderActivity::getScreenshotInfo() const {
   return info;
 }
 
+bool EpubReaderActivity::handleScreenshotRequest() {
+  pendingScreenshot = true;
+  requestUpdate();
+  return true;
+}
+
 CrossPointPosition EpubReaderActivity::getCurrentPosition() const {
   const int currentPage = section ? section->currentPage : nextPageNumber;
   const int totalPages = section ? section->pageCount : cachedChapterTotalPageCount;

@@ -286,6 +286,13 @@ bool ActivityManager::isReaderActivity() const {
 
 bool ActivityManager::skipLoopDelay() const { return currentActivity && currentActivity->skipLoopDelay(); }
 
+bool ActivityManager::handleScreenshotRequest() {
+  if (currentActivity) {
+    return currentActivity->handleScreenshotRequest();
+  }
+  return false;
+}
+
 ScreenshotInfo ActivityManager::getScreenshotInfo() const {
   if (currentActivity) {
     return currentActivity->getScreenshotInfo();

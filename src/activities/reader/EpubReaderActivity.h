@@ -174,6 +174,7 @@ class EpubReaderActivity final : public Activity {
   void render(RenderLock&& lock) override;
   bool isReaderActivity() const override { return true; }
   bool allowsGlobalTouchBack() const override { return false; }
+  bool handleScreenshotRequest() override;
   ScreenshotInfo getScreenshotInfo() const override;
   CrossPointPosition getCurrentPosition() const;
 };
