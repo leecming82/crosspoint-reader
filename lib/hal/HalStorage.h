@@ -74,6 +74,10 @@ class HalFile : public Print {
 
   void flush();
   size_t getName(char* name, size_t len);
+  // If a file is currently open for writing, especially on the SD_MMC backend,
+  // size() may not reflect bytes written until the file is flushed/closed.
+  // Use position() for bytes written in the current handle, or close/reopen
+  // before trusting size().
   size_t size();
   size_t fileSize();
   uint64_t fileSize64();
@@ -86,6 +90,7 @@ class HalFile : public Print {
   int read(void* buf, size_t count);
   int read();  // read a single byte
   size_t write(const void* buf, size_t count);
+  size_t write(const uint8_t* buf, size_t count) override;
   size_t write(uint8_t b) override;
   bool rename(const char* newPath);
   bool isDirectory() const;

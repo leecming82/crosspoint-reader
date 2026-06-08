@@ -729,8 +729,9 @@ bool Epub::generateThumbBmp(int height) const {
       return false;
     }
     const bool extractSuccess = readItemContentsToStream(coverImageHref, coverJpg, 1024);
-    const size_t extractedSize = coverJpg.size();
+    const size_t extractedSize = coverJpg.position();
     // Explicitly close() file before reopening for reading
+    coverJpg.flush();
     coverJpg.close();
     if (!extractSuccess || extractedSize == 0) {
       Storage.remove(coverJpgTempPath.c_str());
@@ -773,8 +774,9 @@ bool Epub::generateThumbBmp(int height) const {
       return false;
     }
     const bool extractSuccess = readItemContentsToStream(coverImageHref, coverPng, 1024);
-    const size_t extractedSize = coverPng.size();
+    const size_t extractedSize = coverPng.position();
     // Explicitly close() file before reopening for reading
+    coverPng.flush();
     coverPng.close();
     if (!extractSuccess || extractedSize == 0) {
       Storage.remove(coverPngTempPath.c_str());
@@ -813,6 +815,7 @@ bool Epub::generateThumbBmp(int height) const {
   // Write an empty bmp file to avoid generation attempts in the future
   HalFile thumbBmp;
   Storage.openFileForWrite("EBP", getThumbBmpPath(height), thumbBmp);
+  thumbBmp.close();
   return false;
 }
 

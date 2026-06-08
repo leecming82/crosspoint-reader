@@ -614,6 +614,11 @@ size_t HalFile::write(const void* buf, size_t count) {
   assert(impl != nullptr);
   return impl->write(buf, count);
 }
+size_t HalFile::write(const uint8_t* buf, size_t count) {
+  HalStorage::StorageLock lock;
+  assert(impl != nullptr);
+  return impl->write(buf, count);
+}
 size_t HalFile::write(uint8_t b) {
   HalStorage::StorageLock lock;
   assert(impl != nullptr);
