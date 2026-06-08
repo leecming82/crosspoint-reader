@@ -22,6 +22,8 @@
 #include "activities/network/WifiSelectionActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "util/TouchNavigator.h"
+#include "util/TouchUi.h"
 
 namespace {
 void syncTimeWithNTP() {
@@ -267,14 +269,88 @@ void KOReaderSyncActivity::onExit() {
   }
 }
 
+Rect KOReaderSyncActivity::applyRemoteRect() const {
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  const Rect screen = UITheme::getInstance().getScreenSafeArea(renderer, false, false);
+  const int y = renderer.getScreenHeight() - metrics.listRowHeight * 2 - metrics.verticalSpacing;
+  return Rect{screen.x, y, screen.width, metrics.listRowHeight};
+}
+
+Rect KOReaderSyncActivity::uploadLocalRect() const {
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  const Rect applyRect = applyRemoteRect();
+  return Rect{applyRect.x, applyRect.y + metrics.listRowHeight, applyRect.width, metrics.listRowHeight};
+}
+
+bool KOReaderSyncActivity::handleTouch() {
+#ifndef CROSSPOINT_BOARD_MURPHY_M4
+  return false;
+#else
+  if (state == CONNECTING || state == SYNCING || state == UPLOADING || state == WIFI_SELECTION) {
+    return mappedInput.wasTapped();
+  }
+
+  if (TouchNavigator::wasTappedIn(mappedInput, TouchUi::headerBackTapRect(renderer))) {
+    returnToReader();
+    return true;
+  }
+
+  if (state == SHOWING_RESULT) {
+    if (TouchNavigator::wasTappedIn(mappedInput, applyRemoteRect())) {
+      saveProgressAndReturn(remotePosition.spineIndex, remotePosition.pageNumber);
+      return true;
+    }
+    if (TouchNavigator::wasTappedIn(mappedInput, uploadLocalRect())) {
+      performUpload();
+      return true;
+    }
+    return mappedInput.wasTapped();
+  }
+
+  if (state == NO_REMOTE_PROGRESS) {
+    if (TouchNavigator::wasTappedIn(mappedInput, TouchUi::bottomActionRect(renderer))) {
+      if (documentHash.empty()) {
+        if (KOREADER_STORE.getMatchMethod() == DocumentMatchMethod::FILENAME) {
+          documentHash = KOReaderDocumentId::calculateFromFilename(epubPath);
+        } else {
+          documentHash = KOReaderDocumentId::calculate(epubPath);
+        }
+      }
+      performUpload();
+      return true;
+    }
+    return mappedInput.wasTapped();
+  }
+
+  if (state == NO_CREDENTIALS || state == SYNC_FAILED || state == UPLOAD_COMPLETE) {
+    if (TouchNavigator::wasTappedIn(mappedInput, TouchUi::bottomActionRect(renderer))) {
+      returnToReader();
+      return true;
+    }
+    return mappedInput.wasTapped();
+  }
+
+  return mappedInput.wasTapped();
+#endif
+}
+
 void KOReaderSyncActivity::render(RenderLock&&) {
   renderer.clearScreen();
 
   auto metrics = UITheme::getInstance().getMetrics();
-  Rect screen = UITheme::getInstance().getScreenSafeArea(renderer, true, false);
+  Rect screen =
+#ifdef CROSSPOINT_BOARD_MURPHY_M4
+      UITheme::getInstance().getScreenSafeArea(renderer, false, false);
+#else
+      UITheme::getInstance().getScreenSafeArea(renderer, true, false);
+#endif
 
+#ifdef CROSSPOINT_BOARD_MURPHY_M4
+  TouchUi::drawHeaderWithBack(renderer, screen, tr(STR_KOREADER_SYNC));
+#else
   GUI.drawHeader(renderer, Rect{screen.x, screen.y + metrics.topPadding, screen.width, metrics.headerHeight},
                  tr(STR_KOREADER_SYNC));
+#endif
 
   int top = screen.y + screen.height / 2 - 40;
   if (state == NO_CREDENTIALS) {
@@ -283,8 +359,12 @@ void KOReaderSyncActivity::render(RenderLock&&) {
     UITheme::drawCenteredText(renderer, screen, UI_10_FONT_ID, top + 40, tr(STR_KOREADER_SETUP_HINT), true,
                               EpdFontFamily::BOLD);
 
+#ifdef CROSSPOINT_BOARD_MURPHY_M4
+    TouchUi::drawTouchButton(renderer, TouchUi::bottomActionRect(renderer), tr(STR_BACK));
+#else
     const auto labels = mappedInput.mapLabels(tr(STR_BACK), "", "", "");
     GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+#endif
     renderer.displayBuffer();
     return;
   }
@@ -336,6 +416,10 @@ void KOReaderSyncActivity::render(RenderLock&&) {
              localProgress.percentage * 100);
     renderer.drawText(UI_10_FONT_ID, screen.x + metrics.contentSidePadding, top + 200, localPageStr);
 
+#ifdef CROSSPOINT_BOARD_MURPHY_M4
+    TouchUi::drawTouchButton(renderer, applyRemoteRect(), tr(STR_APPLY_REMOTE));
+    TouchUi::drawTouchButton(renderer, uploadLocalRect(), tr(STR_UPLOAD_LOCAL));
+#else
     const int optionY = top + 230;
     const int optionHeight = 30;
 
@@ -356,6 +440,7 @@ void KOReaderSyncActivity::render(RenderLock&&) {
     // Bottom button hints
     const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_SELECT), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
     GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+#endif
     renderer.displayBuffer();
     return;
   }
@@ -364,8 +449,12 @@ void KOReaderSyncActivity::render(RenderLock&&) {
     UITheme::drawCenteredText(renderer, screen, UI_10_FONT_ID, top, tr(STR_NO_REMOTE_MSG), true, EpdFontFamily::BOLD);
     UITheme::drawCenteredText(renderer, screen, UI_10_FONT_ID, top + 40, tr(STR_UPLOAD_PROMPT));
 
+#ifdef CROSSPOINT_BOARD_MURPHY_M4
+    TouchUi::drawTouchButton(renderer, TouchUi::bottomActionRect(renderer), tr(STR_UPLOAD));
+#else
     const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_UPLOAD), "", "");
     GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+#endif
     renderer.displayBuffer();
     return;
   }
@@ -373,8 +462,12 @@ void KOReaderSyncActivity::render(RenderLock&&) {
   if (state == UPLOAD_COMPLETE) {
     UITheme::drawCenteredText(renderer, screen, UI_10_FONT_ID, top, tr(STR_UPLOAD_SUCCESS), true, EpdFontFamily::BOLD);
 
+#ifdef CROSSPOINT_BOARD_MURPHY_M4
+    TouchUi::drawTouchButton(renderer, TouchUi::bottomActionRect(renderer), tr(STR_BACK));
+#else
     const auto labels = mappedInput.mapLabels(tr(STR_BACK), "", "", "");
     GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+#endif
     renderer.displayBuffer();
     return;
   }
@@ -383,14 +476,22 @@ void KOReaderSyncActivity::render(RenderLock&&) {
     UITheme::drawCenteredText(renderer, screen, UI_10_FONT_ID, top, tr(STR_SYNC_FAILED_MSG), true, EpdFontFamily::BOLD);
     UITheme::drawCenteredText(renderer, screen, UI_10_FONT_ID, top + 40, statusMessage.c_str());
 
+#ifdef CROSSPOINT_BOARD_MURPHY_M4
+    TouchUi::drawTouchButton(renderer, TouchUi::bottomActionRect(renderer), tr(STR_BACK));
+#else
     const auto labels = mappedInput.mapLabels(tr(STR_BACK), "", "", "");
     GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+#endif
     renderer.displayBuffer();
     return;
   }
 }
 
 void KOReaderSyncActivity::loop() {
+  if (handleTouch()) {
+    return;
+  }
+
   if (state == NO_CREDENTIALS || state == SYNC_FAILED || state == UPLOAD_COMPLETE) {
     if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
       returnToReader();

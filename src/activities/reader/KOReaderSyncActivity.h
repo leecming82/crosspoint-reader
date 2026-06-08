@@ -10,6 +10,8 @@
 #include "ProgressMapper.h"
 #include "activities/Activity.h"
 
+struct Rect;
+
 /**
  * Activity for syncing reading progress with KOReader sync server.
  *
@@ -92,4 +94,7 @@ class KOReaderSyncActivity final : public Activity {
   void ensureEpubLoaded();
   void saveProgressAndReturn(int spineIndex, int page);
   void returnToReader();
+  Rect applyRemoteRect() const;
+  Rect uploadLocalRect() const;
+  bool handleTouch();
 };

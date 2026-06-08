@@ -9,6 +9,9 @@
 #include "components/UITheme.h"
 #include "fontIds.h"
 #include "util/StringUtils.h"
+#include "util/TouchList.h"
+#include "util/TouchNavigator.h"
+#include "util/TouchUi.h"
 
 int XtcReaderChapterSelectionActivity::getPageItems() const {
   constexpr int lineHeight = 30;
@@ -53,21 +56,99 @@ void XtcReaderChapterSelectionActivity::onEnter() {
 
 void XtcReaderChapterSelectionActivity::onExit() { Activity::onExit(); }
 
+Rect XtcReaderChapterSelectionActivity::contentRect() const {
+  const auto& metrics = UITheme::getInstance().getMetrics();
+#ifdef CROSSPOINT_BOARD_MURPHY_M4
+  const Rect screen = UITheme::getInstance().getScreenSafeArea(renderer, false, false);
+  const int contentTop = screen.y + metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
+  const int contentBottom = renderer.getScreenHeight() - metrics.verticalSpacing;
+  return Rect{screen.x, contentTop, screen.width, std::max(0, contentBottom - contentTop)};
+#else
+  const auto pageWidth = renderer.getScreenWidth();
+  const auto orientation = renderer.getOrientation();
+  const bool isLandscapeCw = orientation == GfxRenderer::Orientation::LandscapeClockwise;
+  const bool isLandscapeCcw = orientation == GfxRenderer::Orientation::LandscapeCounterClockwise;
+  const bool isPortraitInverted = orientation == GfxRenderer::Orientation::PortraitInverted;
+  const int hintGutterWidth = (isLandscapeCw || isLandscapeCcw) ? 30 : 0;
+  const int contentX = isLandscapeCw ? hintGutterWidth : 0;
+  const int contentWidth = pageWidth - hintGutterWidth;
+  const int contentY = isPortraitInverted ? 50 : 0;
+  return Rect{contentX, 60 + contentY, contentWidth, getPageItems() * 30};
+#endif
+}
+
+void XtcReaderChapterSelectionActivity::cancel() {
+  ActivityResult result;
+  result.isCancelled = true;
+  setResult(std::move(result));
+  finish();
+}
+
+void XtcReaderChapterSelectionActivity::selectCurrent() {
+  const auto& chapters = xtc->getChapters();
+  if (!chapters.empty() && selectorIndex >= 0 && selectorIndex < static_cast<int>(chapters.size())) {
+    setResult(PageResult{chapters[selectorIndex].startPage});
+    finish();
+  }
+}
+
+bool XtcReaderChapterSelectionActivity::handleTouch() {
+#ifndef CROSSPOINT_BOARD_MURPHY_M4
+  return false;
+#else
+  if (TouchNavigator::wasTappedIn(mappedInput, TouchUi::headerBackTapRect(renderer))) {
+    cancel();
+    return true;
+  }
+
+  const auto& chapters = xtc->getChapters();
+  const Rect listBounds = contentRect();
+  const int rowHeight = UITheme::getInstance().getMetrics().listRowHeight;
+  const int listRows = std::max(1, listBounds.height / rowHeight);
+  const auto layout = TouchList::calculatePageLayout(selectorIndex, static_cast<int>(chapters.size()), listRows);
+  const int visibleRow =
+      TouchNavigator::tappedListIndex(mappedInput, listBounds, TouchList::visibleRowCount(layout), 0, rowHeight, 0);
+  if (visibleRow < 0) {
+    return mappedInput.wasTapped();
+  }
+
+  if (TouchList::isPreviousPageRow(layout, visibleRow)) {
+    selectorIndex =
+        TouchList::calculatePageLayout(std::max(0, layout.start - 1), static_cast<int>(chapters.size()), listRows)
+            .start;
+    requestUpdate();
+    return true;
+  }
+
+  if (TouchList::isNextPageRow(layout, visibleRow)) {
+    selectorIndex = std::min(static_cast<int>(chapters.size()) - 1, layout.start + layout.itemCount);
+    requestUpdate();
+    return true;
+  }
+
+  const int itemIndex = TouchList::visibleRowToItemIndex(layout, visibleRow);
+  if (itemIndex >= 0) {
+    selectorIndex = itemIndex;
+    selectCurrent();
+    return true;
+  }
+
+  return true;
+#endif
+}
+
 void XtcReaderChapterSelectionActivity::loop() {
   const int pageItems = getPageItems();
   const int totalItems = static_cast<int>(xtc->getChapters().size());
 
+  if (handleTouch()) {
+    return;
+  }
+
   if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
-    const auto& chapters = xtc->getChapters();
-    if (!chapters.empty() && selectorIndex >= 0 && selectorIndex < static_cast<int>(chapters.size())) {
-      setResult(PageResult{chapters[selectorIndex].startPage});
-      finish();
-    }
+    selectCurrent();
   } else if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
-    ActivityResult result;
-    result.isCancelled = true;
-    setResult(std::move(result));
-    finish();
+    cancel();
   }
 
   buttonNavigator.onNextRelease([this, totalItems] {
@@ -93,6 +174,57 @@ void XtcReaderChapterSelectionActivity::loop() {
 
 void XtcReaderChapterSelectionActivity::render(RenderLock&&) {
   renderer.clearScreen();
+
+#ifdef CROSSPOINT_BOARD_MURPHY_M4
+  {
+    const auto& metrics = UITheme::getInstance().getMetrics();
+    const Rect screen = UITheme::getInstance().getScreenSafeArea(renderer, false, false);
+    TouchUi::drawHeaderWithBack(renderer, screen, tr(STR_SELECT_CHAPTER));
+
+    const auto& chapters = xtc->getChapters();
+    const Rect listBounds = contentRect();
+    if (chapters.empty()) {
+      GUI.drawHelpText(renderer, listBounds, tr(STR_NO_CHAPTERS));
+      renderer.displayBuffer();
+      return;
+    }
+
+    const int rowHeight = metrics.listRowHeight;
+    const int listRows = std::max(1, listBounds.height / rowHeight);
+    const auto layout = TouchList::calculatePageLayout(selectorIndex, static_cast<int>(chapters.size()), listRows);
+    GUI.drawList(
+        renderer, listBounds, TouchList::visibleRowCount(layout), -1,
+        [this, layout, &chapters, listBounds, &metrics](int visibleRow) {
+          if (TouchList::isPreviousPageRow(layout, visibleRow)) {
+            return std::string(tr(STR_PREV_PAGE));
+          }
+          if (TouchList::isNextPageRow(layout, visibleRow)) {
+            return std::string(tr(STR_NEXT_PAGE));
+          }
+
+          const int itemIndex = TouchList::visibleRowToItemIndex(layout, visibleRow);
+          if (itemIndex < 0) {
+            return std::string();
+          }
+          const auto& chapter = chapters[itemIndex];
+          const std::string pageRange =
+              std::string("Pages ") + std::to_string(chapter.startPage + 1) + "-" + std::to_string(chapter.endPage + 1);
+          const std::string title = StringUtils::uiSafeLabelOrFallback(chapter.name, pageRange);
+          return renderer.truncatedText(UI_12_FONT_ID, title.c_str(),
+                                        listBounds.width - metrics.contentSidePadding * 2 - 20);
+        },
+        nullptr, nullptr, nullptr, true);
+    if (layout.previous) {
+      TouchUi::drawCenteredPagerRow(renderer, listBounds, 0, tr(STR_PREV_PAGE));
+    }
+    if (layout.next) {
+      TouchUi::drawCenteredPagerRow(renderer, listBounds, TouchList::visibleRowCount(layout) - 1, tr(STR_NEXT_PAGE));
+    }
+
+    renderer.displayBuffer();
+    return;
+  }
+#endif
 
   const auto pageWidth = renderer.getScreenWidth();
   const auto orientation = renderer.getOrientation();

@@ -6,6 +6,8 @@
 #include "activities/Activity.h"
 #include "util/ButtonNavigator.h"
 
+struct Rect;
+
 class XtcReaderChapterSelectionActivity final : public Activity {
   std::shared_ptr<Xtc> xtc;
   ButtonNavigator buttonNavigator;
@@ -14,6 +16,10 @@ class XtcReaderChapterSelectionActivity final : public Activity {
 
   int getPageItems() const;
   int findChapterIndexForPage(uint32_t page) const;
+  Rect contentRect() const;
+  void cancel();
+  void selectCurrent();
+  bool handleTouch();
 
  public:
   explicit XtcReaderChapterSelectionActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,

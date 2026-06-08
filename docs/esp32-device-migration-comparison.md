@@ -137,9 +137,9 @@ The received Murphy M4 is now concrete enough to plan around: ESP32-S3, 16 MB fl
    - [x] EPUB Footnotes
    - [x] EPUB Ruby Position
    - [x] EPUB Japanese Cursor Mode
-   - [ ] XTC Chapter Selection
-   - [ ] KOReader Sync
-   - [ ] QR Display
+   - [x] XTC Chapter Selection
+   - [x] KOReader Sync
+   - [x] QR Display
 
    Settings subscreens:
 
