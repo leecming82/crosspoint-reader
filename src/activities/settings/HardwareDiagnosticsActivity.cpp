@@ -2,6 +2,7 @@
 
 #include <Arduino.h>
 #include <GfxRenderer.h>
+#include <HalFrontlight.h>
 #include <HalGPIO.h>
 #include <I18n.h>
 #include <Logging.h>
@@ -17,6 +18,8 @@
 #include "util/TouchUi.h"
 
 namespace {
+constexpr int FRONTLIGHT_DUTY_LEVELS[] = {0, 16, 32, 64, 96, 128, 192, 255};
+
 uint16_t diagnosticBatteryPercent(const uint16_t millivolts) {
   struct Point {
     uint16_t mv;
@@ -60,8 +63,17 @@ void drawDiagnosticRow(const GfxRenderer& renderer, const int y, const char* lab
 
 void HardwareDiagnosticsActivity::onEnter() {
   Activity::onEnter();
+  halFrontlight.begin();
+  halFrontlight.off();
+  frontlight47Duty = 0;
+  frontlight48Duty = 0;
   refreshReadings();
   requestUpdate();
+}
+
+void HardwareDiagnosticsActivity::onExit() {
+  halFrontlight.off();
+  Activity::onExit();
 }
 
 void HardwareDiagnosticsActivity::refreshReadings() {
@@ -75,8 +87,11 @@ void HardwareDiagnosticsActivity::refreshReadings() {
   batterySystemMv = std::min(batterySenseMv * 2, 5000);
   batteryPercent = diagnosticBatteryPercent(static_cast<uint16_t>(batterySystemMv));
   sampleMs = millis();
-  LOG_INF("DIAG", "Murphy hardware diagnostics GPIO43=%d charging=%d GPIO9 raw=%d senseMv=%d batteryMv=%d pct=%d",
-          chargeRaw, charging, batteryRaw, batterySenseMv, batterySystemMv, batteryPercent);
+  LOG_INF("DIAG",
+          "Murphy hardware diagnostics GPIO43=%d charging=%d GPIO9 raw=%d senseMv=%d batteryMv=%d pct=%d "
+          "frontlight47=%d frontlight48=%d",
+          chargeRaw, charging, batteryRaw, batterySenseMv, batterySystemMv, batteryPercent, frontlight47Duty,
+          frontlight48Duty);
 #else
   chargeRaw = -1;
   charging = -1;
@@ -93,10 +108,56 @@ Rect HardwareDiagnosticsActivity::refreshButtonRect() const {
   return Rect{0, renderer.getScreenHeight() - metrics.listRowHeight, renderer.getScreenWidth(), metrics.listRowHeight};
 }
 
+Rect HardwareDiagnosticsActivity::frontlight47Rect() const {
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  const int y = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing + 18 +
+                (renderer.getLineHeight(UI_12_FONT_ID) + 14) * 9 - 8;
+  return Rect{0, y, renderer.getScreenWidth(), renderer.getLineHeight(UI_12_FONT_ID) + 20};
+}
+
+Rect HardwareDiagnosticsActivity::frontlight48Rect() const {
+  const Rect row = frontlight47Rect();
+  return Rect{row.x, row.y + row.height, row.width, row.height};
+}
+
+void HardwareDiagnosticsActivity::cycleFrontlight47() {
+  int nextDuty = 0;
+  for (const int duty : FRONTLIGHT_DUTY_LEVELS) {
+    if (duty > frontlight47Duty) {
+      nextDuty = duty;
+      break;
+    }
+  }
+  frontlight47Duty = nextDuty;
+  halFrontlight.setRaw(HalFrontlight::Channel::Cool, static_cast<uint8_t>(frontlight47Duty));
+  requestUpdate();
+}
+
+void HardwareDiagnosticsActivity::cycleFrontlight48() {
+  int nextDuty = 0;
+  for (const int duty : FRONTLIGHT_DUTY_LEVELS) {
+    if (duty > frontlight48Duty) {
+      nextDuty = duty;
+      break;
+    }
+  }
+  frontlight48Duty = nextDuty;
+  halFrontlight.setRaw(HalFrontlight::Channel::Warm, static_cast<uint8_t>(frontlight48Duty));
+  requestUpdate();
+}
+
 void HardwareDiagnosticsActivity::loop() {
 #ifdef CROSSPOINT_BOARD_MURPHY_M4
   if (TouchNavigator::wasTappedIn(mappedInput, TouchUi::headerBackTapRect(renderer))) {
     finish();
+    return;
+  }
+  if (TouchNavigator::wasTappedIn(mappedInput, frontlight47Rect())) {
+    cycleFrontlight47();
+    return;
+  }
+  if (TouchNavigator::wasTappedIn(mappedInput, frontlight48Rect())) {
+    cycleFrontlight48();
     return;
   }
   if (TouchNavigator::wasTappedIn(mappedInput, refreshButtonRect())) {
@@ -138,6 +199,8 @@ void HardwareDiagnosticsActivity::render(RenderLock&&) {
   char sampledValue[32];
   char heapValue[48];
   char psramValue[48];
+  char frontlight47Value[32];
+  char frontlight48Value[32];
 
   snprintf(chargeRawValue, sizeof(chargeRawValue), "%d", chargeRaw);
   snprintf(chargingValue, sizeof(chargingValue), "%s", charging > 0 ? "yes" : "no");
@@ -148,6 +211,8 @@ void HardwareDiagnosticsActivity::render(RenderLock&&) {
   snprintf(sampledValue, sizeof(sampledValue), "%lu ms", sampleMs);
   snprintf(heapValue, sizeof(heapValue), "%u free", static_cast<unsigned>(ESP.getFreeHeap()));
   snprintf(psramValue, sizeof(psramValue), "%u free", static_cast<unsigned>(ESP.getFreePsram()));
+  snprintf(frontlight47Value, sizeof(frontlight47Value), "duty %d", frontlight47Duty);
+  snprintf(frontlight48Value, sizeof(frontlight48Value), "duty %d", frontlight48Duty);
 
   const auto& metrics = UITheme::getInstance().getMetrics();
   int y = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing + 18;
@@ -170,6 +235,10 @@ void HardwareDiagnosticsActivity::render(RenderLock&&) {
   drawDiagnosticRow(renderer, y, "Heap", heapValue);
   y += lineStep;
   drawDiagnosticRow(renderer, y, "PSRAM", psramValue);
+  y += lineStep;
+  drawDiagnosticRow(renderer, y, "GPIO47", frontlight47Value);
+  y += lineStep;
+  drawDiagnosticRow(renderer, y, "GPIO48", frontlight48Value);
 
 #ifdef CROSSPOINT_BOARD_MURPHY_M4
   TouchUi::drawTouchButton(renderer, refreshButtonRect(), "Refresh");

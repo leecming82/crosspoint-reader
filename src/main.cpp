@@ -5,6 +5,7 @@
 #include <GfxRenderer.h>
 #include <HalClock.h>
 #include <HalDisplay.h>
+#include <HalFrontlight.h>
 #include <HalGPIO.h>
 #include <HalPowerManager.h>
 #include <HalStorage.h>
@@ -31,6 +32,7 @@
 #include "activities/Activity.h"
 #include "activities/ActivityManager.h"
 #include "activities/settings/SdFirmwareUpdateActivity.h"
+#include "activities/util/FrontlightOverlayActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
 #include "network/WifiLifecycle.h"
@@ -139,6 +141,27 @@ enum class BootResume : uint8_t {
 // device back up against the user's sleep gesture. Never cleared:
 // startDeepSleep() does not return, so a set latch only ends at the wakeup reset.
 static bool deepSleepInProgress = false;
+
+namespace {
+void applyFrontlightSettings() {
+  if (!gpio.deviceIsMurphyM4() || !halFrontlight.isAvailable()) return;
+  halFrontlight.set(SETTINGS.frontlightCoolDuty, SETTINGS.frontlightWarmDuty);
+}
+
+bool handleFrontlightOverlayInput() {
+  if (!gpio.deviceIsMurphyM4() || !halFrontlight.isAvailable()) return false;
+
+  if (gpio.wasFrontlightButtonReleased()) {
+    if (activityManager.isCurrentActivity("FrontlightOverlay")) {
+      activityManager.popActivity();
+    } else {
+      activityManager.pushActivity(std::make_unique<FrontlightOverlayActivity>(renderer, mappedInputManager));
+    }
+    return true;
+  }
+  return false;
+}
+}  // namespace
 
 void silentRestart() {
   if (deepSleepInProgress) return;  // sleeping supersedes the heap-defrag reboot
@@ -270,6 +293,7 @@ void enterDeepSleep(bool fromTimeout = false) {
   // Wake from deep sleep is effectively a chip reset, so no state needs to survive.
   WifiLifecycle::powerOff("SLP");
 
+  halFrontlight.off();
   halTiltSensor.deepSleep();
   display.deepSleep();
   LOG_DBG("MAIN", "Entering deep sleep");
@@ -347,6 +371,7 @@ void setup() {
   silentRebootTarget = 0;
 
   gpio.begin();
+  halFrontlight.begin();
   mappedInputManager.beginTouch();
   powerManager.begin();
   halClock.begin();
@@ -377,6 +402,7 @@ void setup() {
   HalSystem::checkPanic();
 
   SETTINGS.loadFromFile();
+  applyFrontlightSettings();
   APP_STATE.loadFromFile();
   RECENT_BOOKS.loadFromFile();
   I18N.setLanguage(static_cast<Language>(SETTINGS.language));
@@ -531,6 +557,9 @@ void loop() {
   mappedInputManager.setTouchLogicalSize(renderer.getScreenWidth(), renderer.getScreenHeight());
   halTouch.setLogicalOrientation(static_cast<uint8_t>(renderer.getOrientation()));
   mappedInputManager.update();
+  if (handleFrontlightOverlayInput()) {
+    return;
+  }
   if (gpio.wasScreenshotButtonReleased()) {
     RenderLock lock;
     ScreenshotUtil::takeScreenshot(renderer);

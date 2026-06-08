@@ -274,6 +274,10 @@ bool ActivityManager::handleGlobalBack() {
 
 bool ActivityManager::preventAutoSleep() const { return currentActivity && currentActivity->preventAutoSleep(); }
 
+bool ActivityManager::isCurrentActivity(const char* activityName) const {
+  return currentActivity && currentActivity->name == activityName;
+}
+
 bool ActivityManager::isReaderActivity() const {
   return std::any_of(stackActivities.begin(), stackActivities.end(),
                      [](const auto& activity) { return activity->isReaderActivity(); }) ||

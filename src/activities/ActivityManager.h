@@ -102,6 +102,7 @@ class ActivityManager {
 
   bool preventAutoSleep() const;
   bool isReaderActivity() const;
+  bool isCurrentActivity(const char* activityName) const;
   bool skipLoopDelay() const;
   ScreenshotInfo getScreenshotInfo() const;
 

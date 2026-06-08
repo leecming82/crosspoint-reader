@@ -198,7 +198,7 @@ The received Murphy M4 is now concrete enough to plan around: ESP32-S3, 16 MB fl
    - [ ] USB power / cable-present detection
    - [x] Charger status reporting
    - [ ] RTC / persistent clock
-   - [ ] Warm/cool frontlight
+   - [x] Warm/cool frontlight
    - [ ] Buzzer
    - [ ] Motion / tilt sensor
    - [ ] Humidity / temperature sensor
@@ -206,6 +206,8 @@ The received Murphy M4 is now concrete enough to plan around: ESP32-S3, 16 MB fl
    Note: Murphy Cloud firmware confirms temperature/humidity support via an SHT40 path plus AHT20-style probe/fallback on shared I2C plumbing. Cross-version stock firmware mining (`1.2.20` through `1.3.1`) and hardware testing validate GPIO9 as the battery ADC divider input and GPIO43 as an active-low charger-status input. The app now reports Murphy battery percentage from `analogReadMilliVolts(GPIO9) * 2` using a conservative interpolated Li-ion curve, and shows charging when `GPIO43 == LOW`. GPIO43 is charger-status, not raw USB cable-present; a PC connection at full battery can remain inactive.
 
    Runtime idle power note: X3/X4 keep the inherited 10 MHz idle CPU floor after 3 seconds of inactivity because that path was tested on the ESP32-C3 boards. Murphy M4 uses a board-specific 40 MHz idle floor instead. ESP32-S3 can theoretically go lower, but Murphy has a larger display path, PSRAM, touch, SD_MMC, and native USB Serial/JTAG, and an earlier diagnostic session saw a watchdog reset soon after entering the 10 MHz low-power path. Revisit lower S3 idle frequencies only with deliberate long-running stability tests.
+
+   Frontlight note: Murphy `HalFrontlight` initializes GPIO47/GPIO48 as 1 kHz, 8-bit PWM outputs and keeps both off by default until settings are loaded. Hardware validation confirms GPIO47 is the cool channel, GPIO48 is the warm channel, both are active-high, and both visibly brighten through the tested `0`, `16`, `32`, `64`, `96`, `128`, `192`, and `255` duty range. The app enables Murphy's two-channel frontlight capability, persists warm/cool duties, restores them at boot, and exposes a global top-button overlay with warm/cool vertical steppers where the upper half increases and lower half decreases. Hardware Diagnostics can still cycle each channel through the validated duty ladder and forces both channels off when leaving the screen.
 
    Current note: Murphy deep sleep is disabled in the HAL until wake/power pins are known. The inherited X4/C3 sleep path assumes `InputManager::POWER_BUTTON_PIN=3` for wake and drives GPIO13 low as a power-latch/shutdown pin; both are unsafe assumptions on Murphy because GPIO3 is display MOSI and GPIO13 is unverified. GPIO47/GPIO48 are frontlight outputs; even input pull-ups can visibly turn the light on, so probes must leave them out or explicitly drive them low/off.
 
@@ -301,7 +303,7 @@ Important implication: this unit uses `app0` at `0x10000`, not the public Murphy
 | Touch | Reset | `7` | Firmware-confirmed, shared | Stock transport tuple reports `RST=7`; GPIO7 is also the confirmed e-paper reset line, so sequencing must be handled carefully. |
 | Touch | Power / enable | `45` | Firmware-confirmed | Stock transport tuple reports `PWR=45`; probe uses the stock low-enable/reset sequence before I2C. |
 | Touch | Raw coordinate transform | `480x800` raw -> `800x480` display | Probe-confirmed first pass | 3x3 tap capture maps cleanly with `displayX = rawX * 800 / 480`, `displayY = rawY * 480 / 800`; refine edge calibration during app integration. |
-| Frontlight | Cool / warm channels | `47`, `48` | Likely on newer firmware | Murphy Cloud `1.3.0` frontlight evidence anchors `GPIO47`/`GPIO48`; polarity/frequency/channel order still unknown. |
+| Frontlight | Cool / warm channels | `47`, `48` | Confirmed/app-enabled on Murphy M4 | GPIO47 is cool, GPIO48 is warm, both active-high PWM. Tested through duty 255; app exposes persisted two-channel global overlay control. |
 | Frontlight | Cool / warm channels | `38`, `39` | Historical/conflicting candidate | Older `1.2.4` code has a `Frontlight ready: cool=GPIO%d warm=GPIO%d` neighborhood using `GPIO38`/`GPIO39`; reconcile before enabling. |
 | Buzzer | PWM / LEDC | `46` | Firmware clue | Public changelog mentions buzzer on `GPIO46` / LEDC channel 2; not yet hardware-validated. |
 | Temp/humidity | I2C sensor path | TBD | Confirmed feature, pins unresolved | Murphy Cloud firmware confirms SHT40 plus AHT20-style fallback, likely on shared I2C, but low-level pins/address behavior still need probing. |

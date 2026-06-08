@@ -151,6 +151,8 @@ bool JsonSettingsIO::saveSettings(const CrossPointSettings& s, const char* path)
   doc["tategakiRubyOffsetX"] = s.tategakiRubyOffsetX;
   doc["tategakiRubyOffsetY"] = s.tategakiRubyOffsetY;
   doc["rubyOffsetBias"] = 16;
+  doc["frontlightCoolDuty"] = s.frontlightCoolDuty;
+  doc["frontlightWarmDuty"] = s.frontlightWarmDuty;
   // SD card font family name — not in SettingsList, save manually
   if (s.sdFontFamilyName[0] != '\0') {
     doc["sdFontFamilyName"] = s.sdFontFamilyName;
@@ -307,6 +309,8 @@ bool JsonSettingsIO::loadSettings(CrossPointSettings& s, const char* json, bool*
   s.yokogakiRubyOffsetY = normalizeRubyOffset(doc["yokogakiRubyOffsetY"] | legacyRubyOffsetY);
   s.tategakiRubyOffsetX = normalizeRubyOffset(doc["tategakiRubyOffsetX"] | legacyRubyOffsetX);
   s.tategakiRubyOffsetY = normalizeRubyOffset(doc["tategakiRubyOffsetY"] | legacyRubyOffsetY);
+  s.frontlightCoolDuty = doc["frontlightCoolDuty"] | (uint8_t)0;
+  s.frontlightWarmDuty = doc["frontlightWarmDuty"] | (uint8_t)0;
   // SD card font family name — not in SettingsList, load manually
   const char* sfn = doc["sdFontFamilyName"] | "";
   strncpy(s.sdFontFamilyName, sfn, sizeof(s.sdFontFamilyName) - 1);

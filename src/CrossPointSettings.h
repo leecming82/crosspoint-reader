@@ -259,6 +259,9 @@ class CrossPointSettings {
   uint8_t removeReadBooksFromRecents = 0;
   // Move epub to /Read/ folder on SD card when finished (0 = disabled, 1 = enabled)
   uint8_t moveFinishedToReadFolder = 0;
+  // Murphy M4 warm/cool frontlight PWM duties, 0 = off, 255 = maximum tested duty.
+  uint8_t frontlightCoolDuty = 0;
+  uint8_t frontlightWarmDuty = 0;
   // Image rendering mode in EPUB reader
   uint8_t imageRendering = IMAGES_DISPLAY;
   // Tilt-based page turning (X3 only — requires QMI8658 IMU)
