@@ -1184,13 +1184,27 @@ void EpubReaderActivity::clearLatchedPageTurnIntent() {
 
 void EpubReaderActivity::latchPageTurnIntentWhileBusy() {
   const auto [prevTriggered, nextTriggered, fromTilt] = ReaderUtils::detectPageTurn(mappedInput);
-  if (fromTilt || (!prevTriggered && !nextTriggered)) {
+  if (!fromTilt && (prevTriggered || nextTriggered)) {
+    // Single-slot latch: preserve only the latest explicit page-turn intent while
+    // render/display owns the mutex. This avoids multi-page buffering.
+    pendingPageTurnIntent = nextTriggered ? PendingPageTurnIntent::Next : PendingPageTurnIntent::Prev;
+    pendingPageTurnIntentAt = millis();
     return;
   }
 
-  // Single-slot latch: preserve only the latest explicit page-turn intent while
-  // render/display owns the mutex. This avoids multi-page buffering.
-  pendingPageTurnIntent = nextTriggered ? PendingPageTurnIntent::Next : PendingPageTurnIntent::Prev;
+  if (!mappedInput.wasTapped()) {
+    return;
+  }
+
+  const auto tap = mappedInput.lastTap();
+  const int screenWidth = renderer.getScreenWidth();
+  if (tap.x < screenWidth / 3) {
+    pendingPageTurnIntent = PendingPageTurnIntent::Prev;
+  } else if (tap.x >= (screenWidth * 2) / 3) {
+    pendingPageTurnIntent = PendingPageTurnIntent::Next;
+  } else {
+    return;
+  }
   pendingPageTurnIntentAt = millis();
 }
 
