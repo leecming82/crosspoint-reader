@@ -137,7 +137,6 @@ class EpubReaderActivity final : public Activity {
   std::string statusBarTitleForCurrentSpine() const;
   void renderRubyAdjustOverlay() const;
   bool handleRubyAdjustTouch();
-  void silentIndexNextChapterIfNeeded(uint16_t viewportWidth, uint16_t viewportHeight);
   bool saveProgress(int spineIndex, int currentPage, int pageCount);
   void resolveReadingProfile();
   bool isJapaneseLanguageBook() const;

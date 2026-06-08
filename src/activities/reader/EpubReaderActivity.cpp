@@ -1430,7 +1430,6 @@ void EpubReaderActivity::render(RenderLock&& lock) {
     queueKanjiCursorRedraw();
     flushKanjiCursorRefresh();
   }
-  silentIndexNextChapterIfNeeded(viewportWidth, viewportHeight);
   saveProgress(currentSpineIndex, section->currentPage, section->pageCount);
 
   showPendingSyncSaveError();
@@ -1442,43 +1441,6 @@ void EpubReaderActivity::render(RenderLock&& lock) {
 
   if (showBookmarkMessage) {
     GUI.drawPopup(renderer, tr(STR_BOOKMARK_ADDED));
-  }
-}
-
-void EpubReaderActivity::silentIndexNextChapterIfNeeded(const uint16_t viewportWidth, const uint16_t viewportHeight) {
-  if (!epub || !section || section->pageCount < 2) {
-    return;
-  }
-
-  // Build the next chapter cache while the penultimate page is on screen.
-  if (section->currentPage != section->pageCount - 2) {
-    return;
-  }
-
-  const int nextSpineIndex = currentSpineIndex + 1;
-  if (nextSpineIndex < 0 || nextSpineIndex >= epub->getSpineItemsCount()) {
-    return;
-  }
-
-  Section nextSection(epub, nextSpineIndex, renderer);
-  if (nextSection.loadSectionFile(effectiveReaderFontId(), SETTINGS.getReaderLineCompression(),
-                                  SETTINGS.extraParagraphSpacing, SETTINGS.paragraphAlignment, viewportWidth,
-                                  viewportHeight, SETTINGS.hyphenationEnabled, SETTINGS.embeddedStyle,
-                                  SETTINGS.imageRendering, SETTINGS.focusReadingEnabled, SETTINGS.orientation,
-                                  static_cast<uint8_t>(effectiveWritingMode))) {
-    return;
-  }
-
-  LOG_DBG("ERS", "Silently indexing next chapter: %d", nextSpineIndex);
-  if (!nextSection.createSectionFile(effectiveReaderFontId(), SETTINGS.getReaderLineCompression(),
-                                     SETTINGS.extraParagraphSpacing, SETTINGS.paragraphAlignment, viewportWidth,
-                                     viewportHeight, SETTINGS.hyphenationEnabled, SETTINGS.embeddedStyle,
-                                     SETTINGS.imageRendering, SETTINGS.focusReadingEnabled, SETTINGS.orientation,
-                                     static_cast<uint8_t>(effectiveWritingMode))) {
-    LOG_ERR("ERS", "Failed silent indexing for chapter: %d", nextSpineIndex);
-  }
-  if (auto* fcm = renderer.getFontCacheManager()) {
-    fcm->clearPersistentCache();
   }
 }
 
