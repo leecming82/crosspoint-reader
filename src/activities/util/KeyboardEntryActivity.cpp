@@ -8,6 +8,8 @@
 #include "MappedInputManager.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "util/TouchNavigator.h"
+#include "util/TouchUi.h"
 
 const char* const KeyboardEntryActivity::shiftString[2] = {"shift", "SHIFT"};
 
@@ -186,7 +188,106 @@ void KeyboardEntryActivity::mapColContentBottom(int& col, bool goingUp) const {
   }
 }
 
+bool KeyboardEntryActivity::handleTouch() {
+#ifndef CROSSPOINT_BOARD_MURPHY_M4
+  return false;
+#else
+  if (TouchNavigator::wasTappedIn(mappedInput, TouchUi::headerBackTapRect(renderer))) {
+    onCancel();
+    return true;
+  }
+
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  const int pageWidth = renderer.getScreenWidth();
+  const int pageHeight = renderer.getScreenHeight();
+  const int keyHeight = metrics.keyboardKeyHeight;
+  const int bottomKeyHeight = metrics.keyboardBottomKeyHeight;
+  const int keySpacing = metrics.keyboardKeySpacing;
+  const int contentCols = getContentColCount();
+  const int keyboardWidth = pageWidth * metrics.keyboardWidthPercent / 100;
+  const int keyWidth = (keyboardWidth - (contentCols - 1) * keySpacing) / contentCols;
+  const int leftMargin = (pageWidth - (contentCols * keyWidth + (contentCols - 1) * keySpacing)) / 2;
+  const int bottomRowGap = metrics.keyboardBottomKeySpacing > 0 ? 4 : 0;
+  const int keyboardStartY = pageHeight - metrics.buttonHintsHeight - metrics.verticalSpacing -
+                             (keyHeight + keySpacing) * getContentRowCount() - bottomKeyHeight - bottomRowGap +
+                             metrics.keyboardVerticalOffset;
+
+  const int bkSpacing = metrics.keyboardBottomKeySpacing;
+  const int abcKeyWidth = (keyboardWidth - (COLS - 1) * keySpacing) / COLS;
+  const int contentTotalWidth = COLS * abcKeyWidth + (COLS - 1) * keySpacing;
+  const int bottomKeyWidth = (contentTotalWidth - (BOTTOM_KEY_COUNT - 1) * bkSpacing) / BOTTOM_KEY_COUNT;
+  const int bottomLeftMargin =
+      (pageWidth - (BOTTOM_KEY_COUNT * bottomKeyWidth + (BOTTOM_KEY_COUNT - 1) * bkSpacing)) / 2;
+
+  int urlLeftMargin = leftMargin;
+  if (urlMode) {
+    const int urlTotalWidth = 3 * keyWidth + 2 * keySpacing;
+    const int urlCenterX =
+        bottomLeftMargin + static_cast<int>(SpecialKeyType::Space) * (bottomKeyWidth + bkSpacing) + bottomKeyWidth / 2;
+    urlLeftMargin = urlCenterX - urlTotalWidth / 2;
+  }
+
+  const bool longPress = mappedInput.wasTouchLongPressed();
+  const bool tap = mappedInput.wasTapped();
+  if (!tap && !longPress) {
+    return false;
+  }
+
+  for (int row = 0; row < getContentRowCount(); row++) {
+    const int rowLeftMargin = urlMode ? urlLeftMargin : leftMargin;
+    const int rowY = keyboardStartY + row * (keyHeight + keySpacing);
+    for (int col = 0; col < contentCols; col++) {
+      const Rect keyRect{rowLeftMargin + col * (keyWidth + keySpacing), rowY, keyWidth, keyHeight};
+      const auto point = longPress ? mappedInput.lastTouchLongPress() : mappedInput.lastTap();
+      if (!TouchNavigator::contains(keyRect, point)) {
+        continue;
+      }
+      selectedRow = row;
+      selectedCol = col;
+      if (longPress) {
+        const char alt = getAlternativeChar();
+        if (alt != '\0') {
+          insertChar(alt);
+        } else {
+          handleKeyPress();
+        }
+      } else {
+        handleKeyPress();
+      }
+      requestUpdate();
+      return true;
+    }
+  }
+
+  const int bottomRowY = keyboardStartY + getContentRowCount() * (keyHeight + keySpacing) + bottomRowGap;
+  for (int col = 0; col < BOTTOM_KEY_COUNT; col++) {
+    const Rect keyRect{bottomLeftMargin + col * (bottomKeyWidth + bkSpacing), bottomRowY, bottomKeyWidth,
+                       bottomKeyHeight};
+    const auto point = longPress ? mappedInput.lastTouchLongPress() : mappedInput.lastTap();
+    if (!TouchNavigator::contains(keyRect, point)) {
+      continue;
+    }
+    selectedRow = getContentRowCount();
+    selectedCol = col;
+    if (longPress && col == static_cast<int>(SpecialKeyType::Del)) {
+      text.clear();
+      cursorPos = 0;
+    } else {
+      handleKeyPress();
+    }
+    requestUpdate();
+    return true;
+  }
+
+  return tap || longPress;
+#endif
+}
+
 void KeyboardEntryActivity::loop() {
+  if (handleTouch()) {
+    return;
+  }
+
   const int totalRows = getTotalRowCount();
 
   if (!cursorMode && mappedInput.wasPressed(MappedInputManager::Button::Up)) {
@@ -366,7 +467,12 @@ void KeyboardEntryActivity::render(RenderLock&&) {
   const auto pageHeight = renderer.getScreenHeight();
   const auto& metrics = UITheme::getInstance().getMetrics();
 
+#ifdef CROSSPOINT_BOARD_MURPHY_M4
+  const Rect screen = UITheme::getInstance().getScreenSafeArea(renderer, false, false);
+  TouchUi::drawHeaderWithBack(renderer, screen, title.c_str());
+#else
   GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, title.c_str());
+#endif
 
   const int lineHeight = renderer.getLineHeight(UI_12_FONT_ID);
   const int inputStartY = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing +
@@ -732,10 +838,12 @@ void KeyboardEntryActivity::render(RenderLock&&) {
     }
   }
 
+#ifndef CROSSPOINT_BOARD_MURPHY_M4
   const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_SELECT), tr(STR_DIR_LEFT), tr(STR_DIR_RIGHT));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
 
   GUI.drawSideButtonHints(renderer, ">", "<");
+#endif
 
   renderer.displayBuffer();
 }

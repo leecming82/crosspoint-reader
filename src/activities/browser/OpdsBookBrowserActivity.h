@@ -9,6 +9,8 @@
 #include "activities/Activity.h"
 #include "util/ButtonNavigator.h"
 
+struct Rect;
+
 /**
  * Activity for browsing and downloading books from an OPDS server.
  * Supports navigation through catalog hierarchy and downloading EPUBs.
@@ -51,5 +53,7 @@ class OpdsBookBrowserActivity final : public Activity {
   void downloadBook(const OpdsEntry& book);
   void launchSearch();
   void performSearch(const std::string& query);
+  bool handleTouch();
+  Rect listRect() const;
   bool preventAutoSleep() override { return true; }
 };

@@ -219,6 +219,7 @@ class KeyboardEntryActivity : public Activity {
   bool isBottomRow(int row) const;
   char getSelectedChar() const;
   char getAlternativeChar() const;
+  bool handleTouch();
   bool handleKeyPress();
   bool insertChar(char c);
   void insertString(const std::string& str);

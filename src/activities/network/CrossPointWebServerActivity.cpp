@@ -18,6 +18,8 @@
 #include "components/UITheme.h"
 #include "fontIds.h"
 #include "util/QrUtils.h"
+#include "util/TouchNavigator.h"
+#include "util/TouchUi.h"
 
 namespace {
 // AP Mode configuration
@@ -353,6 +355,12 @@ void CrossPointWebServerActivity::loop() {
           // for back button checking
           mappedInput.update();
           // Check for exit button inside loop for responsiveness
+#ifdef CROSSPOINT_BOARD_MURPHY_M4
+          if (TouchNavigator::wasTappedIn(mappedInput, TouchUi::headerBackTapRect(renderer))) {
+            onGoHome();
+            return;
+          }
+#endif
           if (mappedInput.wasPressed(MappedInputManager::Button::Back)) {
             onGoHome();
             return;
@@ -363,6 +371,12 @@ void CrossPointWebServerActivity::loop() {
     }
 
     // Handle exit on Back button (also check outside loop)
+#ifdef CROSSPOINT_BOARD_MURPHY_M4
+    if (TouchNavigator::wasTappedIn(mappedInput, TouchUi::headerBackTapRect(renderer))) {
+      onGoHome();
+      return;
+    }
+#endif
     if (mappedInput.wasPressed(MappedInputManager::Button::Back)) {
       onGoHome();
       return;
@@ -379,8 +393,13 @@ void CrossPointWebServerActivity::render(RenderLock&&) {
     const auto pageWidth = renderer.getScreenWidth();
     const auto pageHeight = renderer.getScreenHeight();
 
+#ifdef CROSSPOINT_BOARD_MURPHY_M4
+    const Rect screen = UITheme::getInstance().getScreenSafeArea(renderer, false, false);
+    TouchUi::drawHeaderWithBack(renderer, screen, isApMode ? tr(STR_HOTSPOT_MODE) : tr(STR_FILE_TRANSFER));
+#else
     GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight},
                    isApMode ? tr(STR_HOTSPOT_MODE) : tr(STR_FILE_TRANSFER), nullptr);
+#endif
 
     if (state == WebServerActivityState::SERVER_RUNNING) {
       GUI.drawSubHeader(renderer, Rect{0, metrics.topPadding + metrics.headerHeight, pageWidth, metrics.tabBarHeight},
@@ -399,8 +418,13 @@ void CrossPointWebServerActivity::renderServerRunning() const {
   const auto& metrics = UITheme::getInstance().getMetrics();
   const auto pageWidth = renderer.getScreenWidth();
 
+#ifdef CROSSPOINT_BOARD_MURPHY_M4
+  const Rect screen = UITheme::getInstance().getScreenSafeArea(renderer, false, false);
+  TouchUi::drawHeaderWithBack(renderer, screen, isApMode ? tr(STR_HOTSPOT_MODE) : tr(STR_FILE_TRANSFER));
+#else
   GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight},
                  isApMode ? tr(STR_HOTSPOT_MODE) : tr(STR_FILE_TRANSFER), nullptr);
+#endif
   GUI.drawSubHeader(renderer, Rect{0, metrics.topPadding + metrics.headerHeight, pageWidth, metrics.tabBarHeight},
                     connectedSSID.c_str());
 
@@ -469,8 +493,10 @@ void CrossPointWebServerActivity::renderServerRunning() const {
     renderer.drawCenteredText(SMALL_FONT_ID, startY, hostnameUrl.c_str(), true);
   }
 
+#ifndef CROSSPOINT_BOARD_MURPHY_M4
   const auto labels = mappedInput.mapLabels(tr(STR_EXIT), "", "", "");
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+#endif
 }
 
 void CrossPointWebServerActivity::renderWifiIndicator(int subHeaderTop) const {

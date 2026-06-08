@@ -11,6 +11,8 @@
 #include "WifiSelectionActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "util/TouchNavigator.h"
+#include "util/TouchUi.h"
 
 namespace {
 constexpr const char* HOSTNAME = "crosspoint";
@@ -100,6 +102,12 @@ void CalibreConnectActivity::stopWebServer() {
 }
 
 void CalibreConnectActivity::loop() {
+#ifdef CROSSPOINT_BOARD_MURPHY_M4
+  if (TouchNavigator::wasTappedIn(mappedInput, TouchUi::headerBackTapRect(renderer))) {
+    exitRequested = true;
+  }
+#endif
+
   if (mappedInput.wasPressed(MappedInputManager::Button::Back)) {
     exitRequested = true;
   }
@@ -119,6 +127,12 @@ void CalibreConnectActivity::loop() {
       }
       if ((i & 0x0F) == 0x0F) {
         yield();
+#ifdef CROSSPOINT_BOARD_MURPHY_M4
+        if (TouchNavigator::wasTappedIn(mappedInput, TouchUi::headerBackTapRect(renderer))) {
+          exitRequested = true;
+          break;
+        }
+#endif
         if (mappedInput.wasPressed(MappedInputManager::Button::Back)) {
           exitRequested = true;
           break;
@@ -175,7 +189,12 @@ void CalibreConnectActivity::render(RenderLock&&) {
 
   renderer.clearScreen();
 
+#ifdef CROSSPOINT_BOARD_MURPHY_M4
+  const Rect screen = UITheme::getInstance().getScreenSafeArea(renderer, false, false);
+  TouchUi::drawHeaderWithBack(renderer, screen, tr(STR_CALIBRE_WIRELESS));
+#else
   GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, tr(STR_CALIBRE_WIRELESS));
+#endif
   const auto height = renderer.getLineHeight(UI_10_FONT_ID);
   const auto top = (pageHeight - height) / 2;
 
@@ -223,8 +242,10 @@ void CalibreConnectActivity::render(RenderLock&&) {
       renderer.drawText(SMALL_FONT_ID, metrics.contentSidePadding, y, msg.c_str());
     }
 
+#ifndef CROSSPOINT_BOARD_MURPHY_M4
     const auto labels = mappedInput.mapLabels(tr(STR_EXIT), "", "", "");
     GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+#endif
   }
   renderer.displayBuffer();
 }

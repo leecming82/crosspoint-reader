@@ -162,18 +162,18 @@ The received Murphy M4 is now concrete enough to plan around: ESP32-S3, 16 MB fl
 
    - [x] Wi-Fi Selection
    - [x] Network Mode Selection
-   - [ ] File Transfer / Web Server
-   - [ ] Calibre Connect
-   - [ ] OPDS Browser
+   - [x] File Transfer / Web Server
+   - [x] Calibre Connect
+   - [x] OPDS Browser
 
    Utility:
 
-   - [ ] Confirmation Dialog
-   - [ ] Keyboard Entry
-   - [ ] Interval Selection
-   - [ ] Full Screen Message
-   - [ ] Boot
-   - [ ] Sleep
+   - [x] Confirmation Dialog
+   - [x] Keyboard Entry
+   - [x] Interval Selection
+   - [x] Full Screen Message
+   - [x] Boot
+   - [x] Sleep
 
 10. Fully functional Japanese EPUB
 
