@@ -282,7 +282,7 @@ bool HomeActivity::handleTouch() {
   }
 
   const Rect coverRect{0, metrics.homeTopPadding, renderer.getScreenWidth(), metrics.homeCoverTileHeight};
-  const bool coverHit = !metrics.homeContinueReadingInMenu && !recentBooks.empty() && recentsLoaded &&
+  const bool coverHit = !metrics.homeContinueReadingInMenu && !recentBooks.empty() &&
                         TouchNavigator::wasTappedIn(mappedInput, coverRect);
   if (coverHit) {
     selectorIndex = 0;
