@@ -31,6 +31,7 @@ bool useSdMmcBackend() { return activeBoardProfile().sdUsesSdMmc; }
 
 const char* modeForOflag(const oflag_t oflag) {
   if (oflag & O_APPEND) return FILE_APPEND;
+  if ((oflag & O_RDWR) && !(oflag & (O_CREAT | O_TRUNC))) return "r+";
   if (oflag & (O_WRITE | O_WRONLY | O_RDWR | O_CREAT | O_TRUNC)) return FILE_WRITE;
   return FILE_READ;
 }

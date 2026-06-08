@@ -214,8 +214,8 @@ void HardwareDiagnosticsActivity::render(RenderLock&&) {
   snprintf(frontlight47Value, sizeof(frontlight47Value), "duty %d", frontlight47Duty);
   snprintf(frontlight48Value, sizeof(frontlight48Value), "duty %d", frontlight48Duty);
 
-  const auto& metrics = UITheme::getInstance().getMetrics();
-  int y = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing + 18;
+  const auto& layoutMetrics = UITheme::getInstance().getMetrics();
+  int y = layoutMetrics.topPadding + layoutMetrics.headerHeight + layoutMetrics.verticalSpacing + 18;
   const int lineStep = renderer.getLineHeight(UI_12_FONT_ID) + 14;
 
   drawDiagnosticRow(renderer, y, "GPIO43", chargeRawValue);

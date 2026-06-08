@@ -5,6 +5,7 @@
 #include <Logging.h>
 #include <stdint.h>
 
+#include <algorithm>
 #include <cstdlib>
 #include <cstring>
 #include <string>
@@ -177,6 +178,115 @@ struct PixelCache {
   }
 };
 
+struct BufferedPixelCache {
+  std::string path;
+  uint8_t* buffer;
+  int width;
+  int height;
+  int bytesPerRow;
+  size_t bytes;
+  bool active;
+  bool failed;
+
+  BufferedPixelCache() : buffer(nullptr), width(0), height(0), bytesPerRow(0), bytes(0), active(false), failed(false) {}
+  BufferedPixelCache(const BufferedPixelCache&) = delete;
+  BufferedPixelCache& operator=(const BufferedPixelCache&) = delete;
+
+  bool begin(const std::string& cachePath, int w, int h) {
+    path = cachePath;
+    width = w;
+    height = h;
+    bytesPerRow = (w + 3) / 4;
+    bytes = static_cast<size_t>(bytesPerRow) * height;
+    failed = false;
+
+#ifdef BOARD_HAS_PSRAM
+    buffer = static_cast<uint8_t*>(ps_malloc(bytes));
+#else
+    buffer = nullptr;
+#endif
+    if (!buffer) {
+      failed = true;
+      LOG_ERR("IMG", "OOM buffered cache: %u bytes", static_cast<unsigned>(bytes));
+      return false;
+    }
+
+    memset(buffer, 0, bytes);
+    active = true;
+    return true;
+  }
+
+  bool beginRow(int row) {
+    if (!active || failed || row < 0 || row >= height) return false;
+    currentRow_ = row;
+    return true;
+  }
+
+  void writePixel(int x, uint8_t value) {
+    if (!active || failed || !buffer || x < 0 || x >= width) return;
+    const int byteIdx = x >> 2;
+    const int bitShift = 6 - (x & 3) * 2;
+    uint8_t& packed = buffer[static_cast<size_t>(currentRow_) * bytesPerRow + byteIdx];
+    packed = (packed & ~(0x03 << bitShift)) | ((value & 0x03) << bitShift);
+  }
+
+  bool finish() {
+    if (!active || failed || !buffer) {
+      return false;
+    }
+
+    Storage.remove(path.c_str());
+    HalFile file;
+    if (!Storage.openFileForWrite("IMG", path, file)) {
+      failed = true;
+      return false;
+    }
+
+    const uint16_t headerWidth = width;
+    const uint16_t headerHeight = height;
+    if (file.write(&headerWidth, 2) != 2 || file.write(&headerHeight, 2) != 2) {
+      file.close();
+      Storage.remove(path.c_str());
+      failed = true;
+      return false;
+    }
+
+    size_t writtenTotal = 0;
+    while (writtenTotal < bytes) {
+      const size_t chunk = std::min<size_t>(4096, bytes - writtenTotal);
+      if (file.write(buffer + writtenTotal, chunk) != chunk) {
+        file.close();
+        Storage.remove(path.c_str());
+        failed = true;
+        return false;
+      }
+      writtenTotal += chunk;
+      yield();
+    }
+
+    file.close();
+    active = false;
+    return true;
+  }
+
+  void abort() {
+    if (!path.empty()) Storage.remove(path.c_str());
+    active = false;
+    failed = true;
+  }
+
+  ~BufferedPixelCache() {
+    if (buffer) {
+      free(buffer);
+      buffer = nullptr;
+    }
+  }
+
+ private:
+  int currentRow_ = 0;
+
+};
+
 struct SeekablePixelCache {
   HalFile file;
   std::string path;
@@ -217,27 +327,38 @@ struct SeekablePixelCache {
     }
 
     Storage.remove(path.c_str());
-    file = Storage.open(path.c_str(), O_RDWR | O_CREAT);
-    if (!file) {
+    HalFile initFile = Storage.open(path.c_str(), O_WRITE | O_CREAT | O_TRUNC);
+    if (!initFile) {
       free(rowBuffer);
       rowBuffer = nullptr;
       failed = true;
+      LOG_ERR("IMG", "Failed to create seekable cache: %s", path.c_str());
       return false;
     }
 
     uint16_t headerWidth = width;
     uint16_t headerHeight = height;
-    if (file.write(&headerWidth, 2) != 2 || file.write(&headerHeight, 2) != 2) {
+    if (initFile.write(&headerWidth, 2) != 2 || initFile.write(&headerHeight, 2) != 2) {
+      initFile.close();
       fail();
       return false;
     }
 
     memset(rowBuffer, 0, bytesPerRow);
     for (int row = 0; row < height; row++) {
-      if (file.write(rowBuffer, bytesPerRow) != static_cast<size_t>(bytesPerRow)) {
+      if (initFile.write(rowBuffer, bytesPerRow) != static_cast<size_t>(bytesPerRow)) {
+        initFile.close();
         fail();
         return false;
       }
+    }
+    initFile.close();
+
+    file = Storage.open(path.c_str(), O_RDWR);
+    if (!file) {
+      fail();
+      LOG_ERR("IMG", "Failed to reopen seekable cache read/write: %s", path.c_str());
+      return false;
     }
 
     active = true;
@@ -250,6 +371,7 @@ struct SeekablePixelCache {
     if (!flushCurrentRow()) return false;
 
     if (!file.seek(rowOffset(row)) || file.read(rowBuffer, bytesPerRow) != bytesPerRow) {
+      LOG_ERR("IMG", "Seekable cache read failed: %s row=%d", path.c_str(), row);
       fail();
       return false;
     }
@@ -268,8 +390,15 @@ struct SeekablePixelCache {
   }
 
   bool finish() {
-    if (!active || failed) return false;
-    if (!flushCurrentRow()) return false;
+    if (!active || failed) {
+      LOG_ERR("IMG", "Seekable cache finish skipped: %s active=%d failed=%d", path.c_str(), active ? 1 : 0,
+              failed ? 1 : 0);
+      return false;
+    }
+    if (!flushCurrentRow()) {
+      LOG_ERR("IMG", "Seekable cache final flush failed: %s", path.c_str());
+      return false;
+    }
 
     file.close();
     active = false;
@@ -308,6 +437,7 @@ struct SeekablePixelCache {
     if (currentRow < 0) return true;
     if (rowDirty) {
       if (!file.seek(rowOffset(currentRow)) || file.write(rowBuffer, bytesPerRow) != static_cast<size_t>(bytesPerRow)) {
+        LOG_ERR("IMG", "Seekable cache write failed: %s row=%d", path.c_str(), currentRow);
         fail();
         return false;
       }
@@ -315,5 +445,42 @@ struct SeekablePixelCache {
     currentRow = -1;
     rowDirty = false;
     return true;
+  }
+};
+
+struct JpegPixelCache {
+  BufferedPixelCache buffered;
+  SeekablePixelCache seekable;
+  bool useBuffered = false;
+
+  bool begin(const std::string& cachePath, int w, int h) {
+#ifdef BOARD_HAS_PSRAM
+    if (psramFound() && buffered.begin(cachePath, w, h)) {
+      useBuffered = true;
+      return true;
+    }
+#endif
+    useBuffered = false;
+    return seekable.begin(cachePath, w, h);
+  }
+
+  bool beginRow(int row) { return useBuffered ? buffered.beginRow(row) : seekable.beginRow(row); }
+
+  void writePixel(int x, uint8_t value) {
+    if (useBuffered) {
+      buffered.writePixel(x, value);
+    } else {
+      seekable.writePixel(x, value);
+    }
+  }
+
+  bool finish() { return useBuffered ? buffered.finish() : seekable.finish(); }
+
+  void abort() {
+    if (useBuffered) {
+      buffered.abort();
+    } else {
+      seekable.abort();
+    }
   }
 };

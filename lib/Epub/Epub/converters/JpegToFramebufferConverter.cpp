@@ -46,7 +46,7 @@ struct JpegContext {
   int32_t fineScaleFPY{1 << 16};  // Y: src -> dst row mapping
   int32_t invScaleFPY{1 << 16};   // Y: dst -> src row mapping
 
-  SeekablePixelCache cache;
+  JpegPixelCache cache;
   bool caching{false};
 };
 
@@ -173,7 +173,7 @@ int jpegDrawCallback(JPEGDRAW* pDraw) {
   DirectPixelWriter pw;
   pw.init(renderer);
 
-  SeekablePixelCache& cw = ctx->cache;
+  auto& cw = ctx->cache;
 
   // === 1:1 fast path: no scaling math ===
   if (fineScaleFPX == FP_ONE && fineScaleFPY == FP_ONE) {
@@ -472,20 +472,17 @@ bool JpegToFramebufferConverter::decodeToFramebuffer(const std::string& imagePat
   jpeg->setPixelType(EIGHT_BIT_GRAYSCALE);
   jpeg->setUserPointer(&ctx);
 
-  // JPEGDEC emits image data in block order, not strict row order, so JPEG caching needs random access.
+  // JPEGDEC emits image data in block order, not strict row order, so JPEG caching
+  // needs random row updates. On Murphy/S3 the cache is buffered in PSRAM and
+  // written sequentially at the end; random SD row writes are far slower than
+  // just re-decoding.
   ctx.caching = !config.cachePath.empty();
   if (ctx.caching) {
     const int cacheWidth = destWidth;
     const int cacheHeight = destHeight;
-    const size_t cacheBytes = (size_t)((cacheWidth + 3) / 4) * cacheHeight;
-    char cacheExtra[96];
-    snprintf(cacheExtra, sizeof(cacheExtra), "bytes=%u,heap=%u", static_cast<unsigned int>(cacheBytes),
-             static_cast<unsigned int>(ESP.getFreeHeap()));
     if (!ctx.cache.begin(config.cachePath, cacheWidth, cacheHeight)) {
-      LOG_ERR("JPG", "Failed to begin seekable cache (%s), continuing without caching", cacheExtra);
+      LOG_ERR("JPG", "Failed to begin JPEG cache, continuing without caching");
       ctx.caching = false;
-    } else {
-      LOG_DBG("JPG", "Seekable cache enabled: %s", cacheExtra);
     }
   }
 
@@ -501,10 +498,12 @@ bool JpegToFramebufferConverter::decodeToFramebuffer(const std::string& imagePat
 
   LOG_DBG("JPG", "JPEG decoding complete - render time: %lu ms", decodeTime);
 
-  // Finalize the seekable cache file. JPEG callbacks may revisit rows, so the
-  // cache is closed only after the decoder completes.
+  // Finalize the JPEG cache file. Buffered mode writes once after decode;
+  // seekable mode closes the random-access file used on memory-constrained boards.
   if (ctx.caching) {
-    ctx.cache.finish();
+    if (!ctx.cache.finish()) {
+      LOG_ERR("JPG", "Failed to finalize JPEG cache: %s", config.cachePath.c_str());
+    }
   }
 
   return true;

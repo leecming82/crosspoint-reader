@@ -47,6 +47,7 @@ uint16_t readMurphyBatteryMillivolts() {
   return static_cast<uint16_t>(std::min<uint32_t>(sensedMv * 2U, 5000U));
 }
 
+#ifdef CROSSPOINT_BOARD_MURPHY_M4
 void startMurphyDeepSleep(HalGPIO& gpio) {
   while (gpio.isPressed(HalGPIO::BTN_POWER)) {
     delay(50);
@@ -60,6 +61,7 @@ void startMurphyDeepSleep(HalGPIO& gpio) {
   LOG_INF("PWR", "Entering Murphy deep sleep; wake=GPIO0 active-low");
   esp_deep_sleep_start();
 }
+#endif
 }  // namespace
 
 void HalPowerManager::begin() {
@@ -123,10 +125,12 @@ void HalPowerManager::setPowerSaving(bool enabled) {
 }
 
 void HalPowerManager::startDeepSleep(HalGPIO& gpio) const {
+#ifdef CROSSPOINT_BOARD_MURPHY_M4
   if (gpio.deviceIsMurphyM4()) {
     startMurphyDeepSleep(gpio);
     return;
   }
+#endif
 
   // Ensure that the power button has been released to avoid immediately turning back on if you're holding it
   while (gpio.isPressed(HalGPIO::BTN_POWER)) {
