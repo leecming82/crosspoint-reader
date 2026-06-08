@@ -8,6 +8,7 @@
 #include "RecentBooksStore.h"
 #include "activities/Activity.h"
 #include "util/ButtonNavigator.h"
+#include "util/TouchNavigator.h"
 
 class RecentBooksActivity final : public Activity {
  private:
@@ -24,6 +25,11 @@ class RecentBooksActivity final : public Activity {
 
   // Data loading
   void loadRecentBooks();
+  Rect listRect() const;
+  Rect headerBackTapRect() const;
+  Rect backButtonRect() const;
+  int listIndexForPoint(MappedInputManager::TouchPoint point) const;
+  bool handleTouch();
 
   // Show an OK/Cancel prompt to remove the given book from the Recent Books list.
   void promptRemoveBook(const std::string& path, const std::string& title);
@@ -35,4 +41,5 @@ class RecentBooksActivity final : public Activity {
   void onExit() override;
   void loop() override;
   void render(RenderLock&&) override;
+  bool allowsGlobalTouchBack() const override { return false; }
 };

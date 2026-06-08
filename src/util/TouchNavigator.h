@@ -12,4 +12,5 @@ class TouchNavigator final {
   static int tappedListIndex(const MappedInputManager& input, Rect rect, int itemCount, int selectedIndex, int rowHeight,
                              int rowGap = 0);
   static int tappedEqualTabIndex(const MappedInputManager& input, Rect rect, int tabCount);
+  static int tappedActionIndex(const MappedInputManager& input, Rect rect, int actionCount);
 };

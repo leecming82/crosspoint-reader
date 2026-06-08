@@ -31,4 +31,5 @@ class ReaderActivity final : public Activity {
       : Activity("Reader", renderer, mappedInput), initialBookPath(std::move(initialBookPath)) {}
   void onEnter() override;
   bool isReaderActivity() const override { return true; }
+  bool allowsGlobalTouchBack() const override { return false; }
 };

@@ -13,6 +13,7 @@
 #include "MappedInputManager.h"
 #include "activities/util/ConfirmationActivity.h"
 #include "components/UITheme.h"
+#include "components/icons/back24.h"
 #include "fontIds.h"
 #include "util/BookCacheUtils.h"
 #include "util/StringUtils.h"
@@ -107,6 +108,63 @@ void FileBrowserActivity::onExit() {
   fileNameBuffer.reset();
 }
 
+int FileBrowserActivity::pathReservedHeight() const {
+  return renderer.getLineHeight(SMALL_FONT_ID) + UITheme::getInstance().getMetrics().verticalSpacing;
+}
+
+int FileBrowserActivity::pageItems() const {
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  return std::max(1, listRect().height / metrics.listRowHeight);
+}
+
+int FileBrowserActivity::footerReservedHeight() const {
+#ifdef CROSSPOINT_BOARD_MURPHY_M4
+  return 0;
+#else
+  return UITheme::getInstance().getMetrics().buttonHintsHeight;
+#endif
+}
+
+Rect FileBrowserActivity::listRect() const {
+  const int pageWidth = renderer.getScreenWidth();
+  const int pageHeight = renderer.getScreenHeight();
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  const int contentTop = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
+  const int contentHeight =
+      pageHeight - contentTop - footerReservedHeight() - metrics.verticalSpacing - pathReservedHeight();
+  return Rect{0, contentTop, pageWidth, contentHeight};
+}
+
+Rect FileBrowserActivity::footerHintsRect() const {
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  return Rect{0, renderer.getScreenHeight() - metrics.buttonHintsHeight, renderer.getScreenWidth(),
+              metrics.buttonHintsHeight};
+}
+
+Rect FileBrowserActivity::backButtonRect() const {
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  return Rect{8, metrics.topPadding + metrics.batteryBarHeight - 10, 48, 48};
+}
+
+Rect FileBrowserActivity::headerBackTapRect() const {
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  return Rect{0, 0, renderer.getScreenWidth() / 3, metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing};
+}
+
+int FileBrowserActivity::listIndexForPoint(const MappedInputManager::TouchPoint point) const {
+  const Rect rect = listRect();
+  const int rowHeight = UITheme::getInstance().getMetrics().listRowHeight;
+  if (files.empty() || rowHeight <= 0 || !TouchNavigator::contains(rect, point)) {
+    return -1;
+  }
+
+  const int visibleRows = std::max(1, rect.height / rowHeight);
+  const int pageStartIndex = (static_cast<int>(selectorIndex) / visibleRows) * visibleRows;
+  const int row = (point.y - rect.y) / rowHeight;
+  const int index = pageStartIndex + row;
+  return index < static_cast<int>(files.size()) ? index : -1;
+}
+
 // To avoid traversing directories twice (once for cache clearing, once for deletion),
 // we do both in one pass here, instead of using Storage.removeDir
 bool FileBrowserActivity::removeDirFile(const std::string& fullPath) {
@@ -188,6 +246,149 @@ bool FileBrowserActivity::removeDirFile(const std::string& fullPath) {
   return true;
 }
 
+void FileBrowserActivity::activateSelectedEntry(bool deleteRequested) {
+  if (files.empty()) return;
+
+  const std::string& entry = files[selectorIndex];
+  bool isDirectory = (entry.back() == '/');
+
+  // Firmware picker: select file -> return path; navigate into directories normally.
+  if (mode == Mode::PickFirmware && !isDirectory) {
+    std::string cleanBasePath = basepath;
+    if (cleanBasePath.back() != '/') cleanBasePath += "/";
+    ActivityResult res{FilePathResult{cleanBasePath + entry}};
+    res.isCancelled = false;
+    setResult(std::move(res));
+    finish();
+    return;
+  }
+
+  if (mode == Mode::Books && deleteRequested) {
+    std::string cleanBasePath = basepath;
+    if (cleanBasePath.back() != '/') cleanBasePath += "/";
+    const std::string fullPath = cleanBasePath + entry;
+
+    auto handler = [this, fullPath](const ActivityResult& res) {
+      if (!res.isCancelled) {
+        LOG_DBG("FileBrowser", "Attempting to delete: %s", fullPath.c_str());
+        if (removeDirFile(fullPath)) {
+          LOG_DBG("FileBrowser", "Deleted successfully");
+          loadFiles();
+          if (files.empty()) {
+            selectorIndex = 0;
+          } else if (selectorIndex >= files.size()) {
+            selectorIndex = files.size() - 1;
+          }
+
+          requestUpdate(true);
+        } else {
+          LOG_ERR("FileBrowser", "Failed to delete: %s", fullPath.c_str());
+        }
+      } else {
+        LOG_DBG("FileBrowser", "Delete cancelled by user");
+      }
+    };
+
+    std::string heading = tr(STR_DELETE) + std::string("? ");
+
+    startActivityForResult(std::make_unique<ConfirmationActivity>(renderer, mappedInput, heading,
+                                                                  StringUtils::uiSafeTextWithMarkers(entry)),
+                           handler);
+    return;
+  }
+
+  if (basepath.back() != '/') basepath += "/";
+
+  if (isDirectory) {
+    basepath += entry.substr(0, entry.length() - 1);
+    loadFiles();
+    selectorIndex = 0;
+    requestUpdate();
+  } else {
+    onSelectBook(basepath + entry);
+  }
+}
+
+void FileBrowserActivity::goBack() {
+  if (basepath != "/") {
+    const std::string oldPath = basepath;
+
+    basepath.replace(basepath.find_last_of('/'), std::string::npos, "");
+    if (basepath.empty()) basepath = "/";
+    loadFiles();
+
+    const auto pos = oldPath.find_last_of('/');
+    const std::string dirName = oldPath.substr(pos + 1) + "/";
+    selectorIndex = findEntry(dirName);
+
+    requestUpdate();
+  } else if (mode == Mode::PickFirmware) {
+    ActivityResult res;
+    res.isCancelled = true;
+    setResult(std::move(res));
+    finish();
+  } else {
+    onGoHome();
+  }
+}
+
+bool FileBrowserActivity::handleTouch() {
+  if (!mappedInput.wasTapped() && !mappedInput.wasTouchLongPressed()) {
+    return false;
+  }
+
+#ifdef CROSSPOINT_BOARD_MURPHY_M4
+  if (mappedInput.wasTouchLongPressed()) {
+    const int longPressedIndex = listIndexForPoint(mappedInput.lastTouchLongPress());
+    if (longPressedIndex >= 0 && mode == Mode::Books) {
+      selectorIndex = static_cast<size_t>(longPressedIndex);
+      activateSelectedEntry(true);
+    }
+    return true;
+  }
+#endif
+
+#ifdef CROSSPOINT_BOARD_MURPHY_M4
+  if (TouchNavigator::wasTappedIn(mappedInput, headerBackTapRect())) {
+    goBack();
+    return true;
+  }
+#else
+  const int footerIndex = TouchNavigator::tappedActionIndex(mappedInput, footerHintsRect(), 4);
+  if (footerIndex == 0) {
+    goBack();
+    return true;
+  }
+  if (footerIndex == 1) {
+    activateSelectedEntry(false);
+    return true;
+  }
+  if (footerIndex == 2) {
+    selectorIndex = ButtonNavigator::previousPageIndex(static_cast<int>(selectorIndex), static_cast<int>(files.size()),
+                                                       pageItems());
+    requestUpdate();
+    return true;
+  }
+  if (footerIndex == 3) {
+    selectorIndex =
+        ButtonNavigator::nextPageIndex(static_cast<int>(selectorIndex), static_cast<int>(files.size()), pageItems());
+    requestUpdate();
+    return true;
+  }
+#endif
+
+  const int tappedIndex = TouchNavigator::tappedListIndex(mappedInput, listRect(), static_cast<int>(files.size()),
+                                                          static_cast<int>(selectorIndex),
+                                                          UITheme::getInstance().getMetrics().listRowHeight, 0);
+  if (tappedIndex >= 0) {
+    selectorIndex = static_cast<size_t>(tappedIndex);
+    activateSelectedEntry(false);
+    return true;
+  }
+
+  return true;
+}
+
 void FileBrowserActivity::loop() {
   // Long press BACK (1s+) goes to root folder (Books mode only).
   // In firmware-pick mode we keep navigation simple: short Back = up dir / cancel.
@@ -205,104 +406,25 @@ void FileBrowserActivity::loop() {
     return;
   }
 
-  const int pathReserved = renderer.getLineHeight(SMALL_FONT_ID) + UITheme::getInstance().getMetrics().verticalSpacing;
-  const int pageItems = UITheme::getNumberOfItemsPerPage(renderer, true, false, true, false, pathReserved);
+  const int currentPageItems = pageItems();
+
+  if (handleTouch()) {
+    return;
+  }
 
   if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
     if (lockNextConfirmRelease) {
       lockNextConfirmRelease = false;
       return;
     }
-    if (files.empty()) return;
-
-    const std::string& entry = files[selectorIndex];
-    bool isDirectory = (entry.back() == '/');
-
-    // Firmware picker: select file -> return path; navigate into directories normally.
-    if (mode == Mode::PickFirmware && !isDirectory) {
-      std::string cleanBasePath = basepath;
-      if (cleanBasePath.back() != '/') cleanBasePath += "/";
-      ActivityResult res{FilePathResult{cleanBasePath + entry}};
-      res.isCancelled = false;
-      setResult(std::move(res));
-      finish();
-      return;
-    }
-
-    if (mode == Mode::Books && mappedInput.getHeldTime() >= GO_HOME_MS) {
-      // --- LONG PRESS ACTION: DELETE FILE OR DIRECTORY ---
-      std::string cleanBasePath = basepath;
-      if (cleanBasePath.back() != '/') cleanBasePath += "/";
-      const std::string fullPath = cleanBasePath + entry;
-
-      auto handler = [this, fullPath](const ActivityResult& res) {
-        if (!res.isCancelled) {
-          LOG_DBG("FileBrowser", "Attempting to delete: %s", fullPath.c_str());
-          if (removeDirFile(fullPath)) {
-            LOG_DBG("FileBrowser", "Deleted successfully");
-            loadFiles();
-            if (files.empty()) {
-              selectorIndex = 0;
-            } else if (selectorIndex >= files.size()) {
-              // Move selection to the new "last" item
-              selectorIndex = files.size() - 1;
-            }
-
-            requestUpdate(true);
-          } else {
-            LOG_ERR("FileBrowser", "Failed to delete: %s", fullPath.c_str());
-          }
-        } else {
-          LOG_DBG("FileBrowser", "Delete cancelled by user");
-        }
-      };
-
-      std::string heading = tr(STR_DELETE) + std::string("? ");
-
-      startActivityForResult(std::make_unique<ConfirmationActivity>(renderer, mappedInput, heading,
-                                                                    StringUtils::uiSafeTextWithMarkers(entry)),
-                             handler);
-      return;
-    } else {
-      // --- SHORT PRESS ACTION: OPEN/NAVIGATE ---
-      if (basepath.back() != '/') basepath += "/";
-
-      if (isDirectory) {
-        basepath += entry.substr(0, entry.length() - 1);
-        loadFiles();
-        selectorIndex = 0;
-        requestUpdate();
-      } else {
-        onSelectBook(basepath + entry);
-      }
-    }
+    activateSelectedEntry(mode == Mode::Books && mappedInput.getHeldTime() >= GO_HOME_MS);
     return;
   }
 
   if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
     // Short press: go up one directory, or go home if at root
     if (mappedInput.getHeldTime() < GO_HOME_MS) {
-      if (basepath != "/") {
-        const std::string oldPath = basepath;
-
-        basepath.replace(basepath.find_last_of('/'), std::string::npos, "");
-        if (basepath.empty()) basepath = "/";
-        loadFiles();
-
-        const auto pos = oldPath.find_last_of('/');
-        const std::string dirName = oldPath.substr(pos + 1) + "/";
-        selectorIndex = findEntry(dirName);
-
-        requestUpdate();
-      } else if (mode == Mode::PickFirmware) {
-        // Firmware picker at root: cancel back to caller instead of going home.
-        ActivityResult res;
-        res.isCancelled = true;
-        setResult(std::move(res));
-        finish();
-      } else {
-        onGoHome();
-      }
+      goBack();
     }
   }
 
@@ -317,13 +439,13 @@ void FileBrowserActivity::loop() {
     requestUpdate();
   });
 
-  buttonNavigator.onNextContinuous([this, listSize, pageItems] {
-    selectorIndex = ButtonNavigator::nextPageIndex(static_cast<int>(selectorIndex), listSize, pageItems);
+  buttonNavigator.onNextContinuous([this, listSize, currentPageItems] {
+    selectorIndex = ButtonNavigator::nextPageIndex(static_cast<int>(selectorIndex), listSize, currentPageItems);
     requestUpdate();
   });
 
-  buttonNavigator.onPreviousContinuous([this, listSize, pageItems] {
-    selectorIndex = ButtonNavigator::previousPageIndex(static_cast<int>(selectorIndex), listSize, pageItems);
+  buttonNavigator.onPreviousContinuous([this, listSize, currentPageItems] {
+    selectorIndex = ButtonNavigator::previousPageIndex(static_cast<int>(selectorIndex), listSize, currentPageItems);
     requestUpdate();
   });
 }
@@ -366,13 +488,30 @@ void FileBrowserActivity::render(RenderLock&&) {
           ? std::string(tr(STR_SELECT_FIRMWARE_FILE))
           : ((basepath == "/") ? std::string(tr(STR_SD_CARD)) : basepath.substr(basepath.rfind('/') + 1));
   folderName = StringUtils::uiSafeTextWithMarkers(folderName);
+#ifdef CROSSPOINT_BOARD_MURPHY_M4
+  GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, "");
+  {
+    const Rect backRect = backButtonRect();
+    constexpr int backIconSize = 24;
+    constexpr int backIconVisualOffsetY = 5;
+    renderer.drawIcon(Back24Icon, backRect.x + (backRect.width - backIconSize) / 2,
+                      backRect.y + (backRect.height - backIconSize) / 2 + backIconVisualOffsetY, backIconSize,
+                      backIconSize);
+
+    const int titleX = backRect.x + backRect.width + 8;
+    const int titleMaxWidth = pageWidth - titleX - metrics.contentSidePadding * 2 - metrics.batteryWidth;
+    const auto title = renderer.truncatedText(UI_12_FONT_ID, folderName.c_str(), titleMaxWidth, EpdFontFamily::BOLD);
+    renderer.drawText(UI_12_FONT_ID, titleX, metrics.topPadding + metrics.batteryBarHeight + 3, title.c_str(), true,
+                      EpdFontFamily::BOLD);
+  }
+#else
   GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, folderName.c_str());
+#endif
 
   const int pathLineHeight = renderer.getLineHeight(SMALL_FONT_ID);
   const int pathReserved = pathLineHeight + metrics.verticalSpacing;
   const int contentTop = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
-  const int contentHeight =
-      pageHeight - contentTop - metrics.buttonHintsHeight - metrics.verticalSpacing - pathReserved;
+  const int contentHeight = pageHeight - contentTop - footerReservedHeight() - metrics.verticalSpacing - pathReserved;
   if (files.empty()) {
     const char* emptyMsg = (mode == Mode::PickFirmware) ? tr(STR_NO_BIN_FILES) : tr(STR_NO_FILES_FOUND);
     renderer.drawText(UI_10_FONT_ID, metrics.contentSidePadding, contentTop + 20, emptyMsg);
@@ -386,7 +525,11 @@ void FileBrowserActivity::render(RenderLock&&) {
 
   // Full path display
   {
+#ifdef CROSSPOINT_BOARD_MURPHY_M4
+    const int pathY = pageHeight - 8 - pathLineHeight;
+#else
     const int pathY = pageHeight - metrics.buttonHintsHeight - metrics.verticalSpacing - pathLineHeight;
+#endif
     const int separatorY = pathY - metrics.verticalSpacing / 2;
     renderer.drawLine(0, separatorY, pageWidth - 1, separatorY, 3, true);
     const int pathMaxWidth = pageWidth - metrics.contentSidePadding * 2;

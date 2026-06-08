@@ -32,6 +32,9 @@ class XtcReaderActivity final : public Activity {
   StatusBarInfo getStatusBarInfo() const;
   void saveProgress() const;
   void loadProgress();
+  void openChapterSelection();
+  void turnPage(bool forward, int skipAmount = 1);
+  bool handleTouchZones();
 
  public:
   explicit XtcReaderActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, std::unique_ptr<Xtc> xtc)
@@ -41,5 +44,6 @@ class XtcReaderActivity final : public Activity {
   void loop() override;
   void render(RenderLock&&) override;
   bool isReaderActivity() const override { return true; }
+  bool allowsGlobalTouchBack() const override { return false; }
   ScreenshotInfo getScreenshotInfo() const override;
 };

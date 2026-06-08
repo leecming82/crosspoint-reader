@@ -90,6 +90,23 @@ inline SettingInfo buildFontFamilySetting(const SdCardFontRegistry* registry) {
   return s;
 }
 
+inline SettingInfo buildUiThemeSetting() {
+#ifdef CROSSPOINT_BOARD_MURPHY_M4
+  return SettingInfo::DynamicEnum(
+      StrId::STR_UI_THEME, {StrId::STR_THEME_LYRA},
+      [] {
+        SETTINGS.uiTheme = CrossPointSettings::UI_THEME::LYRA;
+        return static_cast<uint8_t>(0);
+      },
+      [](uint8_t) { SETTINGS.uiTheme = CrossPointSettings::UI_THEME::LYRA; }, "uiTheme", StrId::STR_CAT_DISPLAY);
+#else
+  return SettingInfo::Enum(StrId::STR_UI_THEME, &CrossPointSettings::uiTheme,
+                           {StrId::STR_THEME_CLASSIC, StrId::STR_THEME_LYRA, StrId::STR_THEME_LYRA_EXTENDED,
+                            StrId::STR_THEME_ROUNDEDRAFF},
+                           "uiTheme", StrId::STR_CAT_DISPLAY);
+#endif
+}
+
 // Shared settings list used by both the device settings UI and the web settings API.
 // Each entry has a key (for JSON API) and category (for grouping).
 // ACTION-type entries and entries without a key are device-only.
@@ -124,10 +141,7 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
             StrId::STR_REFRESH_FREQ, &CrossPointSettings::refreshFrequency,
             {StrId::STR_PAGES_1, StrId::STR_PAGES_5, StrId::STR_PAGES_10, StrId::STR_PAGES_15, StrId::STR_PAGES_30},
             "refreshFrequency", StrId::STR_CAT_DISPLAY),
-        SettingInfo::Enum(StrId::STR_UI_THEME, &CrossPointSettings::uiTheme,
-                          {StrId::STR_THEME_CLASSIC, StrId::STR_THEME_LYRA, StrId::STR_THEME_LYRA_EXTENDED,
-                           StrId::STR_THEME_ROUNDEDRAFF},
-                          "uiTheme", StrId::STR_CAT_DISPLAY),
+        buildUiThemeSetting(),
         SettingInfo::Toggle(StrId::STR_SUNLIGHT_FADING_FIX, &CrossPointSettings::fadingFix, "fadingFix",
                             StrId::STR_CAT_DISPLAY),
 

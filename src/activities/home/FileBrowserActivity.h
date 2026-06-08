@@ -8,6 +8,7 @@
 #include "RecentBooksStore.h"
 #include "activities/Activity.h"
 #include "util/ButtonNavigator.h"
+#include "util/TouchNavigator.h"
 
 class FileBrowserActivity final : public Activity {
  public:
@@ -37,6 +38,17 @@ class FileBrowserActivity final : public Activity {
   // Data loading
   void loadFiles();
   size_t findEntry(const std::string& name) const;
+  int pathReservedHeight() const;
+  int pageItems() const;
+  Rect listRect() const;
+  Rect footerHintsRect() const;
+  int footerReservedHeight() const;
+  Rect backButtonRect() const;
+  Rect headerBackTapRect() const;
+  int listIndexForPoint(MappedInputManager::TouchPoint point) const;
+  void activateSelectedEntry(bool deleteRequested);
+  void goBack();
+  bool handleTouch();
 
  public:
   explicit FileBrowserActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, std::string initialPath = "/",
@@ -48,4 +60,5 @@ class FileBrowserActivity final : public Activity {
   void onExit() override;
   void loop() override;
   void render(RenderLock&&) override;
+  bool allowsGlobalTouchBack() const override { return false; }
 };

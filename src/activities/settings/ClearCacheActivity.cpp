@@ -9,6 +9,16 @@
 #include "components/UITheme.h"
 #include "fontIds.h"
 #include "util/BookCacheUtils.h"
+#include "util/TouchNavigator.h"
+
+namespace {
+void drawTouchButton(const GfxRenderer& renderer, const Rect rect, const char* label) {
+  renderer.drawRoundedRect(rect.x, rect.y, rect.width, rect.height, 1, 6, true);
+  const int textWidth = renderer.getTextWidth(UI_12_FONT_ID, label, EpdFontFamily::BOLD);
+  const int textY = rect.y + (rect.height - renderer.getLineHeight(UI_12_FONT_ID)) / 2;
+  renderer.drawText(UI_12_FONT_ID, rect.x + (rect.width - textWidth) / 2, textY, label, true, EpdFontFamily::BOLD);
+}
+}  // namespace
 
 void ClearCacheActivity::onEnter() {
   Activity::onEnter();
@@ -35,8 +45,13 @@ void ClearCacheActivity::render(RenderLock&&) {
     renderer.drawCenteredText(UI_10_FONT_ID, pageHeight / 2 + 10, tr(STR_CLEAR_CACHE_WARNING_3), true);
     renderer.drawCenteredText(UI_10_FONT_ID, pageHeight / 2 + 30, tr(STR_CLEAR_CACHE_WARNING_4), true);
 
+#ifdef CROSSPOINT_BOARD_MURPHY_M4
+    drawTouchButton(renderer, cancelButtonRect(), tr(STR_CANCEL));
+    drawTouchButton(renderer, confirmButtonRect(), tr(STR_CLEAR_BUTTON));
+#else
     const auto labels = mappedInput.mapLabels(tr(STR_CANCEL), tr(STR_CLEAR_BUTTON), "", "");
     GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+#endif
     renderer.displayBuffer();
     return;
   }
@@ -55,8 +70,12 @@ void ClearCacheActivity::render(RenderLock&&) {
     }
     renderer.drawCenteredText(UI_10_FONT_ID, pageHeight / 2 + 10, resultText.c_str());
 
+#ifdef CROSSPOINT_BOARD_MURPHY_M4
+    drawTouchButton(renderer, backButtonRect(), tr(STR_BACK));
+#else
     const auto labels = mappedInput.mapLabels(tr(STR_BACK), "", "", "");
     GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+#endif
     renderer.displayBuffer();
     return;
   }
@@ -66,11 +85,49 @@ void ClearCacheActivity::render(RenderLock&&) {
                               EpdFontFamily::BOLD);
     renderer.drawCenteredText(UI_10_FONT_ID, pageHeight / 2 + 10, tr(STR_CHECK_SERIAL_OUTPUT));
 
+#ifdef CROSSPOINT_BOARD_MURPHY_M4
+    drawTouchButton(renderer, backButtonRect(), tr(STR_BACK));
+#else
     const auto labels = mappedInput.mapLabels(tr(STR_BACK), "", "", "");
     GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+#endif
     renderer.displayBuffer();
     return;
   }
+}
+
+Rect ClearCacheActivity::cancelButtonRect() const {
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  constexpr int buttonHeight = 56;
+  const int gap = metrics.contentSidePadding;
+  const int width = (renderer.getScreenWidth() - metrics.contentSidePadding * 2 - gap) / 2;
+  const int y = renderer.getScreenHeight() - buttonHeight - 16;
+  return Rect{metrics.contentSidePadding, y, width, buttonHeight};
+}
+
+Rect ClearCacheActivity::confirmButtonRect() const {
+  const Rect cancelRect = cancelButtonRect();
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  return Rect{cancelRect.x + cancelRect.width + metrics.contentSidePadding, cancelRect.y, cancelRect.width,
+              cancelRect.height};
+}
+
+Rect ClearCacheActivity::backButtonRect() const {
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  constexpr int buttonHeight = 56;
+  return Rect{metrics.contentSidePadding, renderer.getScreenHeight() - buttonHeight - 16,
+              renderer.getScreenWidth() - metrics.contentSidePadding * 2, buttonHeight};
+}
+
+void ClearCacheActivity::confirmClear() {
+  LOG_DBG("CLEAR_CACHE", "User confirmed, starting cache clear");
+  {
+    RenderLock lock(*this);
+    state = CLEARING;
+  }
+  requestUpdateAndWait();
+
+  clearCache();
 }
 
 void ClearCacheActivity::clearCache() {
@@ -122,15 +179,19 @@ void ClearCacheActivity::clearCache() {
 
 void ClearCacheActivity::loop() {
   if (state == WARNING) {
+#ifdef CROSSPOINT_BOARD_MURPHY_M4
+    if (TouchNavigator::wasTappedIn(mappedInput, cancelButtonRect())) {
+      LOG_DBG("CLEAR_CACHE", "User cancelled");
+      goBack();
+      return;
+    }
+    if (TouchNavigator::wasTappedIn(mappedInput, confirmButtonRect())) {
+      confirmClear();
+      return;
+    }
+#endif
     if (mappedInput.wasPressed(MappedInputManager::Button::Confirm)) {
-      LOG_DBG("CLEAR_CACHE", "User confirmed, starting cache clear");
-      {
-        RenderLock lock(*this);
-        state = CLEARING;
-      }
-      requestUpdateAndWait();
-
-      clearCache();
+      confirmClear();
     }
 
     if (mappedInput.wasPressed(MappedInputManager::Button::Back)) {
@@ -141,6 +202,12 @@ void ClearCacheActivity::loop() {
   }
 
   if (state == SUCCESS || state == FAILED) {
+#ifdef CROSSPOINT_BOARD_MURPHY_M4
+    if (TouchNavigator::wasTappedIn(mappedInput, backButtonRect())) {
+      goBack();
+      return;
+    }
+#endif
     if (mappedInput.wasPressed(MappedInputManager::Button::Back)) {
       goBack();
     }

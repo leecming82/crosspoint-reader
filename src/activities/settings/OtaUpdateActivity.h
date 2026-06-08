@@ -1,6 +1,7 @@
 #pragma once
 
 #include "activities/Activity.h"
+#include "components/themes/BaseTheme.h"
 #include "network/OtaUpdater.h"
 
 class OtaUpdateActivity : public Activity {
@@ -23,6 +24,10 @@ class OtaUpdateActivity : public Activity {
   OtaUpdater updater;
 
   void onWifiSelectionComplete(bool success);
+  Rect cancelButtonRect() const;
+  Rect updateButtonRect() const;
+  Rect backButtonRect() const;
+  void confirmUpdate();
 
  public:
   explicit OtaUpdateActivity(GfxRenderer& renderer, MappedInputManager& mappedInput)

@@ -14,6 +14,7 @@ class HalTouch {
 
   void begin();
   void setLogicalSize(uint16_t width, uint16_t height);
+  void setLogicalOrientation(uint8_t orientation);
   void update();
   bool wasTapped() const;
   Point lastTap() const;
@@ -35,6 +36,7 @@ class HalTouch {
   Point longPressPoint;
   uint16_t logicalWidth = ScreenWidth;
   uint16_t logicalHeight = ScreenHeight;
+  uint8_t logicalOrientation = 0;
 
   bool readRaw(Point& raw, bool& down);
   Point transform(Point raw) const;

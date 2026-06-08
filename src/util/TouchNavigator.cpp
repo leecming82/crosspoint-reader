@@ -67,3 +67,17 @@ int TouchNavigator::tappedEqualTabIndex(const MappedInputManager& input, const R
   const int slotWidth = std::max(1, rect.width / tabCount);
   return std::min(tabCount - 1, (tap.x - rect.x) / slotWidth);
 }
+
+int TouchNavigator::tappedActionIndex(const MappedInputManager& input, const Rect rect, const int actionCount) {
+  if (!input.wasTapped() || actionCount <= 0 || rect.width <= 0 || rect.height <= 0) {
+    return -1;
+  }
+
+  const auto tap = input.lastTap();
+  if (!contains(rect, tap)) {
+    return -1;
+  }
+
+  const int slotWidth = std::max(1, rect.width / actionCount);
+  return std::min(actionCount - 1, (tap.x - rect.x) / slotWidth);
+}

@@ -4,6 +4,8 @@
 #include <Logging.h>
 #include <Wire.h>
 
+#include <algorithm>
+
 namespace {
 constexpr uint8_t TOUCH_ADDR = 0x2E;
 constexpr uint32_t TOUCH_I2C_FREQ = 400000;
@@ -63,6 +65,8 @@ void HalTouch::setLogicalSize(const uint16_t width, const uint16_t height) {
   logicalHeight = height;
 }
 
+void HalTouch::setLogicalOrientation(const uint8_t orientation) { logicalOrientation = orientation; }
+
 bool HalTouch::readRaw(Point& raw, bool& down) {
   uint8_t bytes[7] = {};
   Wire.beginTransmission(TOUCH_ADDR);
@@ -99,17 +103,37 @@ bool HalTouch::readRaw(Point& raw, bool& down) {
 }
 
 HalTouch::Point HalTouch::transform(Point raw) const {
+  const uint16_t baseX = std::min<uint32_t>((static_cast<uint32_t>(raw.x) * ScreenWidth) / RAW_WIDTH, ScreenWidth - 1);
+  const uint16_t baseY =
+      std::min<uint32_t>((static_cast<uint32_t>(raw.y) * ScreenHeight) / RAW_HEIGHT, ScreenHeight - 1);
+
   Point out;
-  uint32_t x = (static_cast<uint32_t>(raw.x) * logicalWidth) / RAW_WIDTH;
-  uint32_t y = (static_cast<uint32_t>(raw.y) * logicalHeight) / RAW_HEIGHT;
-  if (x >= logicalWidth) {
-    x = logicalWidth - 1;
+  switch (logicalOrientation) {
+    case 1:
+      out.x = static_cast<uint16_t>(ScreenHeight - 1 - baseY);
+      out.y = baseX;
+      break;
+    case 2:
+      out.x = static_cast<uint16_t>(ScreenWidth - 1 - baseX);
+      out.y = static_cast<uint16_t>(ScreenHeight - 1 - baseY);
+      break;
+    case 3:
+      out.x = baseY;
+      out.y = static_cast<uint16_t>(ScreenWidth - 1 - baseX);
+      break;
+    case 0:
+    default:
+      out.x = baseX;
+      out.y = baseY;
+      break;
   }
-  if (y >= logicalHeight) {
-    y = logicalHeight - 1;
+
+  if (out.x >= logicalWidth) {
+    out.x = logicalWidth - 1;
   }
-  out.x = static_cast<uint16_t>(x);
-  out.y = static_cast<uint16_t>(y);
+  if (out.y >= logicalHeight) {
+    out.y = logicalHeight - 1;
+  }
   return out;
 }
 

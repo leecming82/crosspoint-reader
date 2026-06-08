@@ -106,12 +106,72 @@ The received Murphy M4 is now concrete enough to plan around: ESP32-S3, 16 MB fl
 
    Initial work plan:
 
-   1. Started: establish a shared touch event model. Tap detection, coordinate transforms, hit-testing, and activity integration exist; holds, gestures, and richer debouncing still need to be formalized.
-   2. Started: add reusable tappable UI primitives. Basic rectangle, grid, list-row, and equal-tab hit-testing helpers exist; EPUB reader zones and the current Home menu now consume them; pop-up actions, icon-grid usage, and wider screen integration still need to be wired.
-   3. Build a Murphy home screen layout closer to stock: a `3x3` icon grid for primary destinations such as Clock, Read, and Settings.
-   4. Convert menus/settings to direct touch: tappable tabs, selectable rows, sub-menus, and pop-ups, while preserving button navigation.
-   5. Finish reader touch UX: left/right page zones, central `1/9` reader menu, tappable reader tabs/actions, various display/reading orientations, and later dictionary cursor placement.
-   6. Add Murphy-specific hints and settings for touch zones, reader shortcuts, and the reduced physical-button role.
+   1. Done: establish a shared touch event model. Tap detection, coordinate transforms, hit-testing, activity integration, and Murphy-gated center long-press fallback back navigation exist. Global touch-back is now activity-policy gated, with reader activities opted out so reader-specific center touch behavior remains screen-local. Future holds, swipes, and richer gestures should be added as part of the relevant screen workflows rather than blocking the shared event model.
+   2. Done: add reusable tappable UI primitives. Basic rectangle, grid, list-row, equal-tab, and footer action hit-testing helpers exist; Home, File Browser, reader page surfaces, EPUB Reader Menu, and confirmation dialogs consume the shared touch helpers where applicable.
+   3. Started: adapt the remaining screens to touch one by one, using the screen inventory below as the working checklist. Each screen should become directly tappable while preserving button navigation and staying board/capability gated.
+   4. Add Murphy-specific hints and settings for touch zones, reader shortcuts, and the reduced physical-button role.
+
+   Touch screen inventory:
+
+   Core:
+
+   - [x] Home
+   - [x] File Browser
+   - [x] Recent Books
+   - [ ] Settings
+   - [ ] Crash Report
+
+   Readers:
+
+   - [ ] EPUB Reader
+   - [ ] EPUB Reader Menu
+   - [ ] TXT Reader
+   - [ ] XTC Reader
+   - [ ] BMP/Image Viewer
+
+   Reader subscreens:
+
+   - [ ] EPUB Chapter Selection
+   - [ ] EPUB Percent Selection
+   - [ ] EPUB Bookmarks
+   - [ ] EPUB Footnotes
+   - [ ] XTC Chapter Selection
+   - [ ] KOReader Sync
+   - [ ] QR Display
+
+   Settings subscreens:
+
+   - [ ] Language Selection
+   - [ ] Font Selection
+   - [ ] Font Download
+   - [ ] Status Bar Settings
+   - [ ] Button Remap
+   - [ ] KOReader Settings
+   - [ ] KOReader Auth
+   - [ ] OPDS Server List
+   - [ ] OPDS Server Edit
+   - [ ] Clear Cache
+   - [ ] Clock Sync
+   - [ ] Clock Offset
+   - [ ] OTA Update
+   - [ ] SD Firmware Update
+
+   Network:
+
+   - [ ] Wi-Fi Selection
+   - [ ] Network Mode Selection
+   - [ ] File Transfer / Web Server
+   - [ ] Calibre Connect
+   - [ ] OPDS Browser
+
+   Utility:
+
+   - [ ] Confirmation Dialog
+   - [ ] Keyboard Entry
+   - [ ] Interval Selection
+   - [ ] Full Screen Message
+   - [ ] Boot
+   - [ ] Sleep
 
 10. Fully functional Japanese EPUB
 

@@ -12,6 +12,7 @@
 #include "components/themes/BaseTheme.h"
 #include "components/themes/lyra/Lyra3CoversTheme.h"
 #include "components/themes/lyra/LyraTheme.h"
+#include "components/themes/murphy/MurphyTheme.h"
 #include "components/themes/roundedraff/RoundedRaffTheme.h"
 
 UITheme UITheme::instance;
@@ -27,6 +28,14 @@ void UITheme::reload() {
 }
 
 void UITheme::setTheme(CrossPointSettings::UI_THEME type) {
+#ifdef CROSSPOINT_BOARD_MURPHY_M4
+  if (type != CrossPointSettings::UI_THEME::LYRA) {
+    LOG_DBG("UI", "Murphy M4 touch UI forces Murphy theme, requested=%d", static_cast<int>(type));
+    SETTINGS.uiTheme = CrossPointSettings::UI_THEME::LYRA;
+    type = CrossPointSettings::UI_THEME::LYRA;
+  }
+#endif
+
   switch (type) {
     case CrossPointSettings::UI_THEME::CLASSIC:
       LOG_DBG("UI", "Using Classic theme");
@@ -34,9 +43,15 @@ void UITheme::setTheme(CrossPointSettings::UI_THEME type) {
       currentMetrics = &BaseMetrics::values;
       break;
     case CrossPointSettings::UI_THEME::LYRA:
+#ifdef CROSSPOINT_BOARD_MURPHY_M4
+      LOG_DBG("UI", "Using Murphy theme");
+      currentTheme = std::make_unique<MurphyTheme>();
+      currentMetrics = &MurphyMetrics::values;
+#else
       LOG_DBG("UI", "Using Lyra theme");
       currentTheme = std::make_unique<LyraTheme>();
       currentMetrics = &LyraMetrics::values;
+#endif
       break;
     case CrossPointSettings::UI_THEME::ROUNDEDRAFF:
       LOG_DBG("UI", "Using RoundedRaff theme");

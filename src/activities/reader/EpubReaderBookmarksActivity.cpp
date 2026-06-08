@@ -12,6 +12,7 @@
 #include "ProgressMapper.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "util/TouchNavigator.h"
 
 namespace {
 constexpr int ENTER_DELETE_MODE_MS = 700;
@@ -24,6 +25,13 @@ constexpr int LINE_HEIGHT = 60;
 
 bool hasStoredLocalPosition(const BookmarkEntry& bookmark, const std::shared_ptr<Epub>& epub) {
   return epub && bookmark.computedChapterPageCount > 0 && bookmark.computedSpineIndex < epub->getSpineItemsCount();
+}
+
+void drawTouchButton(const GfxRenderer& renderer, const Rect rect, const char* label) {
+  renderer.drawRoundedRect(rect.x, rect.y, rect.width, rect.height, 1, 6, true);
+  const int textWidth = renderer.getTextWidth(UI_12_FONT_ID, label, EpdFontFamily::BOLD);
+  const int textY = rect.y + (rect.height - renderer.getLineHeight(UI_12_FONT_ID)) / 2;
+  renderer.drawText(UI_12_FONT_ID, rect.x + (rect.width - textWidth) / 2, textY, label, true, EpdFontFamily::BOLD);
 }
 }  // namespace
 
@@ -82,33 +90,72 @@ int EpubReaderBookmarksActivity::getListHeight(const GfxRenderer& renderer) {
   return pageHeight - getGutterBottom(renderer) - LINE_HEIGHT;  // Reserve vertical space for title and button hints
 }
 
+Rect EpubReaderBookmarksActivity::cancelButtonRect() const {
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  constexpr int buttonHeight = 56;
+  const int gap = metrics.contentSidePadding;
+  const int width = (renderer.getScreenWidth() - metrics.contentSidePadding * 2 - gap) / 2;
+  const int y = renderer.getScreenHeight() - buttonHeight - 16;
+  return Rect{metrics.contentSidePadding, y, width, buttonHeight};
+}
+
+Rect EpubReaderBookmarksActivity::deleteButtonRect() const {
+  const Rect cancelRect = cancelButtonRect();
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  return Rect{cancelRect.x + cancelRect.width + metrics.contentSidePadding, cancelRect.y, cancelRect.width,
+              cancelRect.height};
+}
+
+void EpubReaderBookmarksActivity::cancelDelete() {
+  confirmingDelete = DELETE_MODE_OFF;
+  requestUpdate();
+}
+
+void EpubReaderBookmarksActivity::deleteSelectedBookmark() {
+  if (bookmarks.empty() || selectorIndex < 0 || selectorIndex >= static_cast<int>(bookmarks.size())) {
+    confirmingDelete = DELETE_MODE_OFF;
+    requestUpdate();
+    return;
+  }
+
+  bookmarks.erase(bookmarks.begin() + selectorIndex);
+  const std::string path = BookmarkUtil::getBookmarkPath(epubPath);
+  Storage.mkdir(BookmarkUtil::getBookmarksDir().c_str());
+  if (!JsonSettingsIO::saveBookmarks(bookmarks, path.c_str())) {
+    LOG_ERR("EPB", "Failed to save bookmarks after delete");
+  }
+
+  if (selectorIndex >= static_cast<int>(bookmarks.size()) && selectorIndex > 0) {
+    selectorIndex--;
+  }
+
+  confirmingDelete = DELETE_MODE_OFF;
+  requestUpdate();
+}
+
 void EpubReaderBookmarksActivity::loop() {
   // Delete confirmation mode
   if (confirmingDelete >= DELETE_MODE_DISPLAY) {
+#ifdef CROSSPOINT_BOARD_MURPHY_M4
+    if (TouchNavigator::wasTappedIn(mappedInput, cancelButtonRect())) {
+      cancelDelete();
+      return;
+    }
+    if (TouchNavigator::wasTappedIn(mappedInput, deleteButtonRect())) {
+      deleteSelectedBookmark();
+      return;
+    }
+#endif
     if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
       if (confirmingDelete == DELETE_MODE_DISPLAY) {
         confirmingDelete = DELETE_MODE_CONFIRM;  // first confirmation, update text
         requestUpdate();
         return;
       }
-      bookmarks.erase(bookmarks.begin() + selectorIndex);
-      const std::string path = BookmarkUtil::getBookmarkPath(epubPath);
-      Storage.mkdir(BookmarkUtil::getBookmarksDir().c_str());
-      if (!JsonSettingsIO::saveBookmarks(bookmarks, path.c_str())) {
-        LOG_ERR("EPB", "Failed to save bookmarks after delete");
-      }
-
-      // Move selector up if we deleted the last item
-      if (selectorIndex >= bookmarks.size() && selectorIndex > 0) {
-        selectorIndex--;
-      }
-
-      requestUpdate();
-      confirmingDelete = DELETE_MODE_OFF;
+      deleteSelectedBookmark();
       return;
     } else if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
-      requestUpdate();
-      confirmingDelete = DELETE_MODE_OFF;
+      cancelDelete();
       return;
     }
   }
@@ -230,11 +277,22 @@ void EpubReaderBookmarksActivity::render(RenderLock&&) {
                      tr(STR_BOOKMARK_INSTRUCTIONS));
   }
 
+#if defined(CROSSPOINT_BOARD_MURPHY_M4)
+  if (confirmingDelete >= DELETE_MODE_DISPLAY) {
+    drawTouchButton(renderer, cancelButtonRect(), tr(STR_CANCEL));
+    drawTouchButton(renderer, deleteButtonRect(), tr(STR_DELETE));
+  } else {
+    const auto labels = mappedInput.mapLabels(tr(STR_BACK), bookmarks.size() > 0 ? tr(STR_OPEN) : "", tr(STR_DIR_UP),
+                                              tr(STR_DIR_DOWN));
+    GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+  }
+#else
   const auto backLabel = confirmingDelete >= DELETE_MODE_DISPLAY ? tr(STR_CANCEL) : tr(STR_BACK);
   const auto confirmLabel =
       bookmarks.size() > 0 ? (confirmingDelete >= DELETE_MODE_DISPLAY ? tr(STR_DELETE) : tr(STR_OPEN)) : "";
   const auto labels = mappedInput.mapLabels(backLabel, confirmLabel, tr(STR_DIR_UP), tr(STR_DIR_DOWN));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+#endif
 
   renderer.displayBuffer();
 }

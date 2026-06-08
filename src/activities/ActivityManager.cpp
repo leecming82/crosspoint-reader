@@ -256,6 +256,14 @@ bool ActivityManager::handleGlobalBack() {
   if (!currentActivity || currentActivity->name == "Home") {
     return false;
   }
+  if (currentActivity->name == "TxtReader" || currentActivity->name == "XtcReader") {
+    LOG_DBG("ACT", "Global touch home from reader: %s", currentActivity->name.c_str());
+    goHome();
+    return true;
+  }
+  if (!currentActivity->allowsGlobalTouchBack()) {
+    return false;
+  }
   LOG_DBG("ACT", "Global back from touch long press: %s", currentActivity->name.c_str());
   ActivityResult result;
   result.isCancelled = true;

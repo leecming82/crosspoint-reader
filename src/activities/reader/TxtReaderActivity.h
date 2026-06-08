@@ -42,6 +42,8 @@ class TxtReaderActivity final : public Activity {
   void savePageIndexCache() const;
   void saveProgress() const;
   void loadProgress();
+  void turnPage(bool forward);
+  bool handleTouchZones();
 
  public:
   explicit TxtReaderActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, std::unique_ptr<Txt> txt)
@@ -51,5 +53,6 @@ class TxtReaderActivity final : public Activity {
   void loop() override;
   void render(RenderLock&&) override;
   bool isReaderActivity() const override { return true; }
+  bool allowsGlobalTouchBack() const override { return false; }
   ScreenshotInfo getScreenshotInfo() const override;
 };

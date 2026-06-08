@@ -27,7 +27,11 @@
 namespace {
 
 uint32_t heapKb(const uint32_t bytes) { return (bytes + 512) / 1024; }
+#ifdef CROSSPOINT_BOARD_MURPHY_M4
+constexpr unsigned long HOME_INPUT_ARM_DELAY_MS = 250;
+#else
 constexpr unsigned long HOME_INPUT_ARM_DELAY_MS = 1500;
+#endif
 
 std::string homeMemoryStatusText() {
   return "Free: " + std::to_string(heapKb(ESP.getFreeHeap())) +
@@ -64,9 +68,13 @@ Rect HomeActivity::getMenuRect() const {
   const auto& metrics = UITheme::getInstance().getMetrics();
   const int pageWidth = renderer.getScreenWidth();
   const int pageHeight = renderer.getScreenHeight();
+  int footerReserved = metrics.buttonHintsHeight;
+#ifdef CROSSPOINT_BOARD_MURPHY_M4
+  footerReserved = 0;
+#endif
   return Rect{0, metrics.homeTopPadding + metrics.homeCoverTileHeight + metrics.homeMenuTopOffset, pageWidth,
               pageHeight - (metrics.headerHeight + metrics.homeTopPadding + metrics.verticalSpacing +
-                            metrics.homeMenuTopOffset + metrics.buttonHintsHeight)};
+                            metrics.homeMenuTopOffset + footerReserved)};
 }
 
 void HomeActivity::loadRecentBooks(int maxBooks) {
@@ -265,7 +273,7 @@ bool HomeActivity::handleTouch() {
     return false;
   }
 
-  if (millis() < inputArmedAt || recentsLoading) {
+  if (millis() < inputArmedAt) {
     return true;
   }
 
@@ -282,7 +290,7 @@ bool HomeActivity::handleTouch() {
   }
 
   const Rect coverRect{0, metrics.homeTopPadding, renderer.getScreenWidth(), metrics.homeCoverTileHeight};
-  const bool coverHit = !metrics.homeContinueReadingInMenu && !recentBooks.empty() &&
+  const bool coverHit = !metrics.homeContinueReadingInMenu && !recentsLoading && !recentBooks.empty() &&
                         TouchNavigator::wasTappedIn(mappedInput, coverRect);
   if (coverHit) {
     selectorIndex = 0;

@@ -8,6 +8,7 @@
 
 #include "activities/Activity.h"
 #include "util/ButtonNavigator.h"
+#include "util/TouchNavigator.h"
 
 class EpubReaderMenuActivity final : public Activity {
  public:
@@ -49,6 +50,12 @@ class EpubReaderMenuActivity final : public Activity {
   uint8_t normalizeOrientation(uint8_t orientation) const;
   uint8_t normalizeWritingModePreference(uint8_t writingModePreference) const;
   uint8_t writingModeOptionCount() const;
+  void activateSelectedAction();
+  void cancelMenu();
+  bool handleTouch();
+  Rect contentRect() const;
+  Rect headerBackRect() const;
+  Rect footerHintsRect() const;
 
   // Fixed menu layout
   const std::vector<MenuItem> menuItems;

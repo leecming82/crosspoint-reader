@@ -3,6 +3,7 @@
 #include <functional>
 
 #include "activities/Activity.h"
+#include "components/themes/BaseTheme.h"
 
 class ClearCacheActivity final : public Activity {
  public:
@@ -24,5 +25,9 @@ class ClearCacheActivity final : public Activity {
 
   int clearedCount = 0;
   int failedCount = 0;
+  Rect cancelButtonRect() const;
+  Rect confirmButtonRect() const;
+  Rect backButtonRect() const;
+  void confirmClear();
   void clearCache();
 };

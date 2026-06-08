@@ -95,26 +95,65 @@ void TxtReaderActivity::loop() {
     return;
   }
 
+  if (handleTouchZones()) {
+    return;
+  }
+
   const auto [prevTriggered, nextTriggered, fromTilt] = ReaderUtils::detectPageTurn(mappedInput);
+  (void)fromTilt;
   if (!prevTriggered && !nextTriggered) {
     return;
   }
 
-  if (prevTriggered && currentPage > 0) {
+  if (prevTriggered) {
+    turnPage(false);
+  } else if (nextTriggered) {
+    turnPage(true);
+  }
+}
+
+void TxtReaderActivity::turnPage(const bool forward) {
+  if (!forward) {
+    if (currentPage <= 0) {
+      return;
+    }
     currentPage--;
     requestUpdate();
-  } else if (nextTriggered) {
-    if (currentPage + 1 >= static_cast<int>(pageOffsets.size()) && !endOfFileKnown) {
-      ensurePageCacheAhead(TXT_PAGE_CACHE_BATCH, true);
-      savePageIndexCache();
-    }
-    if (currentPage + 1 < static_cast<int>(pageOffsets.size())) {
-      currentPage++;
-      requestUpdate();
-    } else if (endOfFileKnown) {
-      onGoHome();
-    }
+    return;
   }
+
+  if (currentPage + 1 >= static_cast<int>(pageOffsets.size()) && !endOfFileKnown) {
+    ensurePageCacheAhead(TXT_PAGE_CACHE_BATCH, true);
+    savePageIndexCache();
+  }
+  if (currentPage + 1 < static_cast<int>(pageOffsets.size())) {
+    currentPage++;
+    requestUpdate();
+  } else if (endOfFileKnown) {
+    onGoHome();
+  }
+}
+
+bool TxtReaderActivity::handleTouchZones() {
+  if (!mappedInput.wasTapped()) {
+    return false;
+  }
+
+  const auto tap = mappedInput.lastTap();
+  const int screenWidth = renderer.getScreenWidth();
+  const int centerLeft = screenWidth / 3;
+  const int centerRight = (screenWidth * 2) / 3;
+
+  if (tap.x < centerLeft) {
+    turnPage(false);
+    return true;
+  }
+  if (tap.x >= centerRight) {
+    turnPage(true);
+    return true;
+  }
+
+  return true;
 }
 
 void TxtReaderActivity::initializeReader() {

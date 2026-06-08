@@ -5,6 +5,7 @@
 
 #include "../../BookmarkEntry.h"
 #include "../Activity.h"
+#include "components/themes/BaseTheme.h"
 #include "util/ButtonNavigator.h"
 
 class EpubReaderBookmarksActivity final : public Activity {
@@ -30,4 +31,8 @@ class EpubReaderBookmarksActivity final : public Activity {
 
   // Calculate the height available for the bookmark list based on orientation
   int getListHeight(const GfxRenderer& renderer);
+  Rect cancelButtonRect() const;
+  Rect deleteButtonRect() const;
+  void cancelDelete();
+  void deleteSelectedBookmark();
 };

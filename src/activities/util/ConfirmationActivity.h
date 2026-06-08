@@ -3,6 +3,7 @@
 #include <string>
 
 #include "activities/Activity.h"
+#include "components/themes/BaseTheme.h"
 #include "fontIds.h"
 
 class ConfirmationActivity : public Activity {
@@ -19,6 +20,13 @@ class ConfirmationActivity : public Activity {
   std::string safeBody;
   int startY = 0;
   int lineHeight = 0;
+
+  Rect actionRect() const;
+  Rect cancelButtonRect() const;
+  Rect confirmButtonRect() const;
+  void confirm();
+  void cancel();
+  bool handleTouch();
 
  public:
   ConfirmationActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, const std::string& heading,

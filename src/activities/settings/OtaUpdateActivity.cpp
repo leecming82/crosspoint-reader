@@ -10,6 +10,16 @@
 #include "components/UITheme.h"
 #include "fontIds.h"
 #include "network/OtaUpdater.h"
+#include "util/TouchNavigator.h"
+
+namespace {
+void drawTouchButton(const GfxRenderer& renderer, const Rect rect, const char* label) {
+  renderer.drawRoundedRect(rect.x, rect.y, rect.width, rect.height, 1, 6, true);
+  const int textWidth = renderer.getTextWidth(UI_12_FONT_ID, label, EpdFontFamily::BOLD);
+  const int textY = rect.y + (rect.height - renderer.getLineHeight(UI_12_FONT_ID)) / 2;
+  renderer.drawText(UI_12_FONT_ID, rect.x + (rect.width - textWidth) / 2, textY, label, true, EpdFontFamily::BOLD);
+}
+}  // namespace
 
 void OtaUpdateActivity::onWifiSelectionComplete(const bool success) {
   if (!success) {
@@ -109,8 +119,13 @@ void OtaUpdateActivity::render(RenderLock&&) {
     renderer.drawText(UI_10_FONT_ID, metrics.contentSidePadding, top + height * 2 + metrics.verticalSpacing * 2,
                       (std::string(tr(STR_NEW_VERSION)) + updater.getLatestVersion()).c_str());
 
+#ifdef CROSSPOINT_BOARD_MURPHY_M4
+    drawTouchButton(renderer, cancelButtonRect(), tr(STR_CANCEL));
+    drawTouchButton(renderer, updateButtonRect(), tr(STR_UPDATE));
+#else
     const auto labels = mappedInput.mapLabels(tr(STR_CANCEL), tr(STR_UPDATE), "", "");
     GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+#endif
   } else if (state == UPDATE_IN_PROGRESS) {
     renderer.drawCenteredText(UI_10_FONT_ID, top, tr(STR_UPDATING));
 
@@ -129,12 +144,20 @@ void OtaUpdateActivity::render(RenderLock&&) {
         (std::to_string(updater.getProcessedSize()) + " / " + std::to_string(updater.getTotalSize())).c_str());
   } else if (state == NO_UPDATE) {
     renderer.drawCenteredText(UI_10_FONT_ID, top, tr(STR_NO_UPDATE), true, EpdFontFamily::BOLD);
+#ifdef CROSSPOINT_BOARD_MURPHY_M4
+    drawTouchButton(renderer, backButtonRect(), tr(STR_BACK));
+#else
     const auto labels = mappedInput.mapLabels(tr(STR_BACK), "", "", "");
     GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+#endif
   } else if (state == FAILED) {
     renderer.drawCenteredText(UI_10_FONT_ID, top, tr(STR_UPDATE_FAILED), true, EpdFontFamily::BOLD);
+#ifdef CROSSPOINT_BOARD_MURPHY_M4
+    drawTouchButton(renderer, backButtonRect(), tr(STR_BACK));
+#else
     const auto labels = mappedInput.mapLabels(tr(STR_BACK), "", "", "");
     GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+#endif
   } else if (state == FINISHED) {
     renderer.drawCenteredText(UI_10_FONT_ID, top, tr(STR_UPDATE_COMPLETE), true, EpdFontFamily::BOLD);
     renderer.drawCenteredText(UI_10_FONT_ID, top + height + metrics.verticalSpacing, tr(STR_POWER_ON_HINT));
@@ -143,45 +166,82 @@ void OtaUpdateActivity::render(RenderLock&&) {
   renderer.displayBuffer();
 }
 
+Rect OtaUpdateActivity::cancelButtonRect() const {
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  constexpr int buttonHeight = 56;
+  const int gap = metrics.contentSidePadding;
+  const int width = (renderer.getScreenWidth() - metrics.contentSidePadding * 2 - gap) / 2;
+  const int y = renderer.getScreenHeight() - buttonHeight - 16;
+  return Rect{metrics.contentSidePadding, y, width, buttonHeight};
+}
+
+Rect OtaUpdateActivity::updateButtonRect() const {
+  const Rect cancelRect = cancelButtonRect();
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  return Rect{cancelRect.x + cancelRect.width + metrics.contentSidePadding, cancelRect.y, cancelRect.width,
+              cancelRect.height};
+}
+
+Rect OtaUpdateActivity::backButtonRect() const {
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  constexpr int buttonHeight = 56;
+  return Rect{metrics.contentSidePadding, renderer.getScreenHeight() - buttonHeight - 16,
+              renderer.getScreenWidth() - metrics.contentSidePadding * 2, buttonHeight};
+}
+
+void OtaUpdateActivity::confirmUpdate() {
+  LOG_DBG("OTA", "New update available, starting download...");
+  {
+    RenderLock lock(*this);
+    state = UPDATE_IN_PROGRESS;
+  }
+  requestUpdateAndWait();
+  const auto res = updater.installUpdate(
+      [](void* ctx) {
+        // immediate=true notifies the render task directly. The default deferred path only
+        // sets a flag consumed at the end of ActivityManager::loop(), which never runs while
+        // installUpdate() blocks this task.
+        static_cast<OtaUpdateActivity*>(ctx)->requestUpdate(true);
+      },
+      this);
+
+  if (res != OtaUpdater::OK) {
+    LOG_DBG("OTA", "Update failed: %d", res);
+    {
+      RenderLock lock(*this);
+      state = FAILED;
+    }
+    requestUpdate();
+    return;
+  }
+
+  {
+    RenderLock lock(*this);
+    state = FINISHED;
+  }
+  requestUpdateAndWait();
+  // Hold the completion screen briefly so the user sees it, then restart.
+  delay(3000);
+  {
+    RenderLock lock(*this);
+    state = SHUTTING_DOWN;
+  }
+}
+
 void OtaUpdateActivity::loop() {
   if (state == WAITING_CONFIRMATION) {
+#ifdef CROSSPOINT_BOARD_MURPHY_M4
+    if (TouchNavigator::wasTappedIn(mappedInput, cancelButtonRect())) {
+      finish();
+      return;
+    }
+    if (TouchNavigator::wasTappedIn(mappedInput, updateButtonRect())) {
+      confirmUpdate();
+      return;
+    }
+#endif
     if (mappedInput.wasPressed(MappedInputManager::Button::Confirm)) {
-      LOG_DBG("OTA", "New update available, starting download...");
-      {
-        RenderLock lock(*this);
-        state = UPDATE_IN_PROGRESS;
-      }
-      requestUpdateAndWait();
-      const auto res = updater.installUpdate(
-          [](void* ctx) {
-            // immediate=true notifies the render task directly. The default deferred path only
-            // sets a flag consumed at the end of ActivityManager::loop(), which never runs while
-            // installUpdate() blocks this task.
-            static_cast<OtaUpdateActivity*>(ctx)->requestUpdate(true);
-          },
-          this);
-
-      if (res != OtaUpdater::OK) {
-        LOG_DBG("OTA", "Update failed: %d", res);
-        {
-          RenderLock lock(*this);
-          state = FAILED;
-        }
-        requestUpdate();
-        return;
-      }
-
-      {
-        RenderLock lock(*this);
-        state = FINISHED;
-      }
-      requestUpdateAndWait();
-      // Hold the completion screen briefly so the user sees it, then restart.
-      delay(3000);
-      {
-        RenderLock lock(*this);
-        state = SHUTTING_DOWN;
-      }
+      confirmUpdate();
     }
 
     if (mappedInput.wasPressed(MappedInputManager::Button::Back)) {
@@ -192,6 +252,12 @@ void OtaUpdateActivity::loop() {
   }
 
   if (state == FAILED) {
+#ifdef CROSSPOINT_BOARD_MURPHY_M4
+    if (TouchNavigator::wasTappedIn(mappedInput, backButtonRect())) {
+      finish();
+      return;
+    }
+#endif
     if (mappedInput.wasPressed(MappedInputManager::Button::Back)) {
       finish();
     }
@@ -199,6 +265,12 @@ void OtaUpdateActivity::loop() {
   }
 
   if (state == NO_UPDATE) {
+#ifdef CROSSPOINT_BOARD_MURPHY_M4
+    if (TouchNavigator::wasTappedIn(mappedInput, backButtonRect())) {
+      finish();
+      return;
+    }
+#endif
     if (mappedInput.wasPressed(MappedInputManager::Button::Back)) {
       finish();
     }

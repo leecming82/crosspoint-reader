@@ -56,15 +56,7 @@ void XtcReaderActivity::onExit() {
 void XtcReaderActivity::loop() {
   // Enter chapter selection activity
   if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
-    if (xtc && xtc->hasChapters() && !xtc->getChapters().empty()) {
-      startActivityForResult(
-          std::make_unique<XtcReaderChapterSelectionActivity>(renderer, mappedInput, xtc, currentPage),
-          [this](const ActivityResult& result) {
-            if (!result.isCancelled) {
-              currentPage = std::get<PageResult>(result.data).page;
-            }
-          });
-    }
+    openChapterSelection();
   }
 
   // Long press BACK (1s+) goes to file selection
@@ -80,14 +72,44 @@ void XtcReaderActivity::loop() {
     return;
   }
 
+  if (handleTouchZones()) {
+    return;
+  }
+
   const auto [prevTriggered, nextTriggered, fromTilt] = ReaderUtils::detectPageTurn(mappedInput);
   if (!prevTriggered && !nextTriggered) {
     return;
   }
 
+  const bool skipPages = !fromTilt && SETTINGS.longPressButtonBehavior == SETTINGS.CHAPTER_SKIP &&
+                         mappedInput.getHeldTime() > ReaderUtils::SKIP_HOLD_MS;
+  const int skipAmount = skipPages ? 10 : 1;
+  if (prevTriggered) {
+    turnPage(false, skipAmount);
+  } else if (nextTriggered) {
+    turnPage(true, skipAmount);
+  }
+}
+
+void XtcReaderActivity::openChapterSelection() {
+  if (xtc && xtc->hasChapters() && !xtc->getChapters().empty()) {
+    startActivityForResult(std::make_unique<XtcReaderChapterSelectionActivity>(renderer, mappedInput, xtc, currentPage),
+                           [this](const ActivityResult& result) {
+                             if (!result.isCancelled) {
+                               currentPage = std::get<PageResult>(result.data).page;
+                             }
+                           });
+  }
+}
+
+void XtcReaderActivity::turnPage(const bool forward, const int skipAmount) {
+  if (!xtc) {
+    return;
+  }
+
   // At end of the book, forward button goes home and back button returns to last page
   if (currentPage >= xtc->getPageCount()) {
-    if (nextTriggered) {
+    if (forward) {
       onGoHome();
     } else {
       currentPage = xtc->getPageCount() - 1;
@@ -96,24 +118,43 @@ void XtcReaderActivity::loop() {
     return;
   }
 
-  const bool skipPages = !fromTilt && SETTINGS.longPressButtonBehavior == SETTINGS.CHAPTER_SKIP &&
-                         mappedInput.getHeldTime() > ReaderUtils::SKIP_HOLD_MS;
-  const int skipAmount = skipPages ? 10 : 1;
-
-  if (prevTriggered) {
+  if (!forward) {
     if (currentPage >= static_cast<uint32_t>(skipAmount)) {
       currentPage -= skipAmount;
     } else {
       currentPage = 0;
     }
     requestUpdate();
-  } else if (nextTriggered) {
+  } else {
     currentPage += skipAmount;
     if (currentPage >= xtc->getPageCount()) {
       currentPage = xtc->getPageCount();  // Allow showing "End of book"
     }
     requestUpdate();
   }
+}
+
+bool XtcReaderActivity::handleTouchZones() {
+  if (!mappedInput.wasTapped()) {
+    return false;
+  }
+
+  const auto tap = mappedInput.lastTap();
+  const int screenWidth = renderer.getScreenWidth();
+  const int centerLeft = screenWidth / 3;
+  const int centerRight = (screenWidth * 2) / 3;
+
+  if (tap.x < centerLeft) {
+    turnPage(false);
+    return true;
+  }
+  if (tap.x >= centerRight) {
+    turnPage(true);
+    return true;
+  }
+
+  openChapterSelection();
+  return true;
 }
 
 void XtcReaderActivity::render(RenderLock&&) {

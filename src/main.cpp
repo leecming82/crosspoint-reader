@@ -531,8 +531,9 @@ void loop() {
   }
 
   mappedInputManager.setTouchLogicalSize(renderer.getScreenWidth(), renderer.getScreenHeight());
+  halTouch.setLogicalOrientation(static_cast<uint8_t>(renderer.getOrientation()));
   mappedInputManager.update();
-  if (mappedInputManager.wasTouchLongPressed()) {
+  if (gpio.getBoardProfile().inputHasTouch && mappedInputManager.wasTouchLongPressed()) {
     const auto point = mappedInputManager.lastTouchLongPress();
     const int screenWidth = renderer.getScreenWidth();
     const int screenHeight = renderer.getScreenHeight();
