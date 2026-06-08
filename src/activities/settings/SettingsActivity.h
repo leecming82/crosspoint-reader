@@ -8,6 +8,7 @@
 #include "CrossPointSettings.h"
 #include "activities/Activity.h"
 #include "util/ButtonNavigator.h"
+#include "util/TouchNavigator.h"
 
 enum class SettingType { TOGGLE, ENUM, ACTION, VALUE, STRING };
 
@@ -167,6 +168,22 @@ class SettingsActivity final : public Activity {
   void openSleepTimeoutPicker();
   void rebuildSettingsLists();
   void syncQuickResumeTimeoutForSleepScreen(bool sleepScreenChanged, bool quickResumeTimeoutChanged);
+  Rect backButtonRect() const;
+  Rect headerBackTapRect() const;
+  Rect tabBarRect() const;
+  Rect listRect() const;
+  int listPageItems() const;
+  int settingPageItems() const;
+  int currentListPageStart() const;
+  bool hasPreviousListPage() const;
+  bool hasNextListPage() const;
+  int visibleSettingsCount() const;
+  int visibleListRowCount() const;
+  int visibleRowToSettingIndex(int visibleRow) const;
+  bool isPreviousPageRow(int visibleRow) const;
+  bool isNextPageRow(int visibleRow) const;
+  void selectCategory(int categoryIndex);
+  bool handleTouch();
 
  public:
   explicit SettingsActivity(GfxRenderer& renderer, MappedInputManager& mappedInput)
@@ -175,4 +192,5 @@ class SettingsActivity final : public Activity {
   void onExit() override;
   void loop() override;
   void render(RenderLock&&) override;
+  bool allowsGlobalTouchBack() const override { return false; }
 };

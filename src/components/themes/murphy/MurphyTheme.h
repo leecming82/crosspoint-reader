@@ -15,7 +15,7 @@ constexpr ThemeMetrics values = {.batteryWidth = 16,
                                  .menuRowHeight = 76,
                                  .menuSpacing = 8,
                                  .tabSpacing = 8,
-                                 .tabBarHeight = 40,
+                                 .tabBarHeight = 52,
                                  .scrollBarWidth = 4,
                                  .scrollBarRightOffset = 5,
                                  .homeTopPadding = 56,
@@ -70,6 +70,8 @@ class MurphyTheme final : public LyraTheme {
  public:
   void drawButtonHints(GfxRenderer& renderer, const char* btn1, const char* btn2, const char* btn3,
                        const char* btn4) const override;
+  void drawTabBar(const GfxRenderer& renderer, Rect rect, const std::vector<TabInfo>& tabs,
+                  bool selected) const override;
   void drawButtonMenu(GfxRenderer& renderer, Rect rect, int buttonCount, int selectedIndex,
                       const std::function<std::string(int index)>& buttonLabel,
                       const std::function<UIIcon(int index)>& rowIcon) const override;

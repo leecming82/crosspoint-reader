@@ -118,8 +118,8 @@ The received Murphy M4 is now concrete enough to plan around: ESP32-S3, 16 MB fl
    - [x] Home
    - [x] File Browser
    - [x] Recent Books
-   - [ ] Settings
-   - [ ] Crash Report
+   - [x] Settings
+   - [x] Crash Report
 
    Readers:
 

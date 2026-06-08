@@ -82,6 +82,46 @@ void MurphyTheme::drawButtonHints(GfxRenderer& renderer, const char* btn1, const
   (void)btn4;
 }
 
+void MurphyTheme::drawTabBar(const GfxRenderer& renderer, Rect rect, const std::vector<TabInfo>& tabs,
+                             bool selected) const {
+  (void)selected;
+
+  if (tabs.empty()) {
+    return;
+  }
+
+  const int slotWidth = rect.width / static_cast<int>(tabs.size());
+  const int tabY = rect.y + 4;
+  const int tabHeight = rect.height - 8;
+
+  for (size_t i = 0; i < tabs.size(); ++i) {
+    const auto& tab = tabs[i];
+    const int slotX = rect.x + static_cast<int>(i) * slotWidth;
+    const int tabX = slotX + 4;
+    const int tabWidth = slotWidth - 8;
+
+    if (tab.selected) {
+      renderer.fillRoundedRect(tabX, tabY, tabWidth, tabHeight, cornerRadius, Color::Black);
+    } else {
+      renderer.drawRoundedRect(tabX, tabY, tabWidth, tabHeight, 1, cornerRadius, true);
+    }
+
+    int fontId = UI_12_FONT_ID;
+    EpdFontFamily::Style fontFamily = tab.selected ? EpdFontFamily::BOLD : EpdFontFamily::REGULAR;
+    int textWidth = renderer.getTextWidth(fontId, tab.label, fontFamily);
+    if (textWidth > tabWidth - 12) {
+      fontId = UI_10_FONT_ID;
+      fontFamily = EpdFontFamily::REGULAR;
+      textWidth = renderer.getTextWidth(fontId, tab.label, fontFamily);
+    }
+
+    const auto label = renderer.truncatedText(fontId, tab.label, tabWidth - 12, fontFamily);
+    textWidth = renderer.getTextWidth(fontId, label.c_str(), fontFamily);
+    const int textY = tabY + (tabHeight - renderer.getLineHeight(fontId)) / 2;
+    renderer.drawText(fontId, tabX + (tabWidth - textWidth) / 2, textY, label.c_str(), !tab.selected, fontFamily);
+  }
+}
+
 void MurphyTheme::drawButtonMenu(GfxRenderer& renderer, Rect rect, int buttonCount, int selectedIndex,
                                  const std::function<std::string(int index)>& buttonLabel,
                                  const std::function<UIIcon(int index)>& rowIcon) const {
