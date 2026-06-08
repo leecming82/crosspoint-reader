@@ -100,7 +100,7 @@ The received Murphy M4 is now concrete enough to plan around: ESP32-S3, 16 MB fl
 
    Exit criteria: home, settings, lists, pop-ups, and reader menus are directly tappable; the UI is usable with touch alone for normal reading workflows; physical buttons are accounted for as secondary shortcuts; all touch behavior remains board/capability gated so X3/X4 behavior is unchanged.
 
-   Button policy: given a full touch interface, Murphy's three physical buttons should be restricted to durable secondary actions rather than full UI traversal. For now, treat them as reader previous/next page shortcuts, optional frontlight strength controls once frontlight is implemented, and power/sleep/wake controls. GPIO0's boot/download role must remain documented so the bottom button stays safe to use in-app.
+   Button policy: given a full touch interface, Murphy's three physical buttons should be restricted to durable secondary actions rather than full UI traversal. Current fixed Murphy policy is top short press opens the global frontlight overlay, middle short press takes a screenshot, and bottom long press is reserved for power/sleep. GPIO0's boot/download role must remain documented so the bottom button stays safe to use in-app.
 
    Back/navigation note: use a temporary long-press gesture as a universal back fallback, preferably in a low-conflict central zone, but make visible back targets screen-local rather than a fixed global top-left hotspot. Home is a root screen, reader uses center tap for the menu and should offer explicit close/back controls, and settings/menus should place back affordances around their actual header/tab/list layout so they do not collide with tappable content.
 

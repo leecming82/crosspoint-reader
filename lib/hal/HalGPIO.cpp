@@ -212,29 +212,12 @@ uint8_t murphyReadPhysicalButtons() {
 }
 
 uint8_t murphyShortPressButton(uint8_t physicalButton) {
-  switch (physicalButton) {
-    case MURPHY_BTN_TOP:
-      return HalGPIO::BTN_UP;
-    case MURPHY_BTN_MIDDLE:
-      return HalGPIO::BTN_DOWN;
-    case MURPHY_BTN_BOTTOM:
-      return HalGPIO::BTN_CONFIRM;
-    default:
-      return 0xFF;
-  }
+  (void)physicalButton;
+  return 0xFF;
 }
 
 uint8_t murphyLongPressButton(uint8_t physicalButton) {
-  switch (physicalButton) {
-    case MURPHY_BTN_TOP:
-      return HalGPIO::BTN_BACK;
-    case MURPHY_BTN_MIDDLE:
-      return HalGPIO::BTN_CONFIRM;
-    case MURPHY_BTN_BOTTOM:
-      return HalGPIO::BTN_POWER;
-    default:
-      return 0xFF;
-  }
+  return physicalButton == MURPHY_BTN_BOTTOM ? HalGPIO::BTN_POWER : 0xFF;
 }
 
 }  // namespace
@@ -271,6 +254,8 @@ void HalGPIO::update() {
     const uint8_t rawState = murphyReadPhysicalButtons();
     murphyPressedEvents = 0;
     murphyReleasedEvents = 0;
+    murphyFrontlightEvent = false;
+    murphyScreenshotEvent = false;
 
     if (rawState != murphyLastRawState) {
       murphyLastDebounceTime = now;
@@ -288,6 +273,13 @@ void HalGPIO::update() {
         murphyCurrentState = 0;
       } else if (previousPhysicalState != 0 && rawState == 0) {
         const unsigned long heldTime = now - murphyPressStart;
+        if (heldTime < MURPHY_LONG_PRESS_MS) {
+          if (murphyPhysicalState == MURPHY_BTN_TOP) {
+            murphyFrontlightEvent = true;
+          } else if (murphyPhysicalState == MURPHY_BTN_MIDDLE) {
+            murphyScreenshotEvent = true;
+          }
+        }
         const uint8_t logicalButton = heldTime >= MURPHY_LONG_PRESS_MS ? murphyLongPressButton(murphyPhysicalState)
                                                                        : murphyShortPressButton(murphyPhysicalState);
         if (logicalButton <= BTN_POWER) {
@@ -360,9 +352,17 @@ bool HalGPIO::wasReleased(uint8_t buttonIndex) const {
 
 bool HalGPIO::wasAnyReleased() const {
   if (deviceIsMurphyM4()) {
-    return murphyReleasedEvents > 0;
+    return murphyReleasedEvents > 0 || murphyFrontlightEvent || murphyScreenshotEvent;
   }
   return inputMgr.wasAnyReleased();
+}
+
+bool HalGPIO::wasFrontlightButtonReleased() const {
+  return deviceIsMurphyM4() && murphyFrontlightEvent;
+}
+
+bool HalGPIO::wasScreenshotButtonReleased() const {
+  return deviceIsMurphyM4() && murphyScreenshotEvent;
 }
 
 unsigned long HalGPIO::getHeldTime() const {

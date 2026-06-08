@@ -531,6 +531,11 @@ void loop() {
   mappedInputManager.setTouchLogicalSize(renderer.getScreenWidth(), renderer.getScreenHeight());
   halTouch.setLogicalOrientation(static_cast<uint8_t>(renderer.getOrientation()));
   mappedInputManager.update();
+  if (gpio.wasScreenshotButtonReleased()) {
+    RenderLock lock;
+    ScreenshotUtil::takeScreenshot(renderer);
+    return;
+  }
   if (gpio.getBoardProfile().inputHasTouch && mappedInputManager.wasTouchLongPressed()) {
     const auto point = mappedInputManager.lastTouchLongPress();
     const int screenWidth = renderer.getScreenWidth();
@@ -579,7 +584,7 @@ void loop() {
 
   static bool screenshotButtonsReleased = true;
   static bool screenshotComboActive = false;
-  if (gpio.isPressed(HalGPIO::BTN_POWER) && gpio.isPressed(HalGPIO::BTN_DOWN)) {
+  if (!gpio.deviceIsMurphyM4() && gpio.isPressed(HalGPIO::BTN_POWER) && gpio.isPressed(HalGPIO::BTN_DOWN)) {
     screenshotComboActive = true;
     if (screenshotButtonsReleased) {
       screenshotButtonsReleased = false;
@@ -612,7 +617,7 @@ void loop() {
   if (millis() >= allowSleepAt && gpio.isPressed(HalGPIO::BTN_POWER) &&
       gpio.getPowerButtonHeldTime() > SETTINGS.getPowerButtonDuration()) {
     // If the screenshot combination is potentially being pressed, don't sleep
-    if (gpio.isPressed(HalGPIO::BTN_DOWN)) {
+    if (!gpio.deviceIsMurphyM4() && gpio.isPressed(HalGPIO::BTN_DOWN)) {
       return;
     }
     enterDeepSleep();
