@@ -13,6 +13,7 @@
 #include <JsonSettingsIO.h>
 #include <Logging.h>
 #include <Memory.h>
+#include <SdCardFont.h>
 #include <Utf8.h>
 #include <esp_system.h>
 
@@ -1379,6 +1380,8 @@ void EpubReaderActivity::render(RenderLock&& lock) {
     }
   }
 
+  prepareSectionGlyphPack();
+
   renderer.clearScreen();
 
   if (section->pageCount == 0) {
@@ -1479,6 +1482,46 @@ void EpubReaderActivity::silentIndexNextChapterIfNeeded(const uint16_t viewportW
   }
 }
 
+void EpubReaderActivity::prepareSectionGlyphPack() {
+  if (!section) {
+    activeGlyphPackSpineIndex = -1;
+    activeGlyphPackFontId = -1;
+    activeGlyphPackReady = false;
+    return;
+  }
+
+  const int fontId = effectiveReaderFontId();
+  if (activeGlyphPackSpineIndex == currentSpineIndex && activeGlyphPackFontId == fontId) {
+    return;
+  }
+
+  activeGlyphPackSpineIndex = currentSpineIndex;
+  activeGlyphPackFontId = fontId;
+  activeGlyphPackReady = false;
+
+  for (auto& [id, font] : renderer.getSdCardFonts()) {
+    if (font) {
+      font->clearSectionGlyphPack();
+    }
+  }
+
+  auto fontIt = renderer.getSdCardFonts().find(fontId);
+  if (fontIt == renderer.getSdCardFonts().end() || !fontIt->second) {
+    return;
+  }
+
+  activeGlyphPackReady = fontIt->second->loadSectionGlyphPack(section->getGlyphPackPath().c_str());
+}
+
+bool EpubReaderActivity::hasActiveSectionGlyphPack() const {
+  if (!activeGlyphPackReady || activeGlyphPackSpineIndex != currentSpineIndex ||
+      activeGlyphPackFontId != effectiveReaderFontId()) {
+    return false;
+  }
+  auto fontIt = renderer.getSdCardFonts().find(activeGlyphPackFontId);
+  return fontIt != renderer.getSdCardFonts().end() && fontIt->second && fontIt->second->hasSectionGlyphPack();
+}
+
 bool EpubReaderActivity::saveProgress(int spineIndex, int currentPage, int pageCount) {
   return EpubReaderUtils::saveProgress(*epub, spineIndex, currentPage, pageCount);
 }
@@ -1535,13 +1578,18 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
   const int rubyOffsetY = static_cast<int>(std::min<uint8_t>(currentRubyOffsetY(), 32)) - 16;
   const int contentBottom = renderer.getScreenHeight() - orientedMarginBottom;
 
-  // Font prewarm: scan pass accumulates text, then prewarm, then real render
-  auto* fcm = renderer.getFontCacheManager();
-  auto scope = fcm->createPrewarmScope();
-  page->render(renderer, effectiveReaderFontId(), orientedMarginLeft, orientedMarginTop, rubyOffsetX, rubyOffsetY,
-               contentBottom);  // scan pass
-  scope.endScanAndPrewarm();
-  const auto tPrewarm = millis();
+  auto tPrewarm = t0;
+  const bool usingSectionGlyphPack = hasActiveSectionGlyphPack();
+  std::optional<FontCacheManager::PrewarmScope> prewarmScope;
+  if (!usingSectionGlyphPack) {
+    // Font prewarm: scan pass accumulates text, then prewarm, then real render.
+    auto* fcm = renderer.getFontCacheManager();
+    prewarmScope.emplace(fcm->createPrewarmScope());
+    page->render(renderer, effectiveReaderFontId(), orientedMarginLeft, orientedMarginTop, rubyOffsetX, rubyOffsetY,
+                 contentBottom);  // scan pass
+    prewarmScope->endScanAndPrewarm();
+    tPrewarm = millis();
+  }
 
   // Force special handling for pages with images when anti-aliasing is on
   const bool pageHasImages = page->hasImages();

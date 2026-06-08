@@ -331,6 +331,11 @@ bool Section::loadSectionFile(const int fontId, const float lineCompression, con
 
 // Your updated class method (assuming you are using the 'SD' object, which is a wrapper for a specific filesystem)
 bool Section::clearCache() const {
+  const auto glyphPackPath = getGlyphPackPath();
+  if (Storage.exists(glyphPackPath.c_str()) && !Storage.remove(glyphPackPath.c_str())) {
+    LOG_ERR("SCT", "Failed to clear section glyph pack");
+  }
+
   if (!Storage.exists(filePath.c_str())) {
     LOG_DBG("SCT", "Cache does not exist, no action needed");
     return true;
@@ -399,9 +404,11 @@ bool Section::createSectionFile(const int fontId, const float lineCompression, c
   LOG_DBG("SCT", "Streamed temp HTML to %s (%d bytes)", tmpHtmlPath.c_str(), fileSize);
 
   bool sdAdvancePrewarmed = false;
+  bool shouldBuildGlyphPack = false;
+  bool includeVerticalSubstitutions = false;
+  std::vector<uint32_t> sectionCodepoints;
   // Preload SD-font advance metrics for this section so CJK layout avoids per-block glyph metadata reads.
   if (renderer.isSdCardFont(fontId)) {
-    std::vector<uint32_t> sectionCodepoints;
     bool hitCodepointCap = false;
     bool hasCjk = false;
     if (scanSectionAdvanceCodepoints(tmpHtmlPath, sectionCodepoints, hitCodepointCap, hasCjk,
@@ -419,8 +426,7 @@ bool Section::createSectionFile(const int fontId, const float lineCompression, c
         addUniqueCodepoint(sectionCodepoints, 0x65E5);  // 日
         addUniqueCodepoint(sectionCodepoints, 0x3042);  // あ
 
-        const bool includeVerticalSubstitutions =
-            static_cast<EpubWritingMode>(writingMode) != EpubWritingMode::HorizontalTb;
+        includeVerticalSubstitutions = static_cast<EpubWritingMode>(writingMode) != EpubWritingMode::HorizontalTb;
         const auto& sdFonts = renderer.getSdCardFonts();
         auto fontIt = sdFonts.find(fontId);
         if (fontIt != sdFonts.end() && fontIt->second) {
@@ -431,6 +437,7 @@ bool Section::createSectionFile(const int fontId, const float lineCompression, c
           if (missed > 0) {
             LOG_DBG("SCT", "Section advance prewarm: %d codepoint(s) not found", missed);
           }
+          shouldBuildGlyphPack = sdAdvancePrewarmed;
         }
       }
     } else {
@@ -438,7 +445,18 @@ bool Section::createSectionFile(const int fontId, const float lineCompression, c
     }
   }
 
+  if (shouldBuildGlyphPack && !sectionCodepoints.empty()) {
+    const auto& sdFonts = renderer.getSdCardFonts();
+    auto fontIt = sdFonts.find(fontId);
+    if (fontIt != sdFonts.end() && fontIt->second) {
+      fontIt->second->buildSectionGlyphPackFromCodepoints(
+          sectionCodepoints.data(), static_cast<uint32_t>(sectionCodepoints.size()), 0x0F, getGlyphPackPath().c_str(),
+          includeVerticalSubstitutions);
+    }
+  }
+
   if (!Storage.openFileForWrite("SCT", filePath, file)) {
+    Storage.remove(getGlyphPackPath().c_str());
     return false;
   }
   writeSectionFileHeader(fontId, lineCompression, extraParagraphSpacing, paragraphAlignment, viewportWidth,
@@ -493,6 +511,7 @@ bool Section::createSectionFile(const int fontId, const float lineCompression, c
     // Explicitly close() file before calling Storage.remove()
     file.close();
     Storage.remove(filePath.c_str());
+    Storage.remove(getGlyphPackPath().c_str());
     if (cssParser) {
       cssParser->clear();
     }
@@ -515,6 +534,7 @@ bool Section::createSectionFile(const int fontId, const float lineCompression, c
     // Explicitly close() file before calling Storage.remove()
     file.close();
     Storage.remove(filePath.c_str());
+    Storage.remove(getGlyphPackPath().c_str());
     return false;
   }
 

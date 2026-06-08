@@ -44,6 +44,7 @@ class Section {
   std::unique_ptr<Page> loadPageFromSectionFile();
   std::unique_ptr<Page> loadPageFromSectionFile(uint16_t pageNumber);
   std::string getTextFromSectionFile();
+  std::string getGlyphPackPath() const { return filePath + ".glyphpack"; }
 
   // Look up the page number for an anchor id from the section cache file.
   std::optional<uint16_t> getPageForAnchor(const std::string& anchor) const;

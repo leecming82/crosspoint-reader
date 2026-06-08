@@ -1515,9 +1515,7 @@ bool ChapterHtmlSlimParser::parseAndBuildPages() {
     file.seek(parseStart);
   }
 
-  // Compute the time taken to parse and build pages
-  const uint32_t chapterStartTime = millis();
-  uint32_t lastHeartbeat = chapterStartTime;
+  uint32_t lastHeartbeat = millis();
   size_t bytesRead = 0;
   do {
     void* const buf = XML_GetBuffer(parser, PARSE_BUFFER_SIZE);
@@ -1542,7 +1540,8 @@ bool ChapterHtmlSlimParser::parseAndBuildPages() {
 
     done = parseFragment ? bytesRead >= parseSize : file.available() == 0;
 
-    if (XML_ParseBuffer(parser, static_cast<int>(len), done && !parseFragment) == XML_STATUS_ERROR) {
+    const XML_Status parseStatus = XML_ParseBuffer(parser, static_cast<int>(len), done && !parseFragment);
+    if (parseStatus == XML_STATUS_ERROR) {
       LOG_ERR("EHP", "Parse error at line %lu:\n%s", XML_GetCurrentLineNumber(parser),
               XML_ErrorString(XML_GetErrorCode(parser)));
       destroyXmlParser(parser);
@@ -1564,7 +1563,8 @@ bool ChapterHtmlSlimParser::parseAndBuildPages() {
 
   if (parseFragment) {
     const std::string& suffix = fragmentSuffix.empty() ? std::string("</body></html>") : fragmentSuffix;
-    if (XML_Parse(parser, suffix.c_str(), static_cast<int>(suffix.size()), XML_TRUE) == XML_STATUS_ERROR) {
+    const XML_Status suffixParseStatus = XML_Parse(parser, suffix.c_str(), static_cast<int>(suffix.size()), XML_TRUE);
+    if (suffixParseStatus == XML_STATUS_ERROR) {
       LOG_ERR("EHP", "Parse error in fragment suffix at line %lu:\n%s", XML_GetCurrentLineNumber(parser),
               XML_ErrorString(XML_GetErrorCode(parser)));
       destroyXmlParser(parser);
@@ -1572,7 +1572,6 @@ bool ChapterHtmlSlimParser::parseAndBuildPages() {
       return false;
     }
   }
-  LOG_DBG("EHP", "Time to parse and build pages: %lu ms", millis() - chapterStartTime);
 
   destroyXmlParser(parser);
   file.close();

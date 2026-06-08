@@ -61,6 +61,12 @@ class SdCardFont {
   // Returns true if advance table is populated for at least one style.
   bool hasAdvanceTable() const;
 
+  bool buildSectionGlyphPackFromCodepoints(const uint32_t* codepoints, uint32_t cpCount, uint8_t styleMask,
+                                           const char* path, bool includeVerticalSubstitutions = true);
+  bool loadSectionGlyphPack(const char* path);
+  void clearSectionGlyphPack();
+  bool hasSectionGlyphPack() const { return sectionGlyphPackActive_; }
+
   // Free mini data for all styles, restore stub EpdFontData.
   // Also clears the temporary advance table (built per layout pass) but
   // preserves the persistent advance cache (reused across passes).
@@ -238,6 +244,7 @@ class SdCardFont {
   Stats stats_;
   uint32_t contentHash_ = 0;
   bool loaded_ = false;
+  bool sectionGlyphPackActive_ = false;
 
   // Per-style helpers
   void freeStyleMiniData(PerStyle& s);
@@ -248,6 +255,7 @@ class SdCardFont {
   bool buildMiniKernMatrix(PerStyle& s, const uint32_t* codepoints, uint32_t cpCount);
   void applyKernLigaturePointers(PerStyle& s, EpdFontData& data) const;
   void applyGlyphMissCallback(uint8_t styleIdx);
+  bool populateMiniDataFromCurrentBuffers(uint8_t styleIdx, const uint32_t* codepoints, uint32_t cpCount);
   int32_t findGlobalGlyphIndex(const PerStyle& s, uint32_t codepoint) const;
   int fetchAdvancesForCodepoints(const uint32_t* codepoints, uint32_t cpCount, uint8_t styleMask);
   template <typename Iter>

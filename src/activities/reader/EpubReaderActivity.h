@@ -37,6 +37,9 @@ class EpubReaderActivity final : public Activity {
   bool pendingScreenshot = false;
   bool pendingSyncSaveError = false;
   bool automaticPageTurnActive = false;
+  int activeGlyphPackSpineIndex = -1;
+  int activeGlyphPackFontId = -1;
+  bool activeGlyphPackReady = false;
   mutable int cachedStatusTitleSpineIndex = -1;
   mutable uint8_t cachedStatusTitleMode = CrossPointSettings::STATUS_BAR_TITLE_COUNT;
   mutable std::string cachedStatusTitle;
@@ -128,6 +131,8 @@ class EpubReaderActivity final : public Activity {
 
   void renderContents(std::unique_ptr<Page> page, int orientedMarginTop, int orientedMarginRight,
                       int orientedMarginBottom, int orientedMarginLeft);
+  void prepareSectionGlyphPack();
+  bool hasActiveSectionGlyphPack() const;
   void renderStatusBar() const;
   std::string statusBarTitleForCurrentSpine() const;
   void renderRubyAdjustOverlay() const;

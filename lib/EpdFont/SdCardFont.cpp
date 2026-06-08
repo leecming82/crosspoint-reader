@@ -8,6 +8,7 @@
 #include <climits>
 #include <cstring>
 #include <memory>
+#include <vector>
 
 #include "EpdFontFamily.h"
 
@@ -38,6 +39,8 @@ constexpr char CPFONT_MAGIC[8] = {'C', 'P', 'F', 'O', 'N', 'T', '\0', '\0'};
 // stringified into FONT_MANIFEST_URL.
 constexpr uint32_t HEADER_SIZE = 32;
 constexpr uint32_t STYLE_TOC_ENTRY_SIZE = 32;
+constexpr char GLYPH_PACK_MAGIC[8] = {'C', 'P', 'G', 'L', 'Y', 'P', 'H', '\0'};
+constexpr uint16_t GLYPH_PACK_VERSION = 1;
 
 // Helper to read little-endian values from byte buffer
 inline uint16_t readU16(const uint8_t* p) { return p[0] | (p[1] << 8); }
@@ -78,6 +81,46 @@ bool appendUniqueCodepoint(uint32_t cp, uint32_t* codepoints, uint32_t& cpCount,
 
 const char* asCStr(const std::string& s) { return s.c_str(); }
 const char* asCStr(const char* s) { return s; }
+
+template <typename T>
+bool writePod(HalFile& file, const T& value) {
+  return file.write(reinterpret_cast<const uint8_t*>(&value), sizeof(T)) == sizeof(T);
+}
+
+template <typename T>
+bool readPod(HalFile& file, T& value) {
+  return file.read(reinterpret_cast<uint8_t*>(&value), sizeof(T)) == static_cast<int>(sizeof(T));
+}
+
+bool writeBytes(HalFile& file, const void* data, size_t len) {
+  return len == 0 || file.write(reinterpret_cast<const uint8_t*>(data), len) == len;
+}
+
+bool readBytes(HalFile& file, void* data, size_t len) {
+  return len == 0 || file.read(reinterpret_cast<uint8_t*>(data), len) == static_cast<int>(len);
+}
+
+bool buildMiniIntervalsFromCodepoints(const uint32_t* codepoints, uint32_t cpCount, EpdUnicodeInterval*& intervals,
+                                      uint32_t& intervalCount) {
+  intervals = nullptr;
+  intervalCount = 0;
+  if (!codepoints || cpCount == 0) return false;
+
+  intervals = new (std::nothrow) EpdUnicodeInterval[cpCount];
+  if (!intervals) return false;
+
+  uint32_t rangeStart = 0;
+  for (uint32_t i = 1; i <= cpCount; i++) {
+    if (i == cpCount || codepoints[i] != codepoints[i - 1] + 1) {
+      intervals[intervalCount].first = codepoints[rangeStart];
+      intervals[intervalCount].last = codepoints[i - 1];
+      intervals[intervalCount].offset = rangeStart;
+      intervalCount++;
+      rangeStart = i;
+    }
+  }
+  return true;
+}
 
 }  // namespace
 
@@ -161,6 +204,36 @@ void SdCardFont::clearOverflow() {
   }
   overflowCount_ = 0;
   overflowNext_ = 0;
+}
+
+bool SdCardFont::populateMiniDataFromCurrentBuffers(uint8_t styleIdx, const uint32_t* codepoints, uint32_t cpCount) {
+  if (styleIdx >= MAX_STYLES || !styles_[styleIdx].present) return false;
+  auto& s = styles_[styleIdx];
+
+  bool kernLigOk = false;
+  if (loadStyleKernLigatureData(s)) {
+    kernLigOk = buildMiniKernMatrix(s, codepoints, cpCount);
+  }
+
+  memset(&s.miniData, 0, sizeof(s.miniData));
+  s.miniData.bitmap = s.miniBitmap;
+  s.miniData.glyph = s.miniGlyphs;
+  s.miniData.intervals = s.miniIntervals;
+  s.miniData.intervalCount = s.miniIntervalCount;
+  s.miniData.advanceY = s.header.advanceY;
+  s.miniData.ascender = s.header.ascender;
+  s.miniData.descender = s.header.descender;
+  s.miniData.is2Bit = s.header.is2Bit;
+  s.miniData.verticalSubstitutions = s.verticalSubstitutions;
+  s.miniData.verticalSubstitutionCount = s.header.verticalSubstitutionCount;
+  if (kernLigOk) {
+    applyKernLigaturePointers(s, s.miniData);
+  }
+  s.miniData.glyphMissHandler = &SdCardFont::onGlyphMiss;
+  s.miniData.glyphMissCtx = &overflowCtx_[styleIdx];
+
+  s.epdFont.data = &s.miniData;
+  return true;
 }
 
 // --- Per-style kern/ligature ---
@@ -696,6 +769,7 @@ int32_t SdCardFont::findGlobalGlyphIndex(const PerStyle& s, uint32_t codepoint) 
 
 int SdCardFont::prewarm(const char* utf8Text, uint8_t styleMask, bool metadataOnly) {
   if (!loaded_) return -1;
+  sectionGlyphPackActive_ = false;
   styleMask = resolveStyleMask(styleMask);
   if (styleMask == 0) return 0;
 
@@ -934,7 +1008,6 @@ int SdCardFont::prewarmStyle(uint8_t styleIdx, const uint32_t* codepoints, uint3
     }
     lastReadIndex = gIdx;
   }
-
   uint32_t totalBitmapSize = 0;
 
   if (!metadataOnly) {
@@ -994,6 +1067,7 @@ int SdCardFont::prewarmStyle(uint8_t styleIdx, const uint32_t* codepoints, uint3
   }
 
   uint32_t sdTime = millis() - sdStart;
+  file.close();
   delete[] readOrder;
   delete[] mappings;
 
@@ -1038,9 +1112,222 @@ int SdCardFont::prewarmStyle(uint8_t styleIdx, const uint32_t* codepoints, uint3
   return missed;
 }
 
+bool SdCardFont::buildSectionGlyphPackFromCodepoints(const uint32_t* sourceCodepoints, const uint32_t sourceCpCount,
+                                                     uint8_t styleMask, const char* path,
+                                                     const bool includeVerticalSubstitutions) {
+  if (!loaded_ || !sourceCodepoints || sourceCpCount == 0 || !path || !*path) return false;
+  styleMask = resolveStyleMask(styleMask);
+  if (styleMask == 0) return false;
+
+  std::vector<uint32_t> codepoints(sourceCodepoints, sourceCodepoints + sourceCpCount);
+  std::sort(codepoints.begin(), codepoints.end());
+  codepoints.erase(std::unique(codepoints.begin(), codepoints.end()), codepoints.end());
+  auto replacementPos = std::lower_bound(codepoints.begin(), codepoints.end(), REPLACEMENT_GLYPH);
+  if (replacementPos == codepoints.end() || *replacementPos != REPLACEMENT_GLYPH) {
+    codepoints.insert(replacementPos, REPLACEMENT_GLYPH);
+  }
+
+  if (includeVerticalSubstitutions) {
+    const uint32_t maxCodepoints = static_cast<uint32_t>(codepoints.size()) + 512;
+    codepoints.reserve(maxCodepoints);
+    for (uint8_t si = 0; si < MAX_STYLES; si++) {
+      if (!(styleMask & (1 << si)) || !styles_[si].present) continue;
+      auto& s = styles_[si];
+      if (!loadStyleKernLigatureData(s) || !s.verticalSubstitutions || s.header.verticalSubstitutionCount == 0) {
+        continue;
+      }
+      for (uint16_t vi = 0; vi < s.header.verticalSubstitutionCount; vi++) {
+        const uint32_t sourceCp = s.verticalSubstitutions[vi].sourceCp;
+        if (std::binary_search(codepoints.begin(), codepoints.end(), sourceCp)) {
+          const uint32_t replacementCp = s.verticalSubstitutions[vi].replacementCp;
+          auto pos = std::lower_bound(codepoints.begin(), codepoints.end(), replacementCp);
+          if (pos == codepoints.end() || *pos != replacementCp) {
+            if (codepoints.size() >= maxCodepoints) {
+              LOG_DBG("SDCF", "Section glyph pack cap hit at %u codepoints", maxCodepoints);
+              break;
+            }
+            codepoints.insert(pos, replacementCp);
+          }
+        }
+      }
+    }
+  }
+
+  HalFile out;
+  if (Storage.exists(path)) {
+    Storage.remove(path);
+  }
+  if (!Storage.openFileForWrite("SDCF", path, out)) {
+    LOG_ERR("SDCF", "Failed to open section glyph pack for write: %s", path);
+    return false;
+  }
+
+  uint16_t recordCount = 0;
+  const uint16_t version = GLYPH_PACK_VERSION;
+  if (!writeBytes(out, GLYPH_PACK_MAGIC, sizeof(GLYPH_PACK_MAGIC)) || !writePod(out, version) ||
+      !writePod(out, recordCount) || !writePod(out, contentHash_)) {
+    LOG_ERR("SDCF", "Failed to write section glyph pack header");
+    out.close();
+    Storage.remove(path);
+    return false;
+  }
+
+  bool wroteAny = false;
+
+  for (uint8_t si = 0; si < MAX_STYLES; si++) {
+    if (!(styleMask & (1 << si)) || !styles_[si].present) continue;
+    const int missed = prewarmStyle(si, codepoints.data(), static_cast<uint32_t>(codepoints.size()), false);
+    auto& s = styles_[si];
+    if (missed < 0 || !s.miniGlyphs || s.miniGlyphCount == 0) {
+      continue;
+    }
+
+    std::vector<uint32_t> miniCodepoints;
+    miniCodepoints.reserve(s.miniGlyphCount);
+    for (uint32_t ii = 0; ii < s.miniIntervalCount; ii++) {
+      for (uint32_t cp = s.miniIntervals[ii].first; cp <= s.miniIntervals[ii].last; cp++) {
+        miniCodepoints.push_back(cp);
+      }
+    }
+    if (miniCodepoints.size() != s.miniGlyphCount) {
+      LOG_ERR("SDCF", "Section glyph pack interval/glyph mismatch style %u", si);
+      continue;
+    }
+
+    uint32_t bitmapBytes = 0;
+    for (uint32_t gi = 0; gi < s.miniGlyphCount; gi++) {
+      bitmapBytes += s.miniGlyphs[gi].dataLength;
+    }
+
+    const uint8_t styleIdx = si;
+    const uint8_t reserved8 = 0;
+    const uint16_t reserved16 = 0;
+    if (!writePod(out, styleIdx) || !writePod(out, reserved8) || !writePod(out, reserved16) ||
+        !writePod(out, s.miniGlyphCount) || !writePod(out, bitmapBytes) ||
+        !writeBytes(out, miniCodepoints.data(), miniCodepoints.size() * sizeof(uint32_t)) ||
+        !writeBytes(out, s.miniGlyphs, s.miniGlyphCount * sizeof(EpdGlyph)) ||
+        !writeBytes(out, s.miniBitmap, bitmapBytes)) {
+      LOG_ERR("SDCF", "Failed to write section glyph pack style %u", si);
+      out.close();
+      Storage.remove(path);
+      return false;
+    }
+
+    recordCount++;
+    wroteAny = true;
+  }
+
+  if (!wroteAny) {
+    out.close();
+    Storage.remove(path);
+    return false;
+  }
+
+  if (!out.seekSet(sizeof(GLYPH_PACK_MAGIC) + sizeof(version)) || !writePod(out, recordCount)) {
+    LOG_ERR("SDCF", "Failed to patch section glyph pack record count");
+    out.close();
+    Storage.remove(path);
+    return false;
+  }
+  out.close();
+  clearCache();
+
+  return true;
+}
+
+bool SdCardFont::loadSectionGlyphPack(const char* path) {
+  sectionGlyphPackActive_ = false;
+  if (!loaded_ || !path || !*path || !Storage.exists(path)) return false;
+
+  HalFile in;
+  if (!Storage.openFileForRead("SDCF", path, in)) {
+    return false;
+  }
+
+  char magic[sizeof(GLYPH_PACK_MAGIC)] = {};
+  uint16_t version = 0;
+  uint16_t recordCount = 0;
+  uint32_t fontHash = 0;
+  if (!readBytes(in, magic, sizeof(magic)) || memcmp(magic, GLYPH_PACK_MAGIC, sizeof(GLYPH_PACK_MAGIC)) != 0 ||
+      !readPod(in, version) || version != GLYPH_PACK_VERSION || !readPod(in, recordCount) ||
+      recordCount == 0 || recordCount > MAX_STYLES || !readPod(in, fontHash) || fontHash != contentHash_) {
+    LOG_DBG("SDCF", "Section glyph pack rejected: %s", path);
+    in.close();
+    return false;
+  }
+
+  clearCache();
+  for (uint16_t ri = 0; ri < recordCount; ri++) {
+    uint8_t styleIdx = 0;
+    uint8_t reserved8 = 0;
+    uint16_t reserved16 = 0;
+    uint32_t glyphCount = 0;
+    uint32_t bitmapBytes = 0;
+    if (!readPod(in, styleIdx) || !readPod(in, reserved8) || !readPod(in, reserved16) || !readPod(in, glyphCount) ||
+        !readPod(in, bitmapBytes) || styleIdx >= MAX_STYLES || !styles_[styleIdx].present || glyphCount == 0) {
+      LOG_ERR("SDCF", "Invalid section glyph pack record");
+      in.close();
+      clearCache();
+      return false;
+    }
+
+    std::vector<uint32_t> codepoints(glyphCount);
+    if (!readBytes(in, codepoints.data(), glyphCount * sizeof(uint32_t))) {
+      LOG_ERR("SDCF", "Short section glyph pack codepoint read");
+      in.close();
+      clearCache();
+      return false;
+    }
+
+    auto& s = styles_[styleIdx];
+    freeStyleMiniData(s);
+    s.miniGlyphCount = glyphCount;
+    if (!buildMiniIntervalsFromCodepoints(codepoints.data(), glyphCount, s.miniIntervals, s.miniIntervalCount)) {
+      LOG_ERR("SDCF", "Failed to allocate section glyph pack intervals");
+      in.close();
+      clearCache();
+      return false;
+    }
+
+    s.miniGlyphs = new (std::nothrow) EpdGlyph[glyphCount];
+    s.miniBitmap = new (std::nothrow) uint8_t[bitmapBytes > 0 ? bitmapBytes : 1];
+    if (!s.miniGlyphs || !s.miniBitmap) {
+      LOG_ERR("SDCF", "Failed to allocate section glyph pack buffers glyphs=%lu bitmap=%lu",
+              static_cast<unsigned long>(glyphCount), static_cast<unsigned long>(bitmapBytes));
+      in.close();
+      clearCache();
+      return false;
+    }
+
+    if (!readBytes(in, s.miniGlyphs, glyphCount * sizeof(EpdGlyph)) || !readBytes(in, s.miniBitmap, bitmapBytes)) {
+      LOG_ERR("SDCF", "Short section glyph pack glyph/bitmap read");
+      in.close();
+      clearCache();
+      return false;
+    }
+
+    if (!populateMiniDataFromCurrentBuffers(styleIdx, codepoints.data(), glyphCount)) {
+      LOG_ERR("SDCF", "Failed to activate section glyph pack style %u", styleIdx);
+      in.close();
+      clearCache();
+      return false;
+    }
+  }
+
+  in.close();
+  sectionGlyphPackActive_ = true;
+  return true;
+}
+
+void SdCardFont::clearSectionGlyphPack() {
+  sectionGlyphPackActive_ = false;
+  clearCache();
+}
+
 // --- Cache management ---
 
 void SdCardFont::clearCache() {
+  sectionGlyphPackActive_ = false;
   clearOverflow();
   // Note: advance table is intentionally preserved here. It persists across
   // layout passes so repeated section indexing amortizes SD reads. Use
@@ -1213,6 +1500,13 @@ int SdCardFont::fetchAdvancesForCodepoints(const uint32_t* codepoints, const uin
       std::sort(mappings.get(), mappings.get() + needCount,
                 [](const CpIdx& a, const CpIdx& b) { return a.glyphIndex < b.glyphIndex; });
 
+      std::unique_ptr<AdvanceEntry[]> staged(new (std::nothrow) AdvanceEntry[needCount]);
+      if (!staged) {
+        LOG_ERR("SDCF", "buildAdvanceTable: failed to allocate staging for style %u", si);
+        continue;
+      }
+
+      uint32_t fetched = 0;
       // Open file once and read advanceX for each needed glyph.
       HalFile file;
       if (!Storage.openFileForRead("SDCF", filePath_, file)) {
@@ -1220,14 +1514,6 @@ int SdCardFont::fetchAdvancesForCodepoints(const uint32_t* codepoints, const uin
         continue;
       }
 
-      std::unique_ptr<AdvanceEntry[]> staged(new (std::nothrow) AdvanceEntry[needCount]);
-      if (!staged) {
-        LOG_ERR("SDCF", "buildAdvanceTable: failed to allocate staging for style %u", si);
-        file.close();
-        continue;
-      }
-
-      uint32_t fetched = 0;
       EpdGlyph tempGlyph;
       int32_t lastReadIndex = INT32_MIN;
       for (uint32_t i = 0; i < needCount; i++) {
@@ -1483,6 +1769,7 @@ const EpdGlyph* SdCardFont::onGlyphMiss(void* ctx, uint32_t codepoint) {
   }
   if (file.read(reinterpret_cast<uint8_t*>(&tempGlyph), sizeof(EpdGlyph)) != sizeof(EpdGlyph)) {
     LOG_ERR("SDCF", "Overflow: failed to read glyph metadata for U+%04X style %u", codepoint, styleIdx);
+    file.close();
     return nullptr;
   }
 
@@ -1492,6 +1779,7 @@ const EpdGlyph* SdCardFont::onGlyphMiss(void* ctx, uint32_t codepoint) {
     tempBitmap = new (std::nothrow) uint8_t[tempGlyph.dataLength];
     if (!tempBitmap) {
       LOG_ERR("SDCF", "Overflow: failed to allocate %u bytes for U+%04X bitmap", tempGlyph.dataLength, codepoint);
+      file.close();
       return nullptr;
     }
     if (!file.seekSet(s.bitmapFileOffset + tempGlyph.dataOffset)) {
@@ -1503,9 +1791,11 @@ const EpdGlyph* SdCardFont::onGlyphMiss(void* ctx, uint32_t codepoint) {
     if (file.read(tempBitmap, tempGlyph.dataLength) != static_cast<int>(tempGlyph.dataLength)) {
       LOG_ERR("SDCF", "Overflow: failed to read bitmap for U+%04X", codepoint);
       delete[] tempBitmap;
+      file.close();
       return nullptr;
     }
   }
+  file.close();
 
   // All reads succeeded — commit to slot and advance ring buffer
   if (wasAtCapacity) {
