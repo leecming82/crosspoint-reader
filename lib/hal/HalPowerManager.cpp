@@ -82,15 +82,17 @@ void HalPowerManager::begin() {
 }
 
 int HalPowerManager::idleCpuFrequencyMhz() const {
-  if (gpio.deviceIsMurphyM4()) {
-    return MURPHY_LOW_POWER_FREQ;
-  }
   return LOW_POWER_FREQ;
 }
 
 void HalPowerManager::setPowerSaving(bool enabled) {
   if (normalFreq <= 0) {
     return;  // invalid state
+  }
+
+  if (gpio.deviceIsMurphyM4()) {
+    // Murphy M4/S3 intermittently trips INT_WDT after live CPU downclocking; keep loop idle delay but skip freq scaling.
+    enabled = false;
   }
 
   auto wifiMode = WiFi.getMode();

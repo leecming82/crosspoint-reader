@@ -31,7 +31,6 @@ class HalPowerManager {
 
  public:
   static constexpr int LOW_POWER_FREQ = 10;                    // MHz, validated on X3/X4 C3 hardware
-  static constexpr int MURPHY_LOW_POWER_FREQ = 40;             // MHz, conservative S3 floor for Murphy M4
   static constexpr unsigned long IDLE_POWER_SAVING_MS = 3000;  // ms
   static constexpr unsigned long BATTERY_POLL_MS = 1500;       // ms
 
