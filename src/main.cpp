@@ -263,11 +263,6 @@ static bool loadSleepFrameBuffer() {
 
 // Enter deep sleep mode
 void enterDeepSleep(bool fromTimeout = false) {
-  if (gpio.deviceIsMurphyM4()) {
-    LOG_INF("SLP", "Deep sleep skipped on Murphy M4: wake/power pins are not identified yet");
-    return;
-  }
-
   activityManager.waitForRenderIdle();
   HalPowerManager::Lock powerLock;  // Ensure we are at normal CPU frequency for sleep preparation
   APP_STATE.lastSleepFromReader = activityManager.isReaderActivity();
@@ -563,6 +558,10 @@ void loop() {
   if (gpio.wasScreenshotButtonReleased()) {
     RenderLock lock;
     ScreenshotUtil::takeScreenshot(renderer);
+    return;
+  }
+  if (gpio.wasSleepButtonReleased()) {
+    enterDeepSleep();
     return;
   }
   if (gpio.getBoardProfile().inputHasTouch && mappedInputManager.wasTouchLongPressed()) {

@@ -100,7 +100,7 @@ The received Murphy M4 is now concrete enough to plan around: ESP32-S3, 16 MB fl
 
    Exit criteria: home, settings, lists, pop-ups, and reader menus are directly tappable; the UI is usable with touch alone for normal reading workflows; physical buttons are accounted for as secondary shortcuts; all touch behavior remains board/capability gated so X3/X4 behavior is unchanged.
 
-   Button policy: given a full touch interface, Murphy's three physical buttons should be restricted to durable secondary actions rather than full UI traversal. Current fixed Murphy policy is top short press opens the global frontlight overlay, middle short press takes a screenshot, and bottom long press is reserved for power/sleep. GPIO0's boot/download role must remain documented so the bottom button stays safe to use in-app.
+   Button policy: given a full touch interface, Murphy's three physical buttons should be restricted to durable secondary actions rather than full UI traversal. Current fixed Murphy policy is top short press opens the global frontlight overlay, middle short press takes a screenshot, and bottom short press enters sleep. GPIO0's boot/download role must remain documented so the bottom button stays safe to use in-app.
 
    Back/navigation note: use a temporary long-press gesture as a universal back fallback, preferably in a low-conflict central zone, but make visible back targets screen-local rather than a fixed global top-left hotspot. Home is a root screen, reader uses center tap for the menu and should offer explicit close/back controls, and settings/menus should place back affordances around their actual header/tab/list layout so they do not collide with tappable content.
 
@@ -190,9 +190,9 @@ The received Murphy M4 is now concrete enough to plan around: ESP32-S3, 16 MB fl
    Hardware and power inventory:
 
    - [x] Wi-Fi lifecycle and power-down behavior
-   - [ ] Sleep/off entry path
-   - [ ] Wake source identification
-   - [ ] Power button / lock button behavior
+   - [x] Sleep entry path
+   - [x] Wake source identification
+   - [x] Power button / lock button behavior
    - [ ] Hardware power-off / power-latch behavior
    - [x] Battery level reporting
    - [ ] USB power / cable-present detection
@@ -209,7 +209,7 @@ The received Murphy M4 is now concrete enough to plan around: ESP32-S3, 16 MB fl
 
    Frontlight note: Murphy `HalFrontlight` initializes GPIO47/GPIO48 as 1 kHz, 8-bit PWM outputs and keeps both off by default until settings are loaded. Hardware validation confirms GPIO47 is the cool channel, GPIO48 is the warm channel, both are active-high, and both visibly brighten through the tested `0`, `16`, `32`, `64`, `96`, `128`, `192`, and `255` duty range. The app enables Murphy's two-channel frontlight capability, persists warm/cool duties, restores them at boot, and exposes a global top-button overlay with warm/cool vertical steppers where the upper half increases and lower half decreases. Hardware Diagnostics can still cycle each channel through the validated duty ladder and forces both channels off when leaving the screen.
 
-   Current note: Murphy deep sleep is disabled in the HAL until wake/power pins are known. The inherited X4/C3 sleep path assumes `InputManager::POWER_BUTTON_PIN=3` for wake and drives GPIO13 low as a power-latch/shutdown pin; both are unsafe assumptions on Murphy because GPIO3 is display MOSI and GPIO13 is unverified. GPIO47/GPIO48 are frontlight outputs; even input pull-ups can visibly turn the light on, so probes must leave them out or explicitly drive them low/off.
+   Sleep/power note: Murphy now uses ESP deep sleep, but not hardware power-off. The app renders the normal sleep screen, saves state, powers down Wi-Fi/frontlight/display, waits for GPIO0/bottom-button release, arms GPIO0 active-low wake, and calls `esp_deep_sleep_start()`. Wake is reset-like and returns through the normal boot/resume path. Hardware power-off remains disabled until a Murphy-specific power latch is identified. The inherited X4/C3 deep-sleep path assumes `InputManager::POWER_BUTTON_PIN=3` for wake and drives GPIO13 low as a power-latch/shutdown pin; both are unsafe on Murphy because GPIO3 is display MOSI and GPIO13 is touch SDA.
 
 12. Misc tweaks
 

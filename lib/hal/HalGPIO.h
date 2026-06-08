@@ -75,6 +75,7 @@ class HalGPIO {
   bool murphyPowerLongPressActive = false;
   bool murphyFrontlightEvent = false;
   bool murphyScreenshotEvent = false;
+  bool murphySleepEvent = false;
 
  public:
   using DeviceType = BoardModel;
@@ -103,6 +104,7 @@ class HalGPIO {
   bool wasAnyReleased() const;
   bool wasFrontlightButtonReleased() const;
   bool wasScreenshotButtonReleased() const;
+  bool wasSleepButtonReleased() const;
   unsigned long getHeldTime() const;
   unsigned long getPowerButtonHeldTime() const;
 

@@ -46,6 +46,20 @@ uint16_t readMurphyBatteryMillivolts() {
   const uint32_t sensedMv = analogReadMilliVolts(MURPHY_BATTERY_ADC_PIN);
   return static_cast<uint16_t>(std::min<uint32_t>(sensedMv * 2U, 5000U));
 }
+
+void startMurphyDeepSleep(HalGPIO& gpio) {
+  while (gpio.isPressed(HalGPIO::BTN_POWER)) {
+    delay(50);
+    gpio.update();
+  }
+
+  pinMode(GPIO_NUM_0, INPUT_PULLUP);
+  esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
+  esp_sleep_enable_ext1_wakeup(1ULL << GPIO_NUM_0, ESP_EXT1_WAKEUP_ANY_LOW);
+
+  LOG_INF("PWR", "Entering Murphy deep sleep; wake=GPIO0 active-low");
+  esp_deep_sleep_start();
+}
 }  // namespace
 
 void HalPowerManager::begin() {
@@ -110,7 +124,7 @@ void HalPowerManager::setPowerSaving(bool enabled) {
 
 void HalPowerManager::startDeepSleep(HalGPIO& gpio) const {
   if (gpio.deviceIsMurphyM4()) {
-    LOG_INF("PWR", "Deep sleep skipped on Murphy M4: power latch and wake GPIOs are not identified yet");
+    startMurphyDeepSleep(gpio);
     return;
   }
 
