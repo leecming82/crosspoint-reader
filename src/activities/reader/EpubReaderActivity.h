@@ -62,6 +62,7 @@ class EpubReaderActivity final : public Activity {
   };
   bool kanjiCursorActive = false;
   bool kanjiPopupActive = false;
+  bool kanjiCursorIgnoreOpeningTouch = false;
   JapaneseDictionary kanjiDictionary;
   std::vector<JapaneseDictionaryMatch> kanjiPopupMatches;
   size_t kanjiPopupMatchIndex = 0;
@@ -85,6 +86,8 @@ class EpubReaderActivity final : public Activity {
   static constexpr unsigned long CURSOR_ENTER_MS = 600;
 
   void enterKanjiCursorMode();
+  bool handleKanjiCursorTouch();
+  bool handleKanjiCursorEnterTouch();
   bool rebuildKanjiCursorPage();
   void releaseKanjiCursorPageCache(bool releaseIndexCapacity);
   void releaseKanjiPopupMatches();
@@ -128,6 +131,7 @@ class EpubReaderActivity final : public Activity {
   void renderStatusBar() const;
   std::string statusBarTitleForCurrentSpine() const;
   void renderRubyAdjustOverlay() const;
+  bool handleRubyAdjustTouch();
   void silentIndexNextChapterIfNeeded(uint16_t viewportWidth, uint16_t viewportHeight);
   bool saveProgress(int spineIndex, int currentPage, int pageCount);
   void resolveReadingProfile();

@@ -12,7 +12,9 @@
 #include "ProgressMapper.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "util/TouchList.h"
 #include "util/TouchNavigator.h"
+#include "util/TouchUi.h"
 
 namespace {
 constexpr int ENTER_DELETE_MODE_MS = 700;
@@ -27,12 +29,6 @@ bool hasStoredLocalPosition(const BookmarkEntry& bookmark, const std::shared_ptr
   return epub && bookmark.computedChapterPageCount > 0 && bookmark.computedSpineIndex < epub->getSpineItemsCount();
 }
 
-void drawTouchButton(const GfxRenderer& renderer, const Rect rect, const char* label) {
-  renderer.drawRoundedRect(rect.x, rect.y, rect.width, rect.height, 1, 6, true);
-  const int textWidth = renderer.getTextWidth(UI_12_FONT_ID, label, EpdFontFamily::BOLD);
-  const int textY = rect.y + (rect.height - renderer.getLineHeight(UI_12_FONT_ID)) / 2;
-  renderer.drawText(UI_12_FONT_ID, rect.x + (rect.width - textWidth) / 2, textY, label, true, EpdFontFamily::BOLD);
-}
 }  // namespace
 
 void EpubReaderBookmarksActivity::onEnter() {
@@ -79,13 +75,13 @@ void EpubReaderBookmarksActivity::onEnter() {
 
 void EpubReaderBookmarksActivity::onExit() { Activity::onExit(); }
 
-int EpubReaderBookmarksActivity::getGutterBottom(const GfxRenderer& renderer) {
+int EpubReaderBookmarksActivity::getGutterBottom(const GfxRenderer& renderer) const {
   const auto orientation = renderer.getOrientation();
   const bool isPortrait = orientation == GfxRenderer::Orientation::Portrait;
   return isPortrait ? 75 : 40;  // Reserve vertical space for button hints at the bottom
 }
 
-int EpubReaderBookmarksActivity::getListHeight(const GfxRenderer& renderer) {
+int EpubReaderBookmarksActivity::getListHeight(const GfxRenderer& renderer) const {
   const auto pageHeight = renderer.getScreenHeight();
   return pageHeight - getGutterBottom(renderer) - LINE_HEIGHT;  // Reserve vertical space for title and button hints
 }
@@ -104,6 +100,34 @@ Rect EpubReaderBookmarksActivity::deleteButtonRect() const {
   const auto& metrics = UITheme::getInstance().getMetrics();
   return Rect{cancelRect.x + cancelRect.width + metrics.contentSidePadding, cancelRect.y, cancelRect.width,
               cancelRect.height};
+}
+
+Rect EpubReaderBookmarksActivity::contentRect() const {
+  const auto& metrics = UITheme::getInstance().getMetrics();
+#ifdef CROSSPOINT_BOARD_MURPHY_M4
+  const Rect screen = UITheme::getInstance().getScreenSafeArea(renderer, false, false);
+  const int contentTop = screen.y + metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
+  const int contentBottom = renderer.getScreenHeight() - metrics.verticalSpacing;
+  return Rect{screen.x, contentTop, screen.width, std::max(0, contentBottom - contentTop)};
+#else
+  return Rect{0, LINE_HEIGHT, renderer.getScreenWidth(), getListHeight(renderer)};
+#endif
+}
+
+void EpubReaderBookmarksActivity::openSelectedBookmark() {
+  if (bookmarks.empty()) {
+    return;
+  }
+
+  auto bookmark = bookmarks.at(selectorIndex);
+  if (hasStoredLocalPosition(bookmark, epub)) {
+    const int page = std::min<int>(bookmark.computedChapterProgress, bookmark.computedChapterPageCount - 1);
+    setResult(ProgressChangeResult{static_cast<int>(bookmark.computedSpineIndex), page});
+  } else {
+    CrossPointPosition pos = ProgressMapper::toCrossPoint(epub, {bookmark.xpath, bookmark.percentage}, renderer);
+    setResult(ProgressChangeResult{pos.spineIndex, pos.pageNumber});
+  }
+  finish();
 }
 
 void EpubReaderBookmarksActivity::cancelDelete() {
@@ -133,19 +157,90 @@ void EpubReaderBookmarksActivity::deleteSelectedBookmark() {
   requestUpdate();
 }
 
-void EpubReaderBookmarksActivity::loop() {
-  // Delete confirmation mode
+bool EpubReaderBookmarksActivity::handleTouch() {
+#ifndef CROSSPOINT_BOARD_MURPHY_M4
+  return false;
+#else
   if (confirmingDelete >= DELETE_MODE_DISPLAY) {
-#ifdef CROSSPOINT_BOARD_MURPHY_M4
     if (TouchNavigator::wasTappedIn(mappedInput, cancelButtonRect())) {
       cancelDelete();
-      return;
+      return true;
     }
     if (TouchNavigator::wasTappedIn(mappedInput, deleteButtonRect())) {
       deleteSelectedBookmark();
+      return true;
+    }
+    return mappedInput.wasTapped();
+  }
+
+  if (TouchNavigator::wasTappedIn(mappedInput, TouchUi::headerBackTapRect(renderer))) {
+    ActivityResult result;
+    result.isCancelled = true;
+    setResult(std::move(result));
+    finish();
+    return true;
+  }
+
+  const Rect listBounds = contentRect();
+  const int rowHeight = UITheme::getInstance().getMetrics().listWithSubtitleRowHeight;
+  const int listRows = std::max(1, listBounds.height / rowHeight);
+  const auto layout = TouchList::calculatePageLayout(selectorIndex, static_cast<int>(bookmarks.size()), listRows);
+
+  const auto handleVisibleRow = [this, listRows, layout](const int visibleRow, const bool open) {
+    if (visibleRow < 0) {
+      return false;
+    }
+    if (TouchList::isPreviousPageRow(layout, visibleRow)) {
+      selectorIndex =
+          TouchList::calculatePageLayout(std::max(0, layout.start - 1), static_cast<int>(bookmarks.size()), listRows)
+              .start;
+      requestUpdate();
+      return true;
+    }
+    if (TouchList::isNextPageRow(layout, visibleRow)) {
+      selectorIndex = std::min(static_cast<int>(bookmarks.size()) - 1, layout.start + layout.itemCount);
+      requestUpdate();
+      return true;
+    }
+
+    const int itemIndex = TouchList::visibleRowToItemIndex(layout, visibleRow);
+    if (itemIndex >= 0) {
+      selectorIndex = itemIndex;
+      if (open) {
+        openSelectedBookmark();
+      } else {
+        confirmingDelete = DELETE_MODE_DISPLAY;
+        requestUpdate();
+      }
+      return true;
+    }
+    return false;
+  };
+
+  if (mappedInput.wasTouchLongPressed()) {
+    const auto point = mappedInput.lastTouchLongPress();
+    if (TouchNavigator::contains(listBounds, point)) {
+      const int visibleRow = (point.y - listBounds.y) / rowHeight;
+      return handleVisibleRow(visibleRow, false);
+    }
+  }
+
+  const int visibleRow =
+      TouchNavigator::tappedListIndex(mappedInput, listBounds, TouchList::visibleRowCount(layout), 0, rowHeight, 0);
+  if (handleVisibleRow(visibleRow, true)) {
+    return true;
+  }
+
+  return mappedInput.wasTapped();
+#endif
+}
+
+void EpubReaderBookmarksActivity::loop() {
+  // Delete confirmation mode
+  if (confirmingDelete >= DELETE_MODE_DISPLAY) {
+    if (handleTouch()) {
       return;
     }
-#endif
     if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
       if (confirmingDelete == DELETE_MODE_DISPLAY) {
         confirmingDelete = DELETE_MODE_CONFIRM;  // first confirmation, update text
@@ -160,19 +255,12 @@ void EpubReaderBookmarksActivity::loop() {
     }
   }
 
+  if (handleTouch()) {
+    return;
+  }
+
   if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {  // Open
-    if (bookmarks.empty()) {
-      return;
-    }
-    auto bookmark = bookmarks.at(selectorIndex);
-    if (hasStoredLocalPosition(bookmark, epub)) {
-      const int page = std::min<int>(bookmark.computedChapterProgress, bookmark.computedChapterPageCount - 1);
-      setResult(ProgressChangeResult{static_cast<int>(bookmark.computedSpineIndex), page});
-    } else {
-      CrossPointPosition pos = ProgressMapper::toCrossPoint(epub, {bookmark.xpath, bookmark.percentage}, renderer);
-      setResult(ProgressChangeResult{pos.spineIndex, pos.pageNumber});
-    }
-    finish();
+    openSelectedBookmark();
     return;
   } else if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
     ActivityResult result;
@@ -215,6 +303,77 @@ void EpubReaderBookmarksActivity::loop() {
 
 void EpubReaderBookmarksActivity::render(RenderLock&&) {
   renderer.clearScreen();
+
+#ifdef CROSSPOINT_BOARD_MURPHY_M4
+  {
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  const Rect screen = UITheme::getInstance().getScreenSafeArea(renderer, false, false);
+  TouchUi::drawHeaderWithBack(renderer, screen, tr(STR_BOOKMARKS));
+
+  const auto getBookmarkTitle = [this](int index) {
+    return bookmarks.at(confirmingDelete >= DELETE_MODE_DISPLAY ? selectorIndex : index).summary;
+  };
+  const auto getBookmarkSubtitle = [this](int index) {
+    auto bookmark = bookmarks.at(confirmingDelete >= DELETE_MODE_DISPLAY ? selectorIndex : index);
+    auto tocIndex = epub->getTocIndexForSpineIndex(bookmark.computedSpineIndex);
+    auto tocTitle = (tocIndex >= 0) ? (epub->getTocItem(tocIndex)).title : tr(STR_UNNAMED);
+    const int percent = static_cast<int>(std::clamp(bookmark.percentage, 0.0f, 1.0f) * 100.0f + 0.5f);
+    return std::to_string(percent) + "% - " + std::to_string(bookmark.computedChapterProgress + 1) + "/" +
+           std::to_string(bookmark.computedChapterPageCount) + " - " + tocTitle;
+  };
+
+  if (confirmingDelete >= DELETE_MODE_DISPLAY) {
+    GUI.drawHelpText(renderer, Rect{0, renderer.getScreenHeight() / 2 - LINE_HEIGHT * 2, renderer.getScreenWidth(),
+                                    LINE_HEIGHT},
+                     tr(STR_CONFIRM_DELETE_BOOKMARK));
+    if (!bookmarks.empty()) {
+      GUI.drawList(renderer, Rect{0, renderer.getScreenHeight() / 2, renderer.getScreenWidth(), LINE_HEIGHT}, 1, 0,
+                   getBookmarkTitle, getBookmarkSubtitle);
+    }
+    TouchUi::drawTouchButton(renderer, cancelButtonRect(), tr(STR_CANCEL));
+    TouchUi::drawTouchButton(renderer, deleteButtonRect(), tr(STR_DELETE));
+    renderer.displayBuffer();
+    return;
+  }
+
+  if (bookmarks.empty()) {
+    GUI.drawHelpText(renderer, contentRect(), tr(STR_BOOKMARK_INSTRUCTIONS));
+    renderer.displayBuffer();
+    return;
+  }
+
+  const Rect listBounds = contentRect();
+  const int rowHeight = metrics.listWithSubtitleRowHeight;
+  const int listRows = std::max(1, listBounds.height / rowHeight);
+  const auto layout = TouchList::calculatePageLayout(selectorIndex, static_cast<int>(bookmarks.size()), listRows);
+  GUI.drawList(
+      renderer, listBounds, TouchList::visibleRowCount(layout), -1,
+      [this, layout](int visibleRow) {
+        if (TouchList::isPreviousPageRow(layout, visibleRow)) {
+          return std::string(tr(STR_PREV_PAGE));
+        }
+        if (TouchList::isNextPageRow(layout, visibleRow)) {
+          return std::string(tr(STR_NEXT_PAGE));
+        }
+        const int itemIndex = TouchList::visibleRowToItemIndex(layout, visibleRow);
+        return itemIndex >= 0 ? bookmarks.at(itemIndex).summary : std::string();
+      },
+      [this, layout, getBookmarkSubtitle](int visibleRow) {
+        const int itemIndex = TouchList::visibleRowToItemIndex(layout, visibleRow);
+        return itemIndex >= 0 ? getBookmarkSubtitle(itemIndex) : std::string();
+      },
+      nullptr, nullptr, true);
+  if (layout.previous) {
+    TouchUi::drawCenteredPagerRow(renderer, listBounds, 0, tr(STR_PREV_PAGE));
+  }
+  if (layout.next) {
+    TouchUi::drawCenteredPagerRow(renderer, listBounds, TouchList::visibleRowCount(layout) - 1, tr(STR_NEXT_PAGE));
+  }
+
+  renderer.displayBuffer();
+  return;
+  }
+#endif
 
   const auto pageWidth = renderer.getScreenWidth();
   const auto pageHeight = renderer.getScreenHeight();
@@ -279,8 +438,8 @@ void EpubReaderBookmarksActivity::render(RenderLock&&) {
 
 #if defined(CROSSPOINT_BOARD_MURPHY_M4)
   if (confirmingDelete >= DELETE_MODE_DISPLAY) {
-    drawTouchButton(renderer, cancelButtonRect(), tr(STR_CANCEL));
-    drawTouchButton(renderer, deleteButtonRect(), tr(STR_DELETE));
+    TouchUi::drawTouchButton(renderer, cancelButtonRect(), tr(STR_CANCEL));
+    TouchUi::drawTouchButton(renderer, deleteButtonRect(), tr(STR_DELETE));
   } else {
     const auto labels = mappedInput.mapLabels(tr(STR_BACK), bookmarks.size() > 0 ? tr(STR_OPEN) : "", tr(STR_DIR_UP),
                                               tr(STR_DIR_DOWN));

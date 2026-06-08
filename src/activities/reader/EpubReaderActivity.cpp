@@ -18,6 +18,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstdlib>
 #include <functional>
 #include <iterator>
 #include <limits>
@@ -80,6 +81,17 @@ bool hasVisibleDefinitionText(const std::string& text) {
     }
   }
   return false;
+}
+
+bool isCenterScreenPoint(const MappedInputManager::TouchPoint point, const int screenWidth, const int screenHeight) {
+  return screenWidth > 0 && screenHeight > 0 && point.x >= screenWidth / 3 && point.x < (screenWidth * 2) / 3 &&
+         point.y >= screenHeight / 3 && point.y < (screenHeight * 2) / 3;
+}
+
+bool touchDominatesHorizontal(const MappedInputManager::TouchPoint point, const int screenWidth, const int screenHeight) {
+  const int dx = static_cast<int>(point.x) - screenWidth / 2;
+  const int dy = static_cast<int>(point.y) - screenHeight / 2;
+  return std::abs(dx) * screenHeight >= std::abs(dy) * screenWidth;
 }
 
 std::string definitionAttributeLabel(const std::string& item) {
@@ -458,6 +470,9 @@ void EpubReaderActivity::loop() {
     if (RenderLock::peek()) {
       return;
     }
+    if (handleKanjiCursorTouch()) {
+      return;
+    }
     // Popup mode: Back dismisses it, Left/Right cycle through ranked dictionary matches.
     if (kanjiPopupActive) {
       if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
@@ -500,6 +515,10 @@ void EpubReaderActivity::loop() {
     return;  // Swallow all other input while cursor is active.
   }
 
+  if (handleKanjiCursorEnterTouch()) {
+    return;
+  }
+
   // Long-press Confirm (600ms) enters cursor mode for Japanese books in horizontal or vertical writing mode.
   if (isJapaneseLanguageBook() && section && mappedInput.isPressed(MappedInputManager::Button::Confirm) &&
       mappedInput.getHeldTime() >= CURSOR_ENTER_MS) {
@@ -515,10 +534,16 @@ void EpubReaderActivity::loop() {
       return;
     }
     if (rubyAdjustIgnoreOpeningRelease) {
+      if (mappedInput.wasTapped()) {
+        return;
+      }
       if (!mappedInput.isPressed(MappedInputManager::Button::Confirm) &&
           !mappedInput.isPressed(MappedInputManager::Button::Back)) {
         rubyAdjustIgnoreOpeningRelease = false;
       }
+      return;
+    }
+    if (handleRubyAdjustTouch()) {
       return;
     }
     if (mappedInput.wasReleased(MappedInputManager::Button::Confirm) ||
@@ -1091,6 +1116,38 @@ void EpubReaderActivity::adjustRubyOffset(const RubyAdjustAxis axis, const int d
     setCurrentRubyOffsetY(static_cast<uint8_t>(next));
   }
   requestUpdate();
+}
+
+bool EpubReaderActivity::handleRubyAdjustTouch() {
+#ifndef CROSSPOINT_BOARD_MURPHY_M4
+  return false;
+#else
+  if (!mappedInput.wasTapped()) {
+    return false;
+  }
+
+  const auto tap = mappedInput.lastTap();
+  const int screenWidth = renderer.getScreenWidth();
+  const int screenHeight = renderer.getScreenHeight();
+  if (screenWidth <= 0 || screenHeight <= 0) {
+    return true;
+  }
+
+  const Rect center{screenWidth / 3, screenHeight / 3, screenWidth / 3, screenHeight / 3};
+  if (TouchNavigator::contains(center, tap)) {
+    exitRubyAdjustMode();
+    return true;
+  }
+
+  const int dx = tap.x - screenWidth / 2;
+  const int dy = tap.y - screenHeight / 2;
+  if (std::abs(dx) * screenHeight >= std::abs(dy) * screenWidth) {
+    adjustRubyOffset(RubyAdjustAxis::X, dx < 0 ? -1 : +1);
+  } else {
+    adjustRubyOffset(RubyAdjustAxis::Y, dy < 0 ? -1 : +1);
+  }
+  return true;
+#endif
 }
 
 void EpubReaderActivity::toggleAutoPageTurn(const uint8_t selectedPageTurnOption) {
@@ -1742,9 +1799,17 @@ void EpubReaderActivity::renderRubyAdjustOverlay() const {
     return;
   }
 
-  const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_DONE), "X-", "X+");
-  GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
-  GUI.drawSideButtonHints(renderer, "Y-", "Y+");
+#ifdef CROSSPOINT_BOARD_MURPHY_M4
+  const int screenWidth = renderer.getScreenWidth();
+  const int screenHeight = renderer.getScreenHeight();
+  const int lineHeight = renderer.getLineHeight(UI_10_FONT_ID);
+  renderer.drawCenteredText(UI_10_FONT_ID, 8, "Y-", true);
+  renderer.drawCenteredText(UI_10_FONT_ID, screenHeight - lineHeight - 8, "Y+", true);
+  renderer.drawText(UI_10_FONT_ID, 8, screenHeight / 2 - lineHeight / 2, "X-", true);
+  const int xPlusWidth = renderer.getTextWidth(UI_10_FONT_ID, "X+");
+  renderer.drawText(UI_10_FONT_ID, screenWidth - xPlusWidth - 8, screenHeight / 2 - lineHeight / 2, "X+", true);
+  renderer.drawCenteredText(UI_10_FONT_ID, screenHeight / 2 - lineHeight / 2, tr(STR_DONE), true);
+#endif
 }
 
 void EpubReaderActivity::navigateToHref(const std::string& hrefStr, const bool savePosition) {
@@ -1812,13 +1877,102 @@ void EpubReaderActivity::restoreSavedPosition() {
 void EpubReaderActivity::enterKanjiCursorMode() {
   if (!section) return;
   LOG_DBG("DICT", "Enter cursor requested spine=%d page=%d", currentSpineIndex, section->currentPage);
+  kanjiCursorIgnoreOpeningTouch = mappedInput.wasTouchLongPressed();
 
   if (!rebuildKanjiCursorPage()) {
+    kanjiCursorIgnoreOpeningTouch = false;
     return;
   }
 
   queueKanjiCursorRedraw();
   flushKanjiCursorRefresh();
+}
+
+bool EpubReaderActivity::handleKanjiCursorEnterTouch() {
+#ifndef CROSSPOINT_BOARD_MURPHY_M4
+  return false;
+#else
+  if (!isJapaneseLanguageBook() || !section || !mappedInput.wasTouchLongPressed()) {
+    return false;
+  }
+
+  const auto point = mappedInput.lastTouchLongPress();
+  if (!isCenterScreenPoint(point, renderer.getScreenWidth(), renderer.getScreenHeight())) {
+    return false;
+  }
+
+  if (RenderLock::peek()) {
+    return true;
+  }
+  enterKanjiCursorMode();
+  return true;
+#endif
+}
+
+bool EpubReaderActivity::handleKanjiCursorTouch() {
+#ifndef CROSSPOINT_BOARD_MURPHY_M4
+  return false;
+#else
+  const int screenWidth = renderer.getScreenWidth();
+  const int screenHeight = renderer.getScreenHeight();
+
+  if (kanjiCursorIgnoreOpeningTouch) {
+    if (!mappedInput.wasTapped()) {
+      kanjiCursorIgnoreOpeningTouch = false;
+    }
+    return true;
+  }
+
+  if (mappedInput.wasTouchLongPressed()) {
+    const auto point = mappedInput.lastTouchLongPress();
+    if (isCenterScreenPoint(point, screenWidth, screenHeight)) {
+      exitKanjiCursorMode();
+      return true;
+    }
+  }
+
+  if (!mappedInput.wasTapped()) {
+    return false;
+  }
+
+  const auto tap = mappedInput.lastTap();
+  if (isCenterScreenPoint(tap, screenWidth, screenHeight)) {
+    if (kanjiPopupActive) {
+      hideKanjiPopup();
+    } else {
+      showKanjiPopup();
+    }
+    return true;
+  }
+
+  if (kanjiPopupActive) {
+    if (touchDominatesHorizontal(tap, screenWidth, screenHeight)) {
+      moveKanjiPopupMatch(tap.x < screenWidth / 2 ? -1 : +1);
+    } else {
+      moveKanjiPopupMatch(tap.y < screenHeight / 2 ? -1 : +1);
+    }
+    return true;
+  }
+
+  const PageLine* pageLine = nullptr;
+  const TextBlock* textBlock = nullptr;
+  KanjiEntry entry;
+  const bool verticalText = getSelectedKanjiBlock(pageLine, textBlock, entry) && textBlock->isVertical();
+  const bool horizontalTouch = touchDominatesHorizontal(tap, screenWidth, screenHeight);
+  if (verticalText) {
+    if (horizontalTouch) {
+      moveKanjiCursorToLine(tap.x < screenWidth / 2 ? +1 : -1);
+    } else {
+      moveKanjiCursor(tap.y < screenHeight / 2 ? -1 : +1);
+    }
+  } else if (horizontalTouch) {
+    moveKanjiCursor(tap.x < screenWidth / 2 ? -1 : +1);
+  } else {
+    moveKanjiCursorToLine(tap.y < screenHeight / 2 ? -1 : +1);
+  }
+  flushKanjiCursorRefresh();
+  return true;
+#endif
 }
 
 bool EpubReaderActivity::rebuildKanjiCursorPage() {
@@ -1908,6 +2062,7 @@ void EpubReaderActivity::clearKanjiCursorState(const bool saveResumePosition, co
   }
   kanjiCursorActive = false;
   kanjiPopupActive = false;
+  kanjiCursorIgnoreOpeningTouch = false;
   releaseKanjiPopupMatches();
   kanjiCursorRefreshPending = false;
   kanjiOverlayFastRefreshPending = false;
@@ -2206,10 +2361,12 @@ void EpubReaderActivity::drawKanjiPopup() {
     renderer.drawText(UI_10_FONT_ID, popupX + pad, textY, "No dictionary match", true);
   }
 
+#ifndef CROSSPOINT_BOARD_MURPHY_M4
   const bool hasMultipleMatches = kanjiPopupMatches.size() > 1;
   const auto labels =
       mappedInput.mapLabels(tr(STR_EXIT), "", hasMultipleMatches ? "Prev" : "", hasMultipleMatches ? "Next" : "");
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+#endif
 
   renderer.displayBuffer(HalDisplay::FAST_REFRESH);
 }

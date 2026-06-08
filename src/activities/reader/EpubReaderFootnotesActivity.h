@@ -10,6 +10,8 @@
 #include "activities/Activity.h"
 #include "util/ButtonNavigator.h"
 
+struct Rect;
+
 class EpubReaderFootnotesActivity final : public Activity {
  public:
   explicit EpubReaderFootnotesActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,
@@ -27,4 +29,9 @@ class EpubReaderFootnotesActivity final : public Activity {
   int scrollOffset = 0;
   GfxRenderer::Orientation previousRendererOrientation = GfxRenderer::Orientation::Portrait;
   ButtonNavigator buttonNavigator;
+
+  Rect contentRect() const;
+  void cancel();
+  void selectCurrent();
+  bool handleTouch();
 };

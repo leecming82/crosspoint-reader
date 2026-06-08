@@ -6,6 +6,8 @@
 #include "activities/Activity.h"
 #include "util/ButtonNavigator.h"
 
+struct Rect;
+
 class EpubReaderPercentSelectionActivity final : public Activity {
  public:
   // Slider-style percent selector for jumping within a book.
@@ -27,4 +29,10 @@ class EpubReaderPercentSelectionActivity final : public Activity {
 
   // Change the current percent by a delta and clamp within bounds.
   void adjustPercent(int delta);
+  void cancel();
+  void confirm();
+  Rect sliderRect() const;
+  Rect decrementButtonRect() const;
+  Rect incrementButtonRect() const;
+  bool handleTouch();
 };

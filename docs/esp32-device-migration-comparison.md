@@ -123,18 +123,20 @@ The received Murphy M4 is now concrete enough to plan around: ESP32-S3, 16 MB fl
 
    Readers:
 
-   - [ ] EPUB Reader
-   - [ ] EPUB Reader Menu
-   - [ ] TXT Reader
-   - [ ] XTC Reader
-   - [ ] BMP/Image Viewer
+   - [x] EPUB Reader
+   - [x] EPUB Reader Menu
+   - [x] TXT Reader
+   - [x] XTC Reader
+   - [x] BMP/Image Viewer
 
    Reader subscreens:
 
-   - [ ] EPUB Chapter Selection
-   - [ ] EPUB Percent Selection
-   - [ ] EPUB Bookmarks
-   - [ ] EPUB Footnotes
+   - [x] EPUB Chapter Selection
+   - [x] EPUB Percent Selection
+   - [x] EPUB Bookmarks
+   - [x] EPUB Footnotes
+   - [x] EPUB Ruby Position
+   - [x] EPUB Japanese Cursor Mode
    - [ ] XTC Chapter Selection
    - [ ] KOReader Sync
    - [ ] QR Display

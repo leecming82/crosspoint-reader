@@ -9,6 +9,8 @@
 #include "activities/reader/EpubReaderNavigation.h"
 #include "util/ButtonNavigator.h"
 
+struct Rect;
+
 class EpubReaderChapterSelectionActivity final : public Activity {
   std::shared_ptr<Epub> epub;
   std::string epubPath;
@@ -26,6 +28,10 @@ class EpubReaderChapterSelectionActivity final : public Activity {
   // Total TOC items count
   int getTotalItems() const;
   void buildNavigationEntries();
+  Rect contentRect() const;
+  void cancel();
+  void selectCurrent();
+  bool handleTouch();
 
  public:
   explicit EpubReaderChapterSelectionActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,
