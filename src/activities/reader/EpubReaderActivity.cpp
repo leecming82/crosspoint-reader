@@ -678,12 +678,20 @@ void EpubReaderActivity::openReaderMenu() {
           renderer, mappedInput, menuTitle, currentPage, totalPages, bookProgressPercent, SETTINGS.orientation,
           SETTINGS.writingModePreference, !currentPageFootnotes.empty(), allowsManualVerticalWritingMode()),
       [this](const ActivityResult& result) {
-        const auto& menu = std::get<MenuResult>(result.data);
-        applyOrientation(menu.orientation);
-        applyWritingModePreference(menu.writingModePreference);
-        toggleAutoPageTurn(menu.pageTurnOption);
+        const auto* menu = std::get_if<MenuResult>(&result.data);
+        if (!menu) {
+          if (!result.isCancelled) {
+            LOG_ERR("EPUB", "Reader menu returned no menu result");
+          }
+          requestUpdate();
+          return;
+        }
+
+        applyOrientation(menu->orientation);
+        applyWritingModePreference(menu->writingModePreference);
+        toggleAutoPageTurn(menu->pageTurnOption);
         if (!result.isCancelled) {
-          onReaderMenuConfirm(static_cast<EpubReaderMenuActivity::MenuAction>(menu.action));
+          onReaderMenuConfirm(static_cast<EpubReaderMenuActivity::MenuAction>(menu->action));
         }
       });
 }

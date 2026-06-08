@@ -257,6 +257,9 @@ bool ActivityManager::handleGlobalBack() {
     return false;
   }
   LOG_DBG("ACT", "Global back from touch long press: %s", currentActivity->name.c_str());
+  ActivityResult result;
+  result.isCancelled = true;
+  currentActivity->setResult(std::move(result));
   popActivity();
   return true;
 }
