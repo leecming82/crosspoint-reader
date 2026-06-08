@@ -11,9 +11,24 @@
 #include "CrossPointSettings.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "util/TouchNavigator.h"
 
 BmpViewerActivity::BmpViewerActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, std::string path)
     : Activity("BmpViewer", renderer, mappedInput), filePath(std::move(path)) {}
+
+namespace {
+void drawTouchActionRow(const GfxRenderer& renderer, const Rect rect, const char* label) {
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  renderer.fillRect(rect.x, rect.y, rect.width, rect.height, false);
+  renderer.drawRoundedRect(rect.x + metrics.contentSidePadding, rect.y + 4,
+                           rect.width - metrics.contentSidePadding * 2, rect.height - 8, 1, 6, true);
+
+  const int textWidth = renderer.getTextWidth(UI_12_FONT_ID, label, EpdFontFamily::BOLD);
+  const int lineHeight = renderer.getLineHeight(UI_12_FONT_ID);
+  renderer.drawText(UI_12_FONT_ID, rect.x + (rect.width - textWidth) / 2, rect.y + (rect.height - lineHeight) / 2,
+                    label, true, EpdFontFamily::BOLD);
+}
+}  // namespace
 
 void BmpViewerActivity::loadSiblingImages() {
   siblingImages.clear();
@@ -111,8 +126,12 @@ void BmpViewerActivity::onEnter() {
       // pageHeight, 0, 0)
       renderer.drawBitmap(bitmap, x, y, pageWidth, pageHeight, 0, 0);
 
+#ifdef CROSSPOINT_BOARD_MURPHY_M4
+      drawTouchActionRow(renderer, sleepCoverButtonRect(), tr(STR_SET_SLEEP_COVER));
+#else
       // Draw UI hints on the base layer
       GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+#endif
       // Single pass for non-grayscale images
 
       renderer.displayBuffer(HalDisplay::FAST_REFRESH);
@@ -121,8 +140,10 @@ void BmpViewerActivity::onEnter() {
       // Handle file parsing error
       renderer.clearScreen();
       renderer.drawCenteredText(UI_10_FONT_ID, pageHeight / 2, "Invalid BMP File");
+#ifndef CROSSPOINT_BOARD_MURPHY_M4
       const auto labels = mappedInput.mapLabels(tr(STR_BACK), "", "", "");
       GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+#endif
       renderer.displayBuffer(HalDisplay::HALF_REFRESH);
     }
 
@@ -131,8 +152,10 @@ void BmpViewerActivity::onEnter() {
     // Handle file open error
     renderer.clearScreen();
     renderer.drawCenteredText(UI_10_FONT_ID, pageHeight / 2, "Could not open file");
+#ifndef CROSSPOINT_BOARD_MURPHY_M4
     const auto labels = mappedInput.mapLabels(tr(STR_BACK), "", "", "");
     GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+#endif
     renderer.displayBuffer(HalDisplay::HALF_REFRESH);
   }
 }
@@ -176,12 +199,84 @@ void BmpViewerActivity::doSetSleepCover() {
   onEnter();
 }
 
+void BmpViewerActivity::goBackToFileBrowser() { activityManager.goToFileBrowser(filePath); }
+
+bool BmpViewerActivity::showPreviousImage() {
+  if (siblingImages.size() <= 1 || currentImageIndex <= 0) {
+    return false;
+  }
+
+  currentImageIndex--;
+  std::string dirPath = FsHelpers::extractFolderPath(filePath);
+  if (dirPath.back() != '/') dirPath += "/";
+  filePath = dirPath + siblingImages[currentImageIndex];
+  onEnter();
+  return true;
+}
+
+bool BmpViewerActivity::showNextImage() {
+  if (siblingImages.size() <= 1 || currentImageIndex == -1 ||
+      currentImageIndex >= static_cast<int>(siblingImages.size()) - 1) {
+    return false;
+  }
+
+  currentImageIndex++;
+  std::string dirPath = FsHelpers::extractFolderPath(filePath);
+  if (dirPath.back() != '/') dirPath += "/";
+  filePath = dirPath + siblingImages[currentImageIndex];
+  onEnter();
+  return true;
+}
+
+Rect BmpViewerActivity::sleepCoverButtonRect() const {
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  return Rect{0, renderer.getScreenHeight() - metrics.listRowHeight, renderer.getScreenWidth(), metrics.listRowHeight};
+}
+
+Rect BmpViewerActivity::backTouchRect() const {
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  return Rect{0, 0, renderer.getScreenWidth() / 3, metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing};
+}
+
+bool BmpViewerActivity::handleTouch() {
+  if (!mappedInput.wasTapped()) {
+    return false;
+  }
+
+  if (TouchNavigator::wasTappedIn(mappedInput, backTouchRect())) {
+    goBackToFileBrowser();
+    return true;
+  }
+
+  if (TouchNavigator::wasTappedIn(mappedInput, sleepCoverButtonRect())) {
+    doSetSleepCover();
+    return true;
+  }
+
+  const auto tap = mappedInput.lastTap();
+  const int screenWidth = renderer.getScreenWidth();
+  if (tap.x < screenWidth / 3) {
+    showPreviousImage();
+    return true;
+  }
+  if (tap.x >= (screenWidth * 2) / 3) {
+    showNextImage();
+    return true;
+  }
+
+  return true;
+}
+
 void BmpViewerActivity::loop() {
   // Keep CPU awake/polling so 1st click works
   Activity::loop();
 
+  if (handleTouch()) {
+    return;
+  }
+
   if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
-    activityManager.goToFileBrowser(filePath);
+    goBackToFileBrowser();
     return;
   }
 
@@ -192,26 +287,13 @@ void BmpViewerActivity::loop() {
 
   if (mappedInput.wasReleased(MappedInputManager::Button::Left) ||
       mappedInput.wasReleased(MappedInputManager::Button::Up)) {
-    if (siblingImages.size() > 1 && currentImageIndex > 0) {
-      currentImageIndex--;
-      std::string dirPath = FsHelpers::extractFolderPath(filePath);
-      if (dirPath.back() != '/') dirPath += "/";
-      filePath = dirPath + siblingImages[currentImageIndex];
-      onEnter();
-    }
+    showPreviousImage();
     return;
   }
 
   if (mappedInput.wasReleased(MappedInputManager::Button::Right) ||
       mappedInput.wasReleased(MappedInputManager::Button::Down)) {
-    if (siblingImages.size() > 1 && currentImageIndex != -1 &&
-        currentImageIndex < static_cast<int>(siblingImages.size()) - 1) {
-      currentImageIndex++;
-      std::string dirPath = FsHelpers::extractFolderPath(filePath);
-      if (dirPath.back() != '/') dirPath += "/";
-      filePath = dirPath + siblingImages[currentImageIndex];
-      onEnter();
-    }
+    showNextImage();
     return;
   }
 }
