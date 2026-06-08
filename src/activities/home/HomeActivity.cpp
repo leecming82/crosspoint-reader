@@ -22,10 +22,12 @@
 #include "components/UITheme.h"
 #include "fontIds.h"
 #include "util/StringUtils.h"
+#include "util/TouchNavigator.h"
 
 namespace {
 
 uint32_t heapKb(const uint32_t bytes) { return (bytes + 512) / 1024; }
+constexpr unsigned long HOME_INPUT_ARM_DELAY_MS = 1500;
 
 std::string homeMemoryStatusText() {
   return "Free: " + std::to_string(heapKb(ESP.getFreeHeap())) +
@@ -44,6 +46,27 @@ int HomeActivity::getMenuItemCount() const {
     count++;
   }
   return count;
+}
+
+int HomeActivity::getMenuButtonCount() const {
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  int count = 4;  // File Browser, Recents, File transfer, Settings
+  if (hasOpdsServers) {
+    count++;
+  }
+  if (metrics.homeContinueReadingInMenu && !recentBooks.empty()) {
+    count++;
+  }
+  return count;
+}
+
+Rect HomeActivity::getMenuRect() const {
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  const int pageWidth = renderer.getScreenWidth();
+  const int pageHeight = renderer.getScreenHeight();
+  return Rect{0, metrics.homeTopPadding + metrics.homeCoverTileHeight + metrics.homeMenuTopOffset, pageWidth,
+              pageHeight - (metrics.headerHeight + metrics.homeTopPadding + metrics.verticalSpacing +
+                            metrics.homeMenuTopOffset + metrics.buttonHintsHeight)};
 }
 
 void HomeActivity::loadRecentBooks(int maxBooks) {
@@ -134,6 +157,7 @@ void HomeActivity::onEnter() {
 
   const auto base = static_cast<int>(recentBooks.size());
   selectorIndex = initialMenuItem == HomeMenuItem::NONE ? 0 : base + menuItemToIndex(initialMenuItem, hasOpdsServers);
+  inputArmedAt = millis() + HOME_INPUT_ARM_DELAY_MS;
 
   // Trigger first update
   requestUpdate();
@@ -195,32 +219,78 @@ void HomeActivity::loop() {
     requestUpdate();
   });
 
+  if (handleTouch()) {
+    return;
+  }
+
   if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
-    if (selectorIndex < recentBooks.size()) {
-      onSelectBook(recentBooks[selectorIndex].path);
-    } else {
-      const int menuIndex = selectorIndex - static_cast<int>(recentBooks.size());
-      switch (indexToMenuItem(menuIndex, hasOpdsServers)) {
-        case HomeMenuItem::FILE_BROWSER:
-          onFileBrowserOpen();
-          break;
-        case HomeMenuItem::RECENTS:
-          onRecentsOpen();
-          break;
-        case HomeMenuItem::OPDS_BROWSER:
-          onOpdsBrowserOpen();
-          break;
-        case HomeMenuItem::FILE_TRANSFER:
-          onFileTransferOpen();
-          break;
-        case HomeMenuItem::SETTINGS_MENU:
-          onSettingsOpen();
-          break;
-        default:
-          break;
-      }
+    const bool armed = millis() >= inputArmedAt && !recentsLoading;
+    if (armed) {
+      activateSelection();
     }
   }
+}
+
+void HomeActivity::activateSelection() {
+  if (selectorIndex < recentBooks.size()) {
+    onSelectBook(recentBooks[selectorIndex].path);
+    return;
+  }
+
+  const int menuIndex = selectorIndex - static_cast<int>(recentBooks.size());
+  const HomeMenuItem item = indexToMenuItem(menuIndex, hasOpdsServers);
+  switch (item) {
+    case HomeMenuItem::FILE_BROWSER:
+      onFileBrowserOpen();
+      break;
+    case HomeMenuItem::RECENTS:
+      onRecentsOpen();
+      break;
+    case HomeMenuItem::OPDS_BROWSER:
+      onOpdsBrowserOpen();
+      break;
+    case HomeMenuItem::FILE_TRANSFER:
+      onFileTransferOpen();
+      break;
+    case HomeMenuItem::SETTINGS_MENU:
+      onSettingsOpen();
+      break;
+    default:
+      break;
+  }
+}
+
+bool HomeActivity::handleTouch() {
+  if (!mappedInput.wasTapped()) {
+    return false;
+  }
+
+  if (millis() < inputArmedAt || recentsLoading) {
+    return true;
+  }
+
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  const int menuSelectedIndex = metrics.homeContinueReadingInMenu ? selectorIndex : selectorIndex - recentBooks.size();
+  const Rect menuRect = getMenuRect();
+  const int tappedMenuIndex =
+      TouchNavigator::tappedListIndex(mappedInput, menuRect, getMenuButtonCount(), menuSelectedIndex,
+                                      metrics.menuRowHeight, metrics.menuSpacing);
+  if (tappedMenuIndex >= 0) {
+    selectorIndex = metrics.homeContinueReadingInMenu ? tappedMenuIndex : static_cast<int>(recentBooks.size()) + tappedMenuIndex;
+    activateSelection();
+    return true;
+  }
+
+  const Rect coverRect{0, metrics.homeTopPadding, renderer.getScreenWidth(), metrics.homeCoverTileHeight};
+  const bool coverHit = !metrics.homeContinueReadingInMenu && !recentBooks.empty() && recentsLoaded &&
+                        TouchNavigator::wasTappedIn(mappedInput, coverRect);
+  if (coverHit) {
+    selectorIndex = 0;
+    activateSelection();
+    return true;
+  }
+
+  return true;
 }
 
 void HomeActivity::render(RenderLock&&) {
@@ -277,10 +347,7 @@ void HomeActivity::render(RenderLock&&) {
   }
 
   GUI.drawButtonMenu(
-      renderer,
-      Rect{0, metrics.homeTopPadding + metrics.homeCoverTileHeight + metrics.homeMenuTopOffset, pageWidth,
-           pageHeight - (metrics.headerHeight + metrics.homeTopPadding + metrics.verticalSpacing +
-                         metrics.homeMenuTopOffset + metrics.buttonHintsHeight)},
+      renderer, getMenuRect(),
       static_cast<int>(menuItems.size()),
       metrics.homeContinueReadingInMenu ? selectorIndex : selectorIndex - recentBooks.size(),
       [&menuItems](int index) { return std::string(menuItems[index]); },

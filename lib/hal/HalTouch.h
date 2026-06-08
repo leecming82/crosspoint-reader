@@ -4,8 +4,8 @@
 
 class HalTouch {
  public:
-  static constexpr uint16_t ScreenWidth = 800;
-  static constexpr uint16_t ScreenHeight = 480;
+  static constexpr uint16_t ScreenWidth = 480;
+  static constexpr uint16_t ScreenHeight = 800;
 
   struct Point {
     uint16_t x = 0;
@@ -13,9 +13,12 @@ class HalTouch {
   };
 
   void begin();
+  void setLogicalSize(uint16_t width, uint16_t height);
   void update();
   bool wasTapped() const;
   Point lastTap() const;
+  bool wasLongPressed() const;
+  Point lastLongPress() const;
   bool hadActivity() const;
 
  private:
@@ -23,13 +26,18 @@ class HalTouch {
   bool initialized = false;
   bool wasDown = false;
   bool tapAvailable = false;
+  bool longPressAvailable = false;
+  bool longPressEmitted = false;
   bool activity = false;
   unsigned long downAt = 0;
   Point downPoint;
   Point tapPoint;
+  Point longPressPoint;
+  uint16_t logicalWidth = ScreenWidth;
+  uint16_t logicalHeight = ScreenHeight;
 
   bool readRaw(Point& raw, bool& down);
-  static Point transform(Point raw);
+  Point transform(Point raw) const;
 };
 
 extern HalTouch halTouch;

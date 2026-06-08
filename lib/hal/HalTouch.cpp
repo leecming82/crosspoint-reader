@@ -14,9 +14,8 @@ constexpr int TOUCH_RST = 7;
 constexpr int TOUCH_PWR = 45;
 constexpr uint16_t RAW_WIDTH = 480;
 constexpr uint16_t RAW_HEIGHT = 800;
-constexpr uint16_t DISPLAY_WIDTH = 800;
-constexpr uint16_t DISPLAY_HEIGHT = 480;
 constexpr unsigned long MAX_TAP_MS = 900;
+constexpr unsigned long LONG_PRESS_MS = 800;
 }  // namespace
 
 HalTouch halTouch;
@@ -30,6 +29,8 @@ void HalTouch::begin() {
   initialized = false;
   wasDown = false;
   tapAvailable = false;
+  longPressAvailable = false;
+  longPressEmitted = false;
   activity = false;
   if (!enabled) {
     return;
@@ -50,8 +51,16 @@ void HalTouch::begin() {
   Wire.setTimeOut(8);
   Wire.beginTransmission(TOUCH_ADDR);
   initialized = Wire.endTransmission(true) == 0;
-  LOG_INF("TOUCH", "Murphy touch begin: ok=%d sda=GPIO%d scl=GPIO%d addr=0x%02x", initialized ? 1 : 0,
+  LOG_DBG("TOUCH", "Murphy touch begin: ok=%d sda=GPIO%d scl=GPIO%d addr=0x%02x", initialized ? 1 : 0,
           TOUCH_SDA, TOUCH_SCL, TOUCH_ADDR);
+}
+
+void HalTouch::setLogicalSize(const uint16_t width, const uint16_t height) {
+  if (width == 0 || height == 0) {
+    return;
+  }
+  logicalWidth = width;
+  logicalHeight = height;
 }
 
 bool HalTouch::readRaw(Point& raw, bool& down) {
@@ -89,15 +98,15 @@ bool HalTouch::readRaw(Point& raw, bool& down) {
   return true;
 }
 
-HalTouch::Point HalTouch::transform(Point raw) {
+HalTouch::Point HalTouch::transform(Point raw) const {
   Point out;
-  uint32_t x = (static_cast<uint32_t>(raw.x) * DISPLAY_WIDTH) / RAW_WIDTH;
-  uint32_t y = (static_cast<uint32_t>(raw.y) * DISPLAY_HEIGHT) / RAW_HEIGHT;
-  if (x >= DISPLAY_WIDTH) {
-    x = DISPLAY_WIDTH - 1;
+  uint32_t x = (static_cast<uint32_t>(raw.x) * logicalWidth) / RAW_WIDTH;
+  uint32_t y = (static_cast<uint32_t>(raw.y) * logicalHeight) / RAW_HEIGHT;
+  if (x >= logicalWidth) {
+    x = logicalWidth - 1;
   }
-  if (y >= DISPLAY_HEIGHT) {
-    y = DISPLAY_HEIGHT - 1;
+  if (y >= logicalHeight) {
+    y = logicalHeight - 1;
   }
   out.x = static_cast<uint16_t>(x);
   out.y = static_cast<uint16_t>(y);
@@ -106,6 +115,7 @@ HalTouch::Point HalTouch::transform(Point raw) {
 
 void HalTouch::update() {
   tapAvailable = false;
+  longPressAvailable = false;
   activity = false;
   if (!enabled || !initialized) {
     return;
@@ -122,15 +132,21 @@ void HalTouch::update() {
     activity = true;
     downAt = millis();
     downPoint = transform(raw);
+    longPressEmitted = false;
   } else if (!down && wasDown) {
     wasDown = false;
     activity = true;
-    if (millis() - downAt <= MAX_TAP_MS) {
+    if (!longPressEmitted && millis() - downAt <= MAX_TAP_MS) {
       tapPoint = downPoint;
       tapAvailable = true;
     }
   } else if (down) {
     activity = true;
+    if (!longPressEmitted && millis() - downAt >= LONG_PRESS_MS) {
+      longPressPoint = downPoint;
+      longPressAvailable = true;
+      longPressEmitted = true;
+    }
   }
 }
 
@@ -138,4 +154,8 @@ bool HalTouch::wasTapped() const { return tapAvailable; }
 
 HalTouch::Point HalTouch::lastTap() const { return tapPoint; }
 
-bool HalTouch::hadActivity() const { return activity || tapAvailable; }
+bool HalTouch::wasLongPressed() const { return longPressAvailable; }
+
+HalTouch::Point HalTouch::lastLongPress() const { return longPressPoint; }
+
+bool HalTouch::hadActivity() const { return activity || tapAvailable || longPressAvailable; }

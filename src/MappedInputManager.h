@@ -18,6 +18,7 @@ class MappedInputManager {
   MappedInputManager(HalGPIO& gpio, HalTouch& touch) : gpio(gpio), touch(touch) {}
 
   void beginTouch() const { touch.begin(); }
+  void setTouchLogicalSize(uint16_t width, uint16_t height) const { touch.setLogicalSize(width, height); }
   void update() const;
   bool wasPressed(Button button) const;
   bool wasReleased(Button button) const;
@@ -27,6 +28,8 @@ class MappedInputManager {
   bool hadTouchActivity() const;
   bool wasTapped() const;
   TouchPoint lastTap() const;
+  bool wasTouchLongPressed() const;
+  TouchPoint lastTouchLongPress() const;
   unsigned long getHeldTime() const;
   Labels mapLabels(const char* back, const char* confirm, const char* previous, const char* next) const;
   // Returns the raw front button index that was pressed this frame (or -1 if none).

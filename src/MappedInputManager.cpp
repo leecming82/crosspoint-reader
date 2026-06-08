@@ -75,6 +75,10 @@ bool MappedInputManager::wasTapped() const { return touch.wasTapped(); }
 
 MappedInputManager::TouchPoint MappedInputManager::lastTap() const { return touch.lastTap(); }
 
+bool MappedInputManager::wasTouchLongPressed() const { return touch.wasLongPressed(); }
+
+MappedInputManager::TouchPoint MappedInputManager::lastTouchLongPress() const { return touch.lastLongPress(); }
+
 unsigned long MappedInputManager::getHeldTime() const { return gpio.getHeldTime(); }
 
 MappedInputManager::Labels MappedInputManager::mapLabels(const char* back, const char* confirm, const char* previous,

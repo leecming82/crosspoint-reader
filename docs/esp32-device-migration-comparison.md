@@ -62,43 +62,82 @@ The received Murphy M4 is now concrete enough to plan around: ESP32-S3, 16 MB fl
 
    Integration result: the Murphy board profile now carries the confirmed active-low SD enable and 4-bit SDMMC pin map, and `HalStorage` selects an SD_MMC backend for Murphy while X3/X4 continue using the existing SdFat/SPI backend. The integrated `murphy_m4` app mounted SD successfully (`SD_MMC begin: ok=1 mode=4-bit`, `Storage begin: ok, ready=1`) and wrote APP1 evidence to `test/murphy-m4-baseline/murphy_m4_integrated_sdmmc_app1_readback.bin`.
 
-6. Physical button input
+6. Physical button input — done
 
    Map Enter, Next, and Lock/Back to existing logical actions while treating Reset as hardware-only. Keep all primary navigation reachable by buttons before adding touch.
 
    Exit criteria: file browser, menus, page turns, selection, back/lock behavior, and recovery into download mode remain usable without touch.
 
-   Current note: the X4 `InputManager` assumes `POWER_BUTTON_PIN=3`, but GPIO3 is the Murphy display MOSI pin. The Murphy HAL currently masks `BTN_POWER` so display traffic is not misread as a held power button and the app does not immediately enter sleep after Home renders. Real Murphy button pins still need to be identified.
+   Current result: the three normal left-side buttons are digital active-low lines. In the observed top/middle/bottom press order, the probe captured GPIO1, GPIO2, and GPIO0 respectively. The recessed fourth button is treated as hardware reset only. GPIO0 remains the ESP32-S3 boot strap input, so holding the bottom button while pressing Reset can still enter download mode regardless of its in-app mapping.
 
-7. Japanese reader validation
+   Temporary three-button app mapping: top short press emits Up, top long press emits Back; middle short press emits Down, middle long press emits Confirm; bottom short press emits Confirm, bottom long press emits Power. The X4 `InputManager` is bypassed on Murphy because it assumes `POWER_BUTTON_PIN=3`, but GPIO3 is the Murphy display MOSI pin.
 
-   Validate the existing reader on the Murphy viewport before adding Murphy-only features. This is the first real product milestone, because display and input are only useful if Japanese EPUB semantics survive.
+7. Japanese EPUB smoke test — done
 
-   Exit criteria: horizontal and vertical EPUBs render correctly; ruby/furigana survives parse, cache, layout, and render; dictionary cursor geometry follows logical text order; SD fonts and cache keys include board/layout metrics; bookmarks and page progression remain metadata-driven.
+   Prove that the existing reader can open a real Japanese EPUB on Murphy M4 and perform basic page navigation before deeper UX and layout validation.
 
-8. Touch input
+   Exit criteria: a Japanese EPUB opens from SD, metadata/cache generation completes without panic, and a few page flips work with the temporary button mapping.
+
+   Current result: first Japanese EPUB open reached metadata/cache generation but hit a storage cleanup assert when an EPUB temp cache file was missing (`anchor.bin.tmp`) and error handling closed a never-opened `HalFile`. `HalFile::close()` is now idempotent for unopened handles so cache-build failure paths can return errors instead of panicking. Murphy SD_MMC also needs a larger VFS file descriptor pool than the default because EPUB cache finalization can hold more than five temp/cache files open at once; `max_files=12` resolves the observed `no free file descriptors` failure.
+
+   Validation result: a quick, dirty Japanese EPUB smoke test passed on Murphy M4; one Japanese EPUB opens and can flip multiple pages with the temporary button mapping. Full horizontal/vertical/ruby/dictionary validation is deferred until the control scheme is less awkward.
+
+8. Touch input — done
 
    Add FT6336U as an optional input provider that emits activity-level taps and logical actions. Touch should improve navigation and dictionary cursor placement, not replace the button workflow.
 
-   Exit criteria: list row taps, reader tap zones, menu taps, and dictionary cursor placement work with calibrated coordinates; all primary flows still have button equivalents; touch calibration lives in the board profile.
+   Exit criteria: touch hardware transport is confirmed; raw coordinates are transformed into display coordinates; taps can be consumed through the shared input path; one real reader flow works with touch while button fallbacks remain intact.
 
-9. Two-channel frontlight
+   Current result: standalone probing confirms stock touch transport on `SDA=GPIO13`, `SCL=GPIO12`, `INT=GPIO44`, `RST=GPIO7`, `PWR=GPIO45`, address `0x2E`. The earlier `0x38` read on the same I2C pins is the environmental sensor path, not touch. A 3x3 tap capture produced coherent single-touch FT-style frames in an approximately `480x800` raw space. First-pass landscape transform is `displayX = rawX * 800 / 480`, `displayY = rawY * 480 / 800`; sample taps map to roughly `(103,76)`, `(400,82)`, `(725,89)`, `(58,223)`, `(415,220)`, `(748,233)`, `(15,403)`, `(408,408)`, `(708,421)`.
 
-   Add warm/cool frontlight as a board capability with off-by-default settings and explicit shutdown behavior. Brightness and color temperature should be stored separately from reader layout and hidden on boards without frontlight.
+   Integration result: `HalTouch` is enabled for Murphy M4 and is polled through `MappedInputManager`. EPUB reader touch zones are working: left/right thirds page backward/forward, and the physical central `1/9` opens the reader menu. Broader tappable rows, menus, tabs, and dictionary placement move to Step 9/10.
 
-   Exit criteria: brightness and color temperature can be changed safely, persisted, restored at boot, turned off before sleep/update/shutdown, and disabled cleanly on non-frontlight boards.
+   Stock UI reference: the Murphy home screen uses a `3x3` icon grid, with entries ranging from Clock to Read to Settings. Settings uses a broadly similar tabbed menu style, but touch users can directly tap tabs and individual list items that open sub-menus or pop-ups. Reading uses screen zones: tapping the left/right sides navigates pages, while the central `1/9` opens a reader menu with tappable tabs and entries. This is normal touch e-reader behavior and is a useful target for CrossPoint's Murphy touch UX.
 
-10. Power, battery, and sensors
+9. UI conversion
 
-   Identify and implement battery, charger, wake sources, RTC, buzzer, BMI270, and SHT40/AHT20 only where hardware evidence exists. Power UI should degrade gracefully when a chip is absent or not yet understood.
+   Convert Murphy M4 from a button-first UI with touch patches into a touch-first e-reader UI, using the stock firmware's interaction model as the practical reference while keeping CrossPoint's reader semantics intact.
 
-   Exit criteria: sleep/off paths release display, storage, radios, touch, and frontlight; charging/battery data is shown only when reliable; wake sources are explicit; unknown sensors remain disabled.
+   Exit criteria: home, settings, lists, pop-ups, and reader menus are directly tappable; the UI is usable with touch alone for normal reading workflows; physical buttons are accounted for as secondary shortcuts; all touch behavior remains board/capability gated so X3/X4 behavior is unchanged.
+
+   Button policy: given a full touch interface, Murphy's three physical buttons should be restricted to durable secondary actions rather than full UI traversal. For now, treat them as reader previous/next page shortcuts, optional frontlight strength controls once frontlight is implemented, and power/sleep/wake controls. GPIO0's boot/download role must remain documented so the bottom button stays safe to use in-app.
+
+   Back/navigation note: use a temporary long-press gesture as a universal back fallback, preferably in a low-conflict central zone, but make visible back targets screen-local rather than a fixed global top-left hotspot. Home is a root screen, reader uses center tap for the menu and should offer explicit close/back controls, and settings/menus should place back affordances around their actual header/tab/list layout so they do not collide with tappable content.
+
+   Initial work plan:
+
+   1. Started: establish a shared touch event model. Tap detection, coordinate transforms, hit-testing, and activity integration exist; holds, gestures, and richer debouncing still need to be formalized.
+   2. Started: add reusable tappable UI primitives. Basic rectangle, grid, list-row, and equal-tab hit-testing helpers exist; EPUB reader zones and the current Home menu now consume them; pop-up actions, icon-grid usage, and wider screen integration still need to be wired.
+   3. Build a Murphy home screen layout closer to stock: a `3x3` icon grid for primary destinations such as Clock, Read, and Settings.
+   4. Convert menus/settings to direct touch: tappable tabs, selectable rows, sub-menus, and pop-ups, while preserving button navigation.
+   5. Finish reader touch UX: left/right page zones, central `1/9` reader menu, tappable reader tabs/actions, various display/reading orientations, and later dictionary cursor placement.
+   6. Add Murphy-specific hints and settings for touch zones, reader shortcuts, and the reduced physical-button role.
+
+10. Fully functional Japanese EPUB
+
+   Validate the Japanese reading experience once touch or another better control scheme is available.
+
+   Exit criteria: horizontal and vertical EPUBs render correctly; ruby/furigana survives parse, cache, layout, and render; dictionary cursor geometry follows logical text order; SD fonts and cache keys include board/layout metrics; bookmarks and page progression remain metadata-driven; TOC, footnotes, percent/chapter navigation, orientation changes, anti-aliasing, and progress save/resume work on real Japanese books.
+
+   To-do: fix the lost loading/display of images in both home/library surfaces and the reader before treating Japanese EPUB validation as complete.
+
+11. Power, battery, frontlight, and sensors
+
+   Identify and implement battery, charger, wake sources, RTC, buzzer, BMI270, SHT40/AHT20, and warm/cool frontlight only where hardware evidence exists. Power UI should degrade gracefully when a chip is absent or not yet understood, and frontlight controls should stay hidden on boards without frontlight.
+
+   Exit criteria: sleep/off paths release display, storage, radios, touch, and frontlight; charging/battery data is shown only when reliable; wake sources are explicit; unknown sensors remain disabled; brightness and color temperature can be changed safely, persisted, restored at boot, turned off before sleep/update/shutdown, and disabled cleanly on non-frontlight boards.
 
    Note: Murphy Cloud firmware confirms temperature/humidity support via an SHT40 path plus AHT20-style probe/fallback on shared I2C plumbing. Battery telemetry strings exist, but the low-level battery sense or gauge path still needs to be identified before enabling battery UI.
 
-   Current note: Murphy deep sleep is disabled in the HAL until wake/power pins are known. The inherited X4/C3 sleep path assumes `InputManager::POWER_BUTTON_PIN=3` for wake and drives GPIO13 low as a power-latch/shutdown pin; both are unsafe assumptions on Murphy because GPIO3 is display MOSI and GPIO13 is unverified.
+   Current note: Murphy deep sleep is disabled in the HAL until wake/power pins are known. The inherited X4/C3 sleep path assumes `InputManager::POWER_BUTTON_PIN=3` for wake and drives GPIO13 low as a power-latch/shutdown pin; both are unsafe assumptions on Murphy because GPIO3 is display MOSI and GPIO13 is unverified. GPIO47/GPIO48 are frontlight outputs; even input pull-ups can visibly turn the light on, so probes must leave them out or explicitly drive them low/off.
 
-11. Optional accelerators and Murphy features
+12. Misc tweaks
+
+   Track grab-bag usability and performance issues discovered during real-book validation that do not belong to hardware bring-up.
+
+   Current note: image-heavy page rendering is visibly slow and should be profiled separately from e-paper refresh time.
+
+13. Optional accelerators and Murphy features
 
    Add PSRAM-backed caches, screenshots, USB MSC, BLE remote/ring, dashboard widgets, and Murphy package ideas only after the Japanese reader works without them. These should be capability-gated accelerators or affordances, not dependencies.
 
@@ -170,8 +209,17 @@ Important implication: this unit uses `app0` at `0x10000`, not the public Murphy
 | SD / storage | CMD | `15` | Likely | Same SD_MMC tuple; not yet hardware-validated. |
 | SD / storage | D0 | `17` | Likely | Same SD_MMC tuple; not yet hardware-validated. |
 | SD / storage | D1 / D2 / D3 or drive pins | `18`, `11`, `14` | Candidate | Same tuple, but exact SD bus width and role split still need validation. |
-| Touch | I2C SDA | `13` | Likely | Firmware/string mining points to FT6336U on shared I2C plumbing; pin tuple inferred from cross-version analysis, not yet hardware-validated. |
-| Touch | I2C SCL | `12` | Likely | Same touch/I2C evidence; not yet hardware-validated. |
+| Buttons | Top normal button | `1` | Confirmed | Digital active-low. Temporary mapping: short=Up, long=Back. |
+| Buttons | Middle normal button | `2` | Confirmed | Digital active-low. Temporary mapping: short=Down, long=Confirm. |
+| Buttons | Bottom normal button | `0` | Confirmed | Digital active-low. Temporary mapping: short=Confirm, long=Power. Also ESP32-S3 boot strap/download-mode input when held during Reset. |
+| Buttons | Recessed button | Reset line | Confirmed behavior | Hardware reset only; not handled by firmware. |
+| Touch | I2C SDA | `13` | Confirmed | Stock transport tuple plus standalone probe at address `0x2E`; valid tap frames observed. |
+| Touch | I2C SCL | `12` | Confirmed | Same stock tuple and standalone probe. |
+| Touch | Address | `0x2E` | Confirmed | Older stock firmware logs FT6336U transport at `addr=0x2E`; standalone probe receives valid single-touch frames. `0x38` on the same pins is not touch. |
+| Touch | Interrupt | `44` | Firmware-confirmed | Stock transport tuple reports `INT=44`; interrupt behavior not yet used by probe/app. |
+| Touch | Reset | `7` | Firmware-confirmed, shared | Stock transport tuple reports `RST=7`; GPIO7 is also the confirmed e-paper reset line, so sequencing must be handled carefully. |
+| Touch | Power / enable | `45` | Firmware-confirmed | Stock transport tuple reports `PWR=45`; probe uses the stock low-enable/reset sequence before I2C. |
+| Touch | Raw coordinate transform | `480x800` raw -> `800x480` display | Probe-confirmed first pass | 3x3 tap capture maps cleanly with `displayX = rawX * 800 / 480`, `displayY = rawY * 480 / 800`; refine edge calibration during app integration. |
 | Frontlight | Cool / warm channels | `47`, `48` | Likely on newer firmware | Murphy Cloud `1.3.0` frontlight evidence anchors `GPIO47`/`GPIO48`; polarity/frequency/channel order still unknown. |
 | Frontlight | Cool / warm channels | `38`, `39` | Historical/conflicting candidate | Older `1.2.4` code has a `Frontlight ready: cool=GPIO%d warm=GPIO%d` neighborhood using `GPIO38`/`GPIO39`; reconcile before enabling. |
 | Buzzer | PWM / LEDC | `46` | Firmware clue | Public changelog mentions buzzer on `GPIO46` / LEDC channel 2; not yet hardware-validated. |
@@ -184,7 +232,7 @@ These are the key facts that still need hardware evidence:
 
 - PSRAM speed and stable allocation budget.
 - Display rail sequencing details and long-run partial-refresh limits. Full-frame content, normal X4-style page turns, and grayscale/AA cleanup are validated enough to move forward.
-- Touch I2C pins, interrupt pin, reset pin, FT6336U address, coordinate transform, and calibration offsets.
+- Touch coordinate transform, calibration offsets, interrupt behavior, and safe sequencing around shared GPIO7 display/touch reset.
 - Warm/cool frontlight PWM pins, frequency, polarity, driver topology, safe duty range, and shutdown requirements.
 - SD wiring and whether stock firmware uses external SD, internal SPIFFS, USB MSC, or a mix.
 - Battery gauge, charger IC, USB/charging detection, RTC, wake-capable GPIOs, and hardware power-off behavior.

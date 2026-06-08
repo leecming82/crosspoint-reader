@@ -252,6 +252,15 @@ void ActivityManager::popActivity() {
   pendingAction = PendingAction::Pop;
 }
 
+bool ActivityManager::handleGlobalBack() {
+  if (!currentActivity || currentActivity->name == "Home") {
+    return false;
+  }
+  LOG_DBG("ACT", "Global back from touch long press: %s", currentActivity->name.c_str());
+  popActivity();
+  return true;
+}
+
 bool ActivityManager::preventAutoSleep() const { return currentActivity && currentActivity->preventAutoSleep(); }
 
 bool ActivityManager::isReaderActivity() const {

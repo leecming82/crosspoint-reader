@@ -530,7 +530,19 @@ void loop() {
     return;
   }
 
+  mappedInputManager.setTouchLogicalSize(renderer.getScreenWidth(), renderer.getScreenHeight());
   mappedInputManager.update();
+  if (mappedInputManager.wasTouchLongPressed()) {
+    const auto point = mappedInputManager.lastTouchLongPress();
+    const int screenWidth = renderer.getScreenWidth();
+    const int screenHeight = renderer.getScreenHeight();
+    const bool centerLongPress = point.x >= screenWidth / 3 && point.x < (screenWidth * 2) / 3 &&
+                                 point.y >= screenHeight / 3 && point.y < (screenHeight * 2) / 3;
+    if (centerLongPress) {
+      LOG_DBG("TOUCH", "Global back long press x=%u y=%u screen=%dx%d", point.x, point.y, screenWidth, screenHeight);
+      activityManager.handleGlobalBack();
+    }
+  }
   halTiltSensor.update(SETTINGS.tiltPageTurn, SETTINGS.orientation, activityManager.isReaderActivity());
 
   renderer.setFadingFix(SETTINGS.fadingFix);

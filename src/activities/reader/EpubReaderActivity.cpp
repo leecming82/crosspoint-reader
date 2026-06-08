@@ -44,6 +44,7 @@
 #include "util/BookmarkUtil.h"
 #include "util/ScreenshotUtil.h"
 #include "util/StringUtils.h"
+#include "util/TouchNavigator.h"
 
 namespace {
 // pagesPerRefresh now comes from SETTINGS.getRefreshFrequency()
@@ -694,14 +695,13 @@ bool EpubReaderActivity::handleTouchZones() {
 
   clearLatchedPageTurnIntent();
   const auto tap = mappedInput.lastTap();
-  const int screenWidth = HalTouch::ScreenWidth;
-  const int screenHeight = HalTouch::ScreenHeight;
+  const int screenWidth = renderer.getScreenWidth();
+  const int screenHeight = renderer.getScreenHeight();
   const int centerLeft = screenWidth / 3;
   const int centerRight = (screenWidth * 2) / 3;
-  const int centerTop = screenHeight / 3;
-  const int centerBottom = (screenHeight * 2) / 3;
 
-  if (tap.x >= centerLeft && tap.x < centerRight && tap.y >= centerTop && tap.y < centerBottom) {
+  const int zone = TouchNavigator::tappedGridIndex(mappedInput, Rect{0, 0, screenWidth, screenHeight}, 9, 3);
+  if (zone == 4) {
     openReaderMenu();
     return true;
   }

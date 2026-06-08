@@ -98,6 +98,7 @@ class ActivityManager {
   // Remove the currentActivity, returning the last one on stack
   // Note: if popActivity() on last activity on the stack, we will goHome()
   void popActivity();
+  bool handleGlobalBack();
 
   bool preventAutoSleep() const;
   bool isReaderActivity() const;
