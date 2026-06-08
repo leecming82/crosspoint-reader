@@ -9,6 +9,8 @@
 
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "util/TouchNavigator.h"
+#include "util/TouchUi.h"
 
 int IntervalSelectionActivity::clampedValue(const int candidate) const {
   return std::clamp(candidate, minValue, maxValue);
@@ -36,6 +38,37 @@ void IntervalSelectionActivity::loop() {
     }
   }
 
+#ifdef CROSSPOINT_BOARD_MURPHY_M4
+  if (TouchNavigator::wasTappedIn(mappedInput, TouchUi::headerBackTapRect(renderer))) {
+    ActivityResult result;
+    result.isCancelled = true;
+    setResult(std::move(result));
+    finish();
+    return;
+  }
+
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  constexpr int buttonHeight = 54;
+  const int gap = metrics.contentSidePadding;
+  const int buttonWidth = (renderer.getScreenWidth() - metrics.contentSidePadding * 2 - gap) / 2;
+  const int buttonY = 178;
+  const Rect minusRect{metrics.contentSidePadding, buttonY, buttonWidth, buttonHeight};
+  const Rect plusRect{minusRect.x + minusRect.width + gap, buttonY, buttonWidth, buttonHeight};
+  if (TouchNavigator::wasTappedIn(mappedInput, minusRect)) {
+    adjustValue(-smallStep);
+    return;
+  }
+  if (TouchNavigator::wasTappedIn(mappedInput, plusRect)) {
+    adjustValue(smallStep);
+    return;
+  }
+  if (TouchNavigator::wasTappedIn(mappedInput, TouchUi::bottomActionRect(renderer))) {
+    setResult(IntervalResult{static_cast<uint32_t>(value)});
+    finish();
+    return;
+  }
+#endif
+
   if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
     ActivityResult result;
     result.isCancelled = true;
@@ -59,7 +92,12 @@ void IntervalSelectionActivity::loop() {
 void IntervalSelectionActivity::render(RenderLock&&) {
   renderer.clearScreen();
 
+#ifdef CROSSPOINT_BOARD_MURPHY_M4
+  const Rect screen = UITheme::getInstance().getScreenSafeArea(renderer, false, false);
+  TouchUi::drawHeaderWithBack(renderer, screen, I18N.get(titleId));
+#else
   renderer.drawCenteredText(UI_12_FONT_ID, 15, I18N.get(titleId), true, EpdFontFamily::BOLD);
+#endif
 
   char formattedValue[32];
   if (maxBoundaryLabelId != StrId::STR_NONE_OPT && value == maxValue) {
@@ -90,8 +128,21 @@ void IntervalSelectionActivity::render(RenderLock&&) {
 
   renderer.drawCenteredText(SMALL_FONT_ID, barY + 30, I18N.get(stepHintId), true);
 
+#ifdef CROSSPOINT_BOARD_MURPHY_M4
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  constexpr int buttonHeight = 54;
+  const int gap = metrics.contentSidePadding;
+  const int buttonWidth = (renderer.getScreenWidth() - metrics.contentSidePadding * 2 - gap) / 2;
+  const int buttonY = 178;
+  const Rect minusRect{metrics.contentSidePadding, buttonY, buttonWidth, buttonHeight};
+  const Rect plusRect{minusRect.x + minusRect.width + gap, buttonY, buttonWidth, buttonHeight};
+  TouchUi::drawTouchButton(renderer, minusRect, "-");
+  TouchUi::drawTouchButton(renderer, plusRect, "+");
+  TouchUi::drawTouchButton(renderer, TouchUi::bottomActionRect(renderer), tr(STR_OK_BUTTON));
+#else
   const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_SELECT), "-", "+");
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+#endif
 
   renderer.displayBuffer();
 }

@@ -14,6 +14,9 @@
 #include "activities/util/KeyboardEntryActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "util/TouchList.h"
+#include "util/TouchNavigator.h"
+#include "util/TouchUi.h"
 
 void WifiSelectionActivity::onEnter() {
   Activity::onEnter();
@@ -322,6 +325,10 @@ void WifiSelectionActivity::loop() {
     return;
   }
 
+  if (handleTouch()) {
+    return;
+  }
+
   // Handle save prompt state
   if (state == WifiSelectionState::SAVE_PROMPT) {
     if (mappedInput.wasPressed(MappedInputManager::Button::Up) ||
@@ -461,6 +468,146 @@ void WifiSelectionActivity::loop() {
   }
 }
 
+Rect WifiSelectionActivity::contentRect(const ThemeMetrics& metrics, const bool includeSubHeader) const {
+  const Rect screen = UITheme::getInstance().getScreenSafeArea(renderer, false, false);
+  const int subHeaderHeight = includeSubHeader ? metrics.tabBarHeight : 0;
+  const int contentTop =
+      screen.y + metrics.topPadding + metrics.headerHeight + subHeaderHeight + metrics.verticalSpacing;
+  return Rect{screen.x, contentTop, screen.width, renderer.getScreenHeight() - contentTop - metrics.verticalSpacing};
+}
+
+Rect WifiSelectionActivity::promptLeftRect() const {
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  constexpr int buttonHeight = 56;
+  const int gap = metrics.contentSidePadding;
+  const int width = (renderer.getScreenWidth() - metrics.contentSidePadding * 2 - gap) / 2;
+  const int y = renderer.getScreenHeight() - buttonHeight - 16;
+  return Rect{metrics.contentSidePadding, y, width, buttonHeight};
+}
+
+Rect WifiSelectionActivity::promptRightRect() const {
+  const Rect left = promptLeftRect();
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  return Rect{left.x + left.width + metrics.contentSidePadding, left.y, left.width, left.height};
+}
+
+bool WifiSelectionActivity::handleTouch() {
+#ifndef CROSSPOINT_BOARD_MURPHY_M4
+  return false;
+#else
+  if (TouchNavigator::wasTappedIn(mappedInput, TouchUi::headerBackTapRect(renderer))) {
+    if (state == WifiSelectionState::SAVE_PROMPT) {
+      onComplete(true);
+    } else if (state == WifiSelectionState::FORGET_PROMPT) {
+      startWifiScan();
+    } else if (state == WifiSelectionState::CONNECTION_FAILED) {
+      if (autoConnecting || usedSavedPassword) {
+        autoConnecting = false;
+        state = WifiSelectionState::FORGET_PROMPT;
+        forgetPromptSelection = 0;
+        requestUpdate();
+      } else {
+        state = WifiSelectionState::NETWORK_LIST;
+        requestUpdate();
+      }
+    } else {
+      onComplete(false);
+    }
+    return true;
+  }
+
+  if (state == WifiSelectionState::SAVE_PROMPT) {
+    if (TouchNavigator::wasTappedIn(mappedInput, promptLeftRect())) {
+      RenderLock lock(*this);
+      WIFI_STORE.addCredential(selectedSSID, enteredPassword);
+      onComplete(true);
+      return true;
+    }
+    if (TouchNavigator::wasTappedIn(mappedInput, promptRightRect())) {
+      onComplete(true);
+      return true;
+    }
+    return mappedInput.wasTapped();
+  }
+
+  if (state == WifiSelectionState::FORGET_PROMPT) {
+    if (TouchNavigator::wasTappedIn(mappedInput, promptLeftRect())) {
+      startWifiScan();
+      return true;
+    }
+    if (TouchNavigator::wasTappedIn(mappedInput, promptRightRect())) {
+      RenderLock lock(*this);
+      WIFI_STORE.removeCredential(selectedSSID);
+      const auto network = find_if(networks.begin(), networks.end(),
+                                   [this](const WifiNetworkInfo& net) { return net.ssid == selectedSSID; });
+      if (network != networks.end()) {
+        network->hasSavedPassword = false;
+      }
+      startWifiScan();
+      return true;
+    }
+    return mappedInput.wasTapped();
+  }
+
+  if (state == WifiSelectionState::CONNECTION_FAILED) {
+    if (TouchNavigator::wasTappedIn(mappedInput, TouchUi::bottomActionRect(renderer))) {
+      if (autoConnecting || usedSavedPassword) {
+        autoConnecting = false;
+        state = WifiSelectionState::FORGET_PROMPT;
+        forgetPromptSelection = 0;
+      } else {
+        state = WifiSelectionState::NETWORK_LIST;
+      }
+      requestUpdate();
+      return true;
+    }
+    return mappedInput.wasTapped();
+  }
+
+  if (state != WifiSelectionState::NETWORK_LIST) {
+    return mappedInput.wasTapped();
+  }
+
+  if (networks.empty()) {
+    if (TouchNavigator::wasTappedIn(mappedInput, TouchUi::bottomActionRect(renderer))) {
+      startWifiScan();
+      return true;
+    }
+    return mappedInput.wasTapped();
+  }
+
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  const Rect listBounds = contentRect(metrics);
+  const int listRows = std::max(1, listBounds.height / metrics.listRowHeight);
+  const auto layout =
+      TouchList::calculatePageLayout(static_cast<int>(selectedNetworkIndex), static_cast<int>(networks.size()), listRows);
+  const int visibleRow = TouchNavigator::tappedListIndex(mappedInput, listBounds, TouchList::visibleRowCount(layout),
+                                                        0, metrics.listRowHeight, 0);
+  if (visibleRow < 0) {
+    return mappedInput.wasTapped();
+  }
+  if (TouchList::isPreviousPageRow(layout, visibleRow)) {
+    selectedNetworkIndex =
+        TouchList::calculatePageLayout(std::max(0, layout.start - 1), static_cast<int>(networks.size()), listRows)
+            .start;
+    requestUpdate();
+    return true;
+  }
+  if (TouchList::isNextPageRow(layout, visibleRow)) {
+    selectedNetworkIndex = std::min(static_cast<int>(networks.size()) - 1, layout.start + layout.itemCount);
+    requestUpdate();
+    return true;
+  }
+
+  const int itemIndex = TouchList::visibleRowToItemIndex(layout, visibleRow);
+  if (itemIndex >= 0) {
+    selectedNetworkIndex = static_cast<size_t>(itemIndex);
+    selectNetwork(itemIndex);
+  }
+  return true;
+#endif
+}
+
 std::string WifiSelectionActivity::getSignalStrengthIndicator(const int32_t rssi) const {
   // Convert RSSI to signal bars representation
   if (rssi >= -50) {
@@ -486,17 +633,31 @@ void WifiSelectionActivity::render(RenderLock&&) {
 
   auto& theme = UITheme::getInstance();
   auto metrics = theme.getMetrics();
-  Rect screen = theme.getScreenSafeArea(renderer, true, false);
+  Rect screen =
+#ifdef CROSSPOINT_BOARD_MURPHY_M4
+      theme.getScreenSafeArea(renderer, false, false);
+#else
+      theme.getScreenSafeArea(renderer, true, false);
+#endif
 
   // Draw header
   char countStr[32];
   snprintf(countStr, sizeof(countStr), tr(STR_NETWORKS_FOUND), networks.size());
+#ifdef CROSSPOINT_BOARD_MURPHY_M4
+  TouchUi::drawHeaderWithBack(renderer, screen, tr(STR_WIFI_NETWORKS));
+#else
   GUI.drawHeader(renderer, Rect{screen.x, screen.y + metrics.topPadding, screen.width, metrics.headerHeight},
                  tr(STR_WIFI_NETWORKS), countStr);
+#endif
   GUI.drawSubHeader(
       renderer,
       Rect{screen.x, screen.y + metrics.topPadding + metrics.headerHeight, screen.width, metrics.tabBarHeight},
-      cachedMacAddress.c_str());
+#ifdef CROSSPOINT_BOARD_MURPHY_M4
+      countStr
+#else
+      cachedMacAddress.c_str()
+#endif
+  );
 
   switch (state) {
     case WifiSelectionState::AUTO_CONNECTING:
@@ -535,18 +696,48 @@ void WifiSelectionActivity::renderNetworkList(const Rect* screen, const ThemeMet
     const auto top = screen->y + (screen->height - height) / 2;
     UITheme::drawCenteredText(renderer, *screen, UI_10_FONT_ID, top, tr(STR_NO_NETWORKS));
     UITheme::drawCenteredText(renderer, *screen, SMALL_FONT_ID, top + height + 10, tr(STR_PRESS_OK_SCAN));
+#ifdef CROSSPOINT_BOARD_MURPHY_M4
+    TouchUi::drawTouchButton(renderer, TouchUi::bottomActionRect(renderer), tr(STR_RETRY));
+#endif
   } else {
     int contentTop =
         screen->y + metrics->topPadding + metrics->headerHeight + metrics->tabBarHeight + metrics->verticalSpacing;
     int contentHeight = screen->height - contentTop - metrics->verticalSpacing * 2;
+    const Rect listBounds{screen->x, contentTop, screen->width, contentHeight};
+#ifdef CROSSPOINT_BOARD_MURPHY_M4
+    const int listRows = std::max(1, contentHeight / metrics->listRowHeight);
+    const auto layout = TouchList::calculatePageLayout(static_cast<int>(selectedNetworkIndex),
+                                                       static_cast<int>(networks.size()), listRows);
+    const int visibleSelected = layout.previous + static_cast<int>(selectedNetworkIndex) - layout.start;
     GUI.drawList(
-        renderer, Rect{screen->x, contentTop, screen->width, contentHeight}, static_cast<int>(networks.size()),
-        selectedNetworkIndex, [this](int index) { return networks[index].ssid; }, nullptr, nullptr,
+        renderer, listBounds, TouchList::visibleRowCount(layout), visibleSelected,
+        [this, layout](int visibleRow) {
+          if (TouchList::isPreviousPageRow(layout, visibleRow)) return std::string(tr(STR_PREV_PAGE));
+          if (TouchList::isNextPageRow(layout, visibleRow)) return std::string(tr(STR_NEXT_PAGE));
+          return networks[TouchList::visibleRowToItemIndex(layout, visibleRow)].ssid;
+        },
+        nullptr, nullptr,
+        [this, layout](int visibleRow) {
+          const int index = TouchList::visibleRowToItemIndex(layout, visibleRow);
+          if (index < 0) return std::string();
+          auto network = networks[index];
+          return std::string(network.hasSavedPassword ? "+ " : "") + (network.isEncrypted ? "* " : "") +
+                 getSignalStrengthIndicator(network.rssi);
+        });
+    if (layout.previous) TouchUi::drawCenteredPagerRow(renderer, listBounds, 0, tr(STR_PREV_PAGE));
+    if (layout.next) {
+      TouchUi::drawCenteredPagerRow(renderer, listBounds, TouchList::visibleRowCount(layout) - 1, tr(STR_NEXT_PAGE));
+    }
+#else
+    GUI.drawList(
+        renderer, listBounds, static_cast<int>(networks.size()), selectedNetworkIndex,
+        [this](int index) { return networks[index].ssid; }, nullptr, nullptr,
         [this](int index) {
           auto network = networks[index];
           return std::string(network.hasSavedPassword ? "+ " : "") + (network.isEncrypted ? "* " : "") +
                  getSignalStrengthIndicator(network.rssi);
         });
+#endif
   }
 
   GUI.drawHelpText(renderer,
@@ -556,8 +747,10 @@ void WifiSelectionActivity::renderNetworkList(const Rect* screen, const ThemeMet
   const bool hasSavedPassword = !networks.empty() && networks[selectedNetworkIndex].hasSavedPassword;
   const char* forgetLabel = hasSavedPassword ? tr(STR_FORGET_BUTTON) : "";
 
+#ifndef CROSSPOINT_BOARD_MURPHY_M4
   const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_CONNECT), forgetLabel, tr(STR_RETRY));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+#endif
 }
 
 void WifiSelectionActivity::renderConnecting(const Rect* screen, const ThemeMetrics* metrics) const {
@@ -594,8 +787,10 @@ void WifiSelectionActivity::renderConnected(const Rect* screen, const ThemeMetri
   UITheme::drawCenteredText(renderer, *screen, UI_10_FONT_ID, top + 40, ipInfo.c_str());
 
   // Use centralized button hints
+#ifndef CROSSPOINT_BOARD_MURPHY_M4
   const auto labels = mappedInput.mapLabels("", tr(STR_DONE), "", "");
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+#endif
 }
 
 void WifiSelectionActivity::renderSavePrompt(const Rect* screen, const ThemeMetrics* metrics) const {
@@ -612,13 +807,15 @@ void WifiSelectionActivity::renderSavePrompt(const Rect* screen, const ThemeMetr
 
   UITheme::drawCenteredText(renderer, *screen, UI_10_FONT_ID, top + 40, tr(STR_SAVE_PASSWORD));
 
-  // Draw Yes/No buttons
+#ifdef CROSSPOINT_BOARD_MURPHY_M4
+  TouchUi::drawTouchButton(renderer, promptLeftRect(), tr(STR_YES));
+  TouchUi::drawTouchButton(renderer, promptRightRect(), tr(STR_NO));
+#else
   const int buttonY = top + 80;
   constexpr int buttonWidth = 60;
   constexpr int buttonSpacing = 30;
   constexpr int totalWidth = buttonWidth * 2 + buttonSpacing;
   const int startX = screen->x + (screen->width - totalWidth) / 2;
-
   // Draw "Yes" button
   if (savePromptSelection == 0) {
     std::string text = "[" + std::string(tr(STR_YES)) + "]";
@@ -638,6 +835,7 @@ void WifiSelectionActivity::renderSavePrompt(const Rect* screen, const ThemeMetr
   // Use centralized button hints
   const auto labels = mappedInput.mapLabels(tr(STR_CANCEL), tr(STR_SELECT), tr(STR_DIR_LEFT), tr(STR_DIR_RIGHT));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+#endif
 }
 
 void WifiSelectionActivity::renderConnectionFailed(const Rect* screen, const ThemeMetrics* metrics) const {
@@ -649,8 +847,12 @@ void WifiSelectionActivity::renderConnectionFailed(const Rect* screen, const The
   UITheme::drawCenteredText(renderer, *screen, UI_10_FONT_ID, top + 20, connectionError.c_str());
 
   // Use centralized button hints
+#ifdef CROSSPOINT_BOARD_MURPHY_M4
+  TouchUi::drawTouchButton(renderer, TouchUi::bottomActionRect(renderer), tr(STR_DONE));
+#else
   const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_DONE), "", "");
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+#endif
 }
 
 void WifiSelectionActivity::renderForgetPrompt(const Rect* screen, const ThemeMetrics* metrics) const {
@@ -668,13 +870,15 @@ void WifiSelectionActivity::renderForgetPrompt(const Rect* screen, const ThemeMe
 
   UITheme::drawCenteredText(renderer, *screen, UI_10_FONT_ID, top + 40, tr(STR_FORGET_AND_REMOVE));
 
-  // Draw Cancel/Forget network buttons
+#ifdef CROSSPOINT_BOARD_MURPHY_M4
+  TouchUi::drawTouchButton(renderer, promptLeftRect(), tr(STR_CANCEL));
+  TouchUi::drawTouchButton(renderer, promptRightRect(), tr(STR_FORGET_BUTTON));
+#else
   const int buttonY = top + 80;
   constexpr int buttonWidth = 120;
   constexpr int buttonSpacing = 30;
   constexpr int totalWidth = buttonWidth * 2 + buttonSpacing;
   const int startX = screen->x + (screen->width - totalWidth) / 2;
-
   // Draw "Cancel" button
   if (forgetPromptSelection == 0) {
     std::string text = "[" + std::string(tr(STR_CANCEL)) + "]";
@@ -694,6 +898,7 @@ void WifiSelectionActivity::renderForgetPrompt(const Rect* screen, const ThemeMe
   // Use centralized button hints
   const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_SELECT), tr(STR_DIR_LEFT), tr(STR_DIR_RIGHT));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+#endif
 }
 
 void WifiSelectionActivity::onComplete(const bool connected) {

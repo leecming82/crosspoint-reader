@@ -101,6 +101,8 @@ class FontDownloadActivity : public Activity {
   bool isSelectedFamilyDeletable() const;
   void promptDeleteSelectedFamily();
   void onDeleteConfirmationResult(const ActivityResult& result);
+  void activateSelectedItem();
+  bool handleTouch();
   int familyIndexFromList(int listIndex) const { return listIndex - specialRowCount(); }
   int listItemCount() const;
   size_t totalDownloadSize() const;

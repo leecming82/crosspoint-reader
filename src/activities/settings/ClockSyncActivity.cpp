@@ -12,6 +12,8 @@
 #include "MappedInputManager.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "util/TouchNavigator.h"
+#include "util/TouchUi.h"
 
 void ClockSyncActivity::onEnter() {
   Activity::onEnter();
@@ -59,6 +61,14 @@ void ClockSyncActivity::loop() {
     return;
   }
 
+#ifdef CROSSPOINT_BOARD_MURPHY_M4
+  if (TouchNavigator::wasTappedIn(mappedInput, TouchUi::headerBackTapRect(renderer)) ||
+      TouchNavigator::wasTappedIn(mappedInput, TouchUi::bottomActionRect(renderer))) {
+    finish();
+    return;
+  }
+#endif
+
   if (mappedInput.wasPressed(MappedInputManager::Button::Back) ||
       mappedInput.wasPressed(MappedInputManager::Button::Confirm)) {
     finish();
@@ -72,7 +82,12 @@ void ClockSyncActivity::render(RenderLock&&) {
 
   renderer.clearScreen();
 
+#ifdef CROSSPOINT_BOARD_MURPHY_M4
+  const Rect screen = UITheme::getInstance().getScreenSafeArea(renderer, false, false);
+  TouchUi::drawHeaderWithBack(renderer, screen, tr(STR_CLOCK_SYNC));
+#else
   GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, tr(STR_CLOCK_SYNC));
+#endif
 
   const int midY = pageHeight / 2;
 
@@ -100,8 +115,12 @@ void ClockSyncActivity::render(RenderLock&&) {
   }
 
   if (state != SYNCING) {
+#ifdef CROSSPOINT_BOARD_MURPHY_M4
+    TouchUi::drawTouchButton(renderer, TouchUi::bottomActionRect(renderer), tr(STR_OK_BUTTON));
+#else
     const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_OK_BUTTON), "", "");
     GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+#endif
   }
 
   renderer.displayBuffer();

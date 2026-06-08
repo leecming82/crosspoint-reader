@@ -20,6 +20,7 @@ class FontSelectionActivity final : public Activity {
 
  private:
   void handleSelection();
+  bool handleTouch();
 
   struct FontEntry {
     std::string name;

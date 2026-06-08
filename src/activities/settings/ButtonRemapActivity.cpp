@@ -7,6 +7,8 @@
 #include "MappedInputManager.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "util/TouchNavigator.h"
+#include "util/TouchUi.h"
 
 namespace {
 // UI steps correspond to logical roles in order: Back, Confirm, Left, Right.
@@ -41,6 +43,33 @@ void ButtonRemapActivity::loop() {
     requestUpdate();
     return;
   }
+
+#ifdef CROSSPOINT_BOARD_MURPHY_M4
+  if (TouchNavigator::wasTappedIn(mappedInput, TouchUi::headerBackTapRect(renderer))) {
+    finish();
+    return;
+  }
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  constexpr int buttonHeight = 54;
+  const int gap = metrics.contentSidePadding;
+  const int buttonWidth = (renderer.getScreenWidth() - metrics.contentSidePadding * 2 - gap) / 2;
+  const int buttonY = renderer.getScreenHeight() - buttonHeight - 16;
+  const Rect resetRect{metrics.contentSidePadding, buttonY, buttonWidth, buttonHeight};
+  const Rect cancelRect{resetRect.x + resetRect.width + gap, buttonY, resetRect.width, resetRect.height};
+  if (TouchNavigator::wasTappedIn(mappedInput, resetRect)) {
+    SETTINGS.frontButtonBack = CrossPointSettings::FRONT_HW_BACK;
+    SETTINGS.frontButtonConfirm = CrossPointSettings::FRONT_HW_CONFIRM;
+    SETTINGS.frontButtonLeft = CrossPointSettings::FRONT_HW_LEFT;
+    SETTINGS.frontButtonRight = CrossPointSettings::FRONT_HW_RIGHT;
+    SETTINGS.saveToFile();
+    finish();
+    return;
+  }
+  if (TouchNavigator::wasTappedIn(mappedInput, cancelRect)) {
+    finish();
+    return;
+  }
+#endif
 
   // Side buttons:
   // - Up: reset mapping to defaults and exit.
@@ -110,12 +139,22 @@ void ButtonRemapActivity::render(RenderLock&&) {
 
   renderer.clearScreen();
 
+#ifdef CROSSPOINT_BOARD_MURPHY_M4
+  const Rect screen = UITheme::getInstance().getScreenSafeArea(renderer, false, false);
+  TouchUi::drawHeaderWithBack(renderer, screen, tr(STR_REMAP_FRONT_BUTTONS));
+#else
   GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, tr(STR_REMAP_FRONT_BUTTONS));
+#endif
   GUI.drawSubHeader(renderer, Rect{0, metrics.topPadding + metrics.headerHeight, pageWidth, metrics.tabBarHeight},
                     tr(STR_REMAP_PROMPT));
 
   int topOffset = metrics.topPadding + metrics.headerHeight + metrics.tabBarHeight + metrics.verticalSpacing;
-  int contentHeight = pageHeight - topOffset - metrics.buttonHintsHeight - metrics.verticalSpacing;
+  int contentHeight =
+#ifdef CROSSPOINT_BOARD_MURPHY_M4
+      pageHeight - topOffset - 72;
+#else
+      pageHeight - topOffset - metrics.buttonHintsHeight - metrics.verticalSpacing;
+#endif
   GUI.drawList(
       renderer, Rect{0, topOffset, pageWidth, contentHeight}, kRoleCount, currentStep,
       [&](int index) { return getRoleName(static_cast<uint8_t>(index)); }, nullptr, nullptr,
@@ -133,19 +172,29 @@ void ButtonRemapActivity::render(RenderLock&&) {
   }
 
   // Provide side button actions at the bottom of the screen (split across two lines).
+#ifdef CROSSPOINT_BOARD_MURPHY_M4
+  constexpr int buttonHeight = 54;
+  const int gap = metrics.contentSidePadding;
+  const int buttonWidth = (renderer.getScreenWidth() - metrics.contentSidePadding * 2 - gap) / 2;
+  const int buttonY = renderer.getScreenHeight() - buttonHeight - 16;
+  const Rect resetRect{metrics.contentSidePadding, buttonY, buttonWidth, buttonHeight};
+  const Rect cancelRect{resetRect.x + resetRect.width + gap, buttonY, resetRect.width, resetRect.height};
+  TouchUi::drawTouchButton(renderer, resetRect, "Reset");
+  TouchUi::drawTouchButton(renderer, cancelRect, tr(STR_CANCEL));
+#else
   GUI.drawHelpText(renderer,
                    Rect{0, topOffset + 4 * metrics.listRowHeight + 4 * metrics.verticalSpacing, pageWidth, 20},
                    tr(STR_REMAP_RESET_HINT));
   GUI.drawHelpText(renderer,
                    Rect{0, topOffset + 4 * metrics.listRowHeight + 5 * metrics.verticalSpacing + 20, pageWidth, 20},
                    tr(STR_REMAP_CANCEL_HINT));
-
   // Live preview of logical labels under front buttons.
   // This mirrors the on-device front button order: Back, Confirm, Left, Right.
   GUI.drawButtonHints(renderer, labelForHardware(CrossPointSettings::FRONT_HW_BACK),
                       labelForHardware(CrossPointSettings::FRONT_HW_CONFIRM),
                       labelForHardware(CrossPointSettings::FRONT_HW_LEFT),
                       labelForHardware(CrossPointSettings::FRONT_HW_RIGHT));
+#endif
   renderer.displayBuffer();
 }
 

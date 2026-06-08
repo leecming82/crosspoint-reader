@@ -26,6 +26,7 @@ class LanguageSelectActivity final : public Activity {
 
  private:
   void handleSelection();
+  bool handleTouch();
 
   void onBack() { finish(); }
   ButtonNavigator buttonNavigator;

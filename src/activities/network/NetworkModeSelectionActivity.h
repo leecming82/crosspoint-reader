@@ -31,4 +31,7 @@ class NetworkModeSelectionActivity final : public Activity {
 
   void onModeSelected(NetworkMode mode);
   void onCancel();
+
+ private:
+  bool handleTouch();
 };

@@ -16,6 +16,9 @@
 #include "components/UITheme.h"
 #include "fontIds.h"
 #include "network/HttpDownloader.h"
+#include "util/TouchList.h"
+#include "util/TouchNavigator.h"
+#include "util/TouchUi.h"
 
 FontDownloadActivity::FontDownloadActivity(GfxRenderer& renderer, MappedInputManager& mappedInput)
     : Activity("FontDownload", renderer, mappedInput), fontInstaller_(sdFontSystem.registry()) {}
@@ -304,7 +307,11 @@ void FontDownloadActivity::downloadFamily(ManifestFamily& family) {
           fileTotal_ = total;
           mappedInput.update();
           if (mappedInput.isPressed(MappedInputManager::Button::Back) ||
-              mappedInput.wasPressed(MappedInputManager::Button::Back)) {
+              mappedInput.wasPressed(MappedInputManager::Button::Back)
+#ifdef CROSSPOINT_BOARD_MURPHY_M4
+              || mappedInput.wasTapped()
+#endif
+          ) {
             cancelRequested_ = true;
           }
           requestUpdate(true);
@@ -420,10 +427,105 @@ bool FontDownloadActivity::isSelectedFamilyDeletable() const {
   return family.installed && !family.hasUpdate;
 }
 
+void FontDownloadActivity::activateSelectedItem() {
+  if (families_.empty()) {
+    return;
+  }
+  if (isDownloadAllRow(selectedIndex_)) {
+    currentFileIndex_ = 0;
+    currentFileTotal_ = 0;
+    for (const auto& f : families_) {
+      if (!f.installed) currentFileTotal_ += f.files.size();
+    }
+    downloadAll();
+  } else if (isUpdateAllRow(selectedIndex_)) {
+    currentFileIndex_ = 0;
+    currentFileTotal_ = 0;
+    for (const auto& f : families_) {
+      if (f.hasUpdate) currentFileTotal_ += f.files.size();
+    }
+    updateAll();
+  } else {
+    auto& family = families_[familyIndexFromList(selectedIndex_)];
+    if (!family.installed || family.hasUpdate) {
+      currentFileIndex_ = 0;
+      currentFileTotal_ = family.files.size();
+      downloadFamily(family);
+    } else {
+      promptDeleteSelectedFamily();
+      return;
+    }
+  }
+  requestUpdateAndWait();
+}
+
+bool FontDownloadActivity::handleTouch() {
+#ifndef CROSSPOINT_BOARD_MURPHY_M4
+  return false;
+#else
+  if (state_ == FAMILY_LIST && TouchNavigator::wasTappedIn(mappedInput, TouchUi::headerBackTapRect(renderer))) {
+    finish();
+    return true;
+  }
+
+  if (state_ == FAMILY_LIST) {
+    if (families_.empty()) {
+      return mappedInput.wasTapped();
+    }
+
+    const auto& metrics = UITheme::getInstance().getMetrics();
+    const Rect screen = UITheme::getInstance().getScreenSafeArea(renderer, false, false);
+    const int contentTop = screen.y + metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
+    const Rect listBounds{screen.x, contentTop, screen.width, renderer.getScreenHeight() - contentTop};
+    const int listRows = std::max(1, listBounds.height / metrics.listRowHeight);
+    const int listSize = listItemCount();
+    const auto layout = TouchList::calculatePageLayout(selectedIndex_, listSize, listRows);
+    const int visibleRow = TouchNavigator::tappedListIndex(mappedInput, listBounds, TouchList::visibleRowCount(layout),
+                                                          0, metrics.listRowHeight, 0);
+    if (visibleRow < 0) {
+      return mappedInput.wasTapped();
+    }
+    if (TouchList::isPreviousPageRow(layout, visibleRow)) {
+      selectedIndex_ = TouchList::calculatePageLayout(std::max(0, layout.start - 1), listSize, listRows).start;
+      requestUpdate();
+      return true;
+    }
+    if (TouchList::isNextPageRow(layout, visibleRow)) {
+      selectedIndex_ = std::min(listSize - 1, layout.start + layout.itemCount);
+      requestUpdate();
+      return true;
+    }
+    const int itemIndex = TouchList::visibleRowToItemIndex(layout, visibleRow);
+    if (itemIndex >= 0) {
+      selectedIndex_ = itemIndex;
+      activateSelectedItem();
+    }
+    return true;
+  }
+
+  if (state_ == COMPLETE || state_ == ERROR) {
+    if (TouchNavigator::wasTappedIn(mappedInput, TouchUi::bottomActionRect(renderer)) ||
+        TouchNavigator::wasTappedIn(mappedInput, TouchUi::headerBackTapRect(renderer))) {
+      RenderLock lock(*this);
+      state_ = FAMILY_LIST;
+      requestUpdate();
+      return true;
+    }
+    return mappedInput.wasTapped();
+  }
+
+  return mappedInput.wasTapped();
+#endif
+}
+
 // --- Input handling ---
 
 void FontDownloadActivity::loop() {
   if (state_ == FAMILY_LIST) {
+    if (handleTouch()) {
+      return;
+    }
+
     if (mappedInput.wasPressed(MappedInputManager::Button::Back)) {
       finish();
       return;
@@ -453,38 +555,13 @@ void FontDownloadActivity::loop() {
     });
 
     if (mappedInput.wasPressed(MappedInputManager::Button::Confirm)) {
-      if (!families_.empty()) {
-        if (isDownloadAllRow(selectedIndex_)) {
-          currentFileIndex_ = 0;
-          currentFileTotal_ = 0;
-          for (const auto& f : families_) {
-            if (!f.installed) currentFileTotal_ += f.files.size();
-          }
-
-          downloadAll();
-        } else if (isUpdateAllRow(selectedIndex_)) {
-          currentFileIndex_ = 0;
-          currentFileTotal_ = 0;
-          for (const auto& f : families_) {
-            if (f.hasUpdate) currentFileTotal_ += f.files.size();
-          }
-          updateAll();
-        } else {
-          auto& family = families_[familyIndexFromList(selectedIndex_)];
-          if (!family.installed || family.hasUpdate) {
-            currentFileIndex_ = 0;
-            currentFileTotal_ = family.files.size();
-            downloadFamily(family);
-          } else {
-            promptDeleteSelectedFamily();
-            return;
-          }
-        }
-        requestUpdateAndWait();
-        return;
-      }
+      activateSelectedItem();
+      return;
     }
   } else if (state_ == COMPLETE) {
+    if (handleTouch()) {
+      return;
+    }
     if (mappedInput.wasPressed(MappedInputManager::Button::Back) ||
         mappedInput.wasPressed(MappedInputManager::Button::Confirm)) {
       {
@@ -494,6 +571,9 @@ void FontDownloadActivity::loop() {
       requestUpdate();
     }
   } else if (state_ == ERROR) {
+    if (handleTouch()) {
+      return;
+    }
     if (mappedInput.wasPressed(MappedInputManager::Button::Back)) {
       {
         RenderLock lock(*this);
@@ -537,7 +617,12 @@ void FontDownloadActivity::render(RenderLock&&) {
 
   renderer.clearScreen();
 
+#ifdef CROSSPOINT_BOARD_MURPHY_M4
+  const Rect screen = UITheme::getInstance().getScreenSafeArea(renderer, false, false);
+  TouchUi::drawHeaderWithBack(renderer, screen, tr(STR_FONT_BROWSER));
+#else
   GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, tr(STR_FONT_BROWSER));
+#endif
 
   const auto lineHeight = renderer.getLineHeight(UI_10_FONT_ID);
   const auto contentTop = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
@@ -548,9 +633,56 @@ void FontDownloadActivity::render(RenderLock&&) {
   } else if (state_ == FAMILY_LIST) {
     if (families_.empty()) {
       renderer.drawCenteredText(UI_10_FONT_ID, centerY, tr(STR_NO_FONTS_AVAILABLE));
+#ifndef CROSSPOINT_BOARD_MURPHY_M4
       const auto labels = mappedInput.mapLabels(tr(STR_BACK), "", "", "");
       GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+#endif
     } else {
+#ifdef CROSSPOINT_BOARD_MURPHY_M4
+      const Rect listBounds{0, contentTop, pageWidth, pageHeight - contentTop};
+      const int listRows = std::max(1, listBounds.height / metrics.listRowHeight);
+      const auto layout = TouchList::calculatePageLayout(selectedIndex_, listItemCount(), listRows);
+      const int visibleSelected = layout.previous + selectedIndex_ - layout.start;
+      GUI.drawList(
+          renderer, listBounds, TouchList::visibleRowCount(layout), visibleSelected,
+          [this, layout](int visibleRow) -> std::string {
+            if (TouchList::isPreviousPageRow(layout, visibleRow)) return std::string(tr(STR_PREV_PAGE));
+            if (TouchList::isNextPageRow(layout, visibleRow)) return std::string(tr(STR_NEXT_PAGE));
+            const int index = TouchList::visibleRowToItemIndex(layout, visibleRow);
+            if (isDownloadAllRow(index)) {
+              return std::string(tr(STR_DOWNLOAD_ALL)) + " (" + formatSize(totalDownloadSize()) + ")";
+            }
+            if (isUpdateAllRow(index)) {
+              return std::string(tr(STR_UPDATE_ALL)) + " (" + formatSize(totalUpdateSize()) + ")";
+            }
+            return families_[familyIndexFromList(index)].name;
+          },
+          [this, layout](int visibleRow) -> std::string {
+            const int index = TouchList::visibleRowToItemIndex(layout, visibleRow);
+            if (index < 0 || isDownloadAllRow(index) || isUpdateAllRow(index)) return "";
+            return families_[familyIndexFromList(index)].description;
+          },
+          nullptr,
+          [this, layout](int visibleRow) -> std::string {
+            const int index = TouchList::visibleRowToItemIndex(layout, visibleRow);
+            if (index < 0 || isDownloadAllRow(index) || isUpdateAllRow(index)) return "";
+            const auto& f = families_[familyIndexFromList(index)];
+            if (f.hasUpdate) return tr(STR_UPDATE_AVAILABLE);
+            if (f.installed) return tr(STR_INSTALLED);
+            return "";
+          },
+          true,
+          [this, layout](int visibleRow) -> bool {
+            const int index = TouchList::visibleRowToItemIndex(layout, visibleRow);
+            if (index < 0 || isDownloadAllRow(index) || isUpdateAllRow(index)) return false;
+            const auto& f = families_[familyIndexFromList(index)];
+            return f.installed && !f.hasUpdate;
+          });
+      if (layout.previous) TouchUi::drawCenteredPagerRow(renderer, listBounds, 0, tr(STR_PREV_PAGE));
+      if (layout.next) {
+        TouchUi::drawCenteredPagerRow(renderer, listBounds, TouchList::visibleRowCount(layout) - 1, tr(STR_NEXT_PAGE));
+      }
+#else
       GUI.drawList(
           renderer,
           Rect{0, contentTop, pageWidth, pageHeight - contentTop - metrics.buttonHintsHeight - metrics.verticalSpacing},
@@ -589,6 +721,7 @@ void FontDownloadActivity::render(RenderLock&&) {
                                                                                  : tr(STR_DOWNLOAD),
                                                 tr(STR_DIR_UP), tr(STR_DIR_DOWN));
       GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+#endif
     }
   } else if (state_ == DOWNLOADING) {
     const auto& family = families_[downloadingFamilyIndex_];
@@ -608,20 +741,32 @@ void FontDownloadActivity::render(RenderLock&&) {
         Rect{metrics.contentSidePadding, barY, pageWidth - metrics.contentSidePadding * 2, metrics.progressBarHeight},
         static_cast<int>(progress * 100), 100);
 
+#ifdef CROSSPOINT_BOARD_MURPHY_M4
+    TouchUi::drawTouchButton(renderer, TouchUi::bottomActionRect(renderer), tr(STR_CANCEL));
+#else
     const auto labels = mappedInput.mapLabels(tr(STR_CANCEL), "", "", "");
     GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+#endif
   } else if (state_ == COMPLETE) {
     renderer.drawCenteredText(UI_10_FONT_ID, centerY, tr(STR_FONT_INSTALLED), true, EpdFontFamily::BOLD);
+#ifdef CROSSPOINT_BOARD_MURPHY_M4
+    TouchUi::drawTouchButton(renderer, TouchUi::bottomActionRect(renderer), tr(STR_BACK));
+#else
     const auto labels = mappedInput.mapLabels(tr(STR_BACK), "", "", "");
     GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+#endif
   } else if (state_ == ERROR) {
     renderer.drawCenteredText(UI_10_FONT_ID, centerY - lineHeight, tr(STR_FONT_INSTALL_FAILED), true,
                               EpdFontFamily::BOLD);
     if (!errorMessage_.empty()) {
       renderer.drawCenteredText(UI_10_FONT_ID, centerY + metrics.verticalSpacing, errorMessage_.c_str());
     }
+#ifdef CROSSPOINT_BOARD_MURPHY_M4
+    TouchUi::drawTouchButton(renderer, TouchUi::bottomActionRect(renderer), tr(STR_BACK));
+#else
     const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_RETRY), "", "");
     GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+#endif
   }
 
   renderer.displayBuffer();

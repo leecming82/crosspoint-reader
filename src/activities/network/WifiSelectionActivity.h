@@ -97,6 +97,10 @@ class WifiSelectionActivity final : public Activity {
   void attemptConnection();
   void checkConnectionStatus();
   std::string getSignalStrengthIndicator(int32_t rssi) const;
+  bool handleTouch();
+  Rect contentRect(const ThemeMetrics& metrics, bool includeSubHeader = true) const;
+  Rect promptLeftRect() const;
+  Rect promptRightRect() const;
 
   void onComplete(bool connected);
 

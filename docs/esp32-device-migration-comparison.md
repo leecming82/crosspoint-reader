@@ -143,25 +143,25 @@ The received Murphy M4 is now concrete enough to plan around: ESP32-S3, 16 MB fl
 
    Settings subscreens:
 
-   - [ ] Language Selection
-   - [ ] Font Selection
-   - [ ] Font Download
-   - [ ] Status Bar Settings
-   - [ ] Button Remap
-   - [ ] KOReader Settings
-   - [ ] KOReader Auth
-   - [ ] OPDS Server List
-   - [ ] OPDS Server Edit
-   - [ ] Clear Cache
-   - [ ] Clock Sync
-   - [ ] Clock Offset
-   - [ ] OTA Update
-   - [ ] SD Firmware Update
+   - [x] Language Selection
+   - [x] Font Selection
+   - [x] Font Download
+   - [x] Status Bar Settings
+   - [x] Button Remap
+   - [x] KOReader Settings
+   - [x] KOReader Auth
+   - [x] OPDS Server List
+   - [x] OPDS Server Edit
+   - [x] Clear Cache
+   - [x] Clock Sync
+   - [x] Clock Offset
+   - [x] OTA Update
+   - [x] SD Firmware Update
 
    Network:
 
-   - [ ] Wi-Fi Selection
-   - [ ] Network Mode Selection
+   - [x] Wi-Fi Selection
+   - [x] Network Mode Selection
    - [ ] File Transfer / Web Server
    - [ ] Calibre Connect
    - [ ] OPDS Browser

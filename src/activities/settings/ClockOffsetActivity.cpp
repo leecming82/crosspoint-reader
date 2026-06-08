@@ -11,6 +11,8 @@
 #include "MappedInputManager.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "util/TouchNavigator.h"
+#include "util/TouchUi.h"
 
 namespace {
 constexpr uint8_t MAX_POS_HOURS = 14;
@@ -109,6 +111,54 @@ void ClockOffsetActivity::adjustActiveField(int delta) {
 }
 
 void ClockOffsetActivity::loop() {
+#ifdef CROSSPOINT_BOARD_MURPHY_M4
+  if (TouchNavigator::wasTappedIn(mappedInput, TouchUi::headerBackTapRect(renderer))) {
+    finish();
+    return;
+  }
+
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  constexpr int buttonHeight = 54;
+  const int gap = metrics.contentSidePadding;
+  const int buttonWidth = (renderer.getScreenWidth() - metrics.contentSidePadding * 2 - gap) / 2;
+  const int buttonY = renderer.getScreenHeight() - buttonHeight - 16;
+  const Rect minusRect{metrics.contentSidePadding, buttonY, buttonWidth, buttonHeight};
+  const Rect plusRect{minusRect.x + minusRect.width + gap, buttonY, buttonWidth, buttonHeight};
+  if (TouchNavigator::wasTappedIn(mappedInput, minusRect)) {
+    adjustActiveField(-1);
+    requestUpdate();
+    return;
+  }
+  if (TouchNavigator::wasTappedIn(mappedInput, plusRect)) {
+    adjustActiveField(+1);
+    requestUpdate();
+    return;
+  }
+
+  const int centreY = renderer.getScreenHeight() / 2 - 40;
+  const int fieldTapY = centreY - 12;
+  constexpr int fieldTapHeight = 54;
+  const int screenWidth = renderer.getScreenWidth();
+  const Rect signTap{screenWidth / 2 - 94, fieldTapY, 54, fieldTapHeight};
+  const Rect hoursTap{screenWidth / 2 - 36, fieldTapY, 62, fieldTapHeight};
+  const Rect minutesTap{screenWidth / 2 + 42, fieldTapY, 62, fieldTapHeight};
+  if (TouchNavigator::wasTappedIn(mappedInput, signTap)) {
+    activeField = FIELD_SIGN;
+    requestUpdate();
+    return;
+  }
+  if (TouchNavigator::wasTappedIn(mappedInput, hoursTap)) {
+    activeField = FIELD_HOURS;
+    requestUpdate();
+    return;
+  }
+  if (TouchNavigator::wasTappedIn(mappedInput, minutesTap)) {
+    activeField = FIELD_MINUTES;
+    requestUpdate();
+    return;
+  }
+#endif
+
   if (mappedInput.wasPressed(MappedInputManager::Button::Back)) {
     finish();
     return;
@@ -145,7 +195,12 @@ void ClockOffsetActivity::render(RenderLock&&) {
   const auto pageWidth = renderer.getScreenWidth();
   const auto pageHeight = renderer.getScreenHeight();
 
+#ifdef CROSSPOINT_BOARD_MURPHY_M4
+  const Rect screen = UITheme::getInstance().getScreenSafeArea(renderer, false, false);
+  TouchUi::drawHeaderWithBack(renderer, screen, tr(STR_CLOCK_UTC_OFFSET));
+#else
   GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, tr(STR_CLOCK_UTC_OFFSET));
+#endif
 
   const int centreY = pageHeight / 2 - 40;
   auto widthOf = [&](const char* s) { return renderer.getTextWidth(UI_12_FONT_ID, s, EpdFontFamily::BOLD); };
@@ -207,8 +262,19 @@ void ClockOffsetActivity::render(RenderLock&&) {
     }
   }
 
+#ifdef CROSSPOINT_BOARD_MURPHY_M4
+  constexpr int buttonHeight = 54;
+  const int gap = metrics.contentSidePadding;
+  const int buttonWidth = (renderer.getScreenWidth() - metrics.contentSidePadding * 2 - gap) / 2;
+  const int buttonY = renderer.getScreenHeight() - buttonHeight - 16;
+  const Rect minusRect{metrics.contentSidePadding, buttonY, buttonWidth, buttonHeight};
+  const Rect plusRect{minusRect.x + minusRect.width + gap, buttonY, buttonWidth, buttonHeight};
+  TouchUi::drawTouchButton(renderer, minusRect, "-");
+  TouchUi::drawTouchButton(renderer, plusRect, "+");
+#else
   const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_NEXT_FIELD), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+#endif
 
   renderer.displayBuffer();
 }

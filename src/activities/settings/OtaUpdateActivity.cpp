@@ -11,6 +11,7 @@
 #include "fontIds.h"
 #include "network/OtaUpdater.h"
 #include "util/TouchNavigator.h"
+#include "util/TouchUi.h"
 
 namespace {
 void drawTouchButton(const GfxRenderer& renderer, const Rect rect, const char* label) {
@@ -95,7 +96,12 @@ void OtaUpdateActivity::render(RenderLock&&) {
 
   renderer.clearScreen();
 
+#ifdef CROSSPOINT_BOARD_MURPHY_M4
+  const Rect screen = UITheme::getInstance().getScreenSafeArea(renderer, false, false);
+  TouchUi::drawHeaderWithBack(renderer, screen, tr(STR_UPDATE));
+#else
   GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, tr(STR_UPDATE));
+#endif
   const auto height = renderer.getLineHeight(UI_10_FONT_ID);
   const auto top = (pageHeight - height) / 2;
 
@@ -231,6 +237,10 @@ void OtaUpdateActivity::confirmUpdate() {
 void OtaUpdateActivity::loop() {
   if (state == WAITING_CONFIRMATION) {
 #ifdef CROSSPOINT_BOARD_MURPHY_M4
+    if (TouchNavigator::wasTappedIn(mappedInput, TouchUi::headerBackTapRect(renderer))) {
+      finish();
+      return;
+    }
     if (TouchNavigator::wasTappedIn(mappedInput, cancelButtonRect())) {
       finish();
       return;
@@ -253,6 +263,10 @@ void OtaUpdateActivity::loop() {
 
   if (state == FAILED) {
 #ifdef CROSSPOINT_BOARD_MURPHY_M4
+    if (TouchNavigator::wasTappedIn(mappedInput, TouchUi::headerBackTapRect(renderer))) {
+      finish();
+      return;
+    }
     if (TouchNavigator::wasTappedIn(mappedInput, backButtonRect())) {
       finish();
       return;
@@ -266,6 +280,10 @@ void OtaUpdateActivity::loop() {
 
   if (state == NO_UPDATE) {
 #ifdef CROSSPOINT_BOARD_MURPHY_M4
+    if (TouchNavigator::wasTappedIn(mappedInput, TouchUi::headerBackTapRect(renderer))) {
+      finish();
+      return;
+    }
     if (TouchNavigator::wasTappedIn(mappedInput, backButtonRect())) {
       finish();
       return;

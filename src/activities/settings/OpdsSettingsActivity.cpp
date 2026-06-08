@@ -11,6 +11,8 @@
 #include "activities/util/KeyboardEntryActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "util/TouchNavigator.h"
+#include "util/TouchUi.h"
 
 namespace {
 // Editable fields: Name, URL, Username, Password.
@@ -48,6 +50,10 @@ void OpdsSettingsActivity::onEnter() {
 void OpdsSettingsActivity::onExit() { Activity::onExit(); }
 
 void OpdsSettingsActivity::loop() {
+  if (handleTouch()) {
+    return;
+  }
+
   if (mappedInput.wasPressed(MappedInputManager::Button::Back)) {
     finish();
     return;
@@ -168,6 +174,33 @@ void OpdsSettingsActivity::handleSelection() {
   }
 }
 
+bool OpdsSettingsActivity::handleTouch() {
+#ifndef CROSSPOINT_BOARD_MURPHY_M4
+  return false;
+#else
+  if (TouchNavigator::wasTappedIn(mappedInput, TouchUi::headerBackTapRect(renderer))) {
+    finish();
+    return true;
+  }
+
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  const Rect screen = UITheme::getInstance().getScreenSafeArea(renderer, false, false);
+  const int contentTop =
+      screen.y + metrics.topPadding + metrics.headerHeight + metrics.tabBarHeight + metrics.verticalSpacing;
+  const int menuItems = getMenuItemCount();
+  const Rect listBounds{screen.x, contentTop, screen.width, menuItems * metrics.listRowHeight};
+  const int tappedIndex =
+      TouchNavigator::tappedListIndex(mappedInput, listBounds, menuItems, 0, metrics.listRowHeight, 0);
+  if (tappedIndex < 0) {
+    return mappedInput.wasTapped();
+  }
+
+  selectedIndex = static_cast<size_t>(tappedIndex);
+  handleSelection();
+  return true;
+#endif
+}
+
 void OpdsSettingsActivity::render(RenderLock&&) {
   renderer.clearScreen();
 
@@ -177,12 +210,22 @@ void OpdsSettingsActivity::render(RenderLock&&) {
   // Reuse STR_OPDS_BROWSER as the "edit existing server" title.
   // New server creation uses STR_ADD_SERVER.
   const char* header = isNewServer ? tr(STR_ADD_SERVER) : tr(STR_OPDS_BROWSER);
+#ifdef CROSSPOINT_BOARD_MURPHY_M4
+  const Rect screen = UITheme::getInstance().getScreenSafeArea(renderer, false, false);
+  TouchUi::drawHeaderWithBack(renderer, screen, header);
+#else
   GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, header);
+#endif
   GUI.drawSubHeader(renderer, Rect{0, metrics.topPadding + metrics.headerHeight, pageWidth, metrics.tabBarHeight},
                     tr(STR_CALIBRE_URL_HINT));
 
   const int contentTop = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing + metrics.tabBarHeight;
-  const int contentHeight = pageHeight - contentTop - metrics.buttonHintsHeight - metrics.verticalSpacing * 2;
+  const int contentHeight =
+#ifdef CROSSPOINT_BOARD_MURPHY_M4
+      pageHeight - contentTop;
+#else
+      pageHeight - contentTop - metrics.buttonHintsHeight - metrics.verticalSpacing * 2;
+#endif
   const int menuItems = getMenuItemCount();
 
   const StrId fieldNames[] = {StrId::STR_SERVER_NAME, StrId::STR_OPDS_SERVER_URL, StrId::STR_USERNAME,
@@ -211,8 +254,10 @@ void OpdsSettingsActivity::render(RenderLock&&) {
       },
       true);
 
+#ifndef CROSSPOINT_BOARD_MURPHY_M4
   const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_SELECT), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+#endif
 
   if (showSaveError) {
     GUI.drawPopup(renderer, tr(STR_ERROR_GENERAL_FAILURE));

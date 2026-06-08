@@ -26,4 +26,5 @@ class OpdsServerListActivity final : public Activity {
 
   int getItemCount() const;
   void handleSelection();
+  bool handleTouch();
 };

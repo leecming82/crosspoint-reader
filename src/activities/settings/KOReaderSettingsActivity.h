@@ -23,4 +23,5 @@ class KOReaderSettingsActivity final : public Activity {
   size_t selectedIndex = 0;
 
   void handleSelection();
+  bool handleTouch();
 };

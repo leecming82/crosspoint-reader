@@ -10,6 +10,7 @@
 #include "fontIds.h"
 #include "util/BookCacheUtils.h"
 #include "util/TouchNavigator.h"
+#include "util/TouchUi.h"
 
 namespace {
 void drawTouchButton(const GfxRenderer& renderer, const Rect rect, const char* label) {
@@ -36,7 +37,12 @@ void ClearCacheActivity::render(RenderLock&&) {
 
   renderer.clearScreen();
 
+#ifdef CROSSPOINT_BOARD_MURPHY_M4
+  const Rect screen = UITheme::getInstance().getScreenSafeArea(renderer, false, false);
+  TouchUi::drawHeaderWithBack(renderer, screen, tr(STR_CLEAR_READING_CACHE));
+#else
   GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, tr(STR_CLEAR_READING_CACHE));
+#endif
 
   if (state == WARNING) {
     renderer.drawCenteredText(UI_10_FONT_ID, pageHeight / 2 - 60, tr(STR_CLEAR_CACHE_WARNING_1), true);
@@ -180,6 +186,11 @@ void ClearCacheActivity::clearCache() {
 void ClearCacheActivity::loop() {
   if (state == WARNING) {
 #ifdef CROSSPOINT_BOARD_MURPHY_M4
+    if (TouchNavigator::wasTappedIn(mappedInput, TouchUi::headerBackTapRect(renderer))) {
+      LOG_DBG("CLEAR_CACHE", "User cancelled");
+      goBack();
+      return;
+    }
     if (TouchNavigator::wasTappedIn(mappedInput, cancelButtonRect())) {
       LOG_DBG("CLEAR_CACHE", "User cancelled");
       goBack();
@@ -203,6 +214,10 @@ void ClearCacheActivity::loop() {
 
   if (state == SUCCESS || state == FAILED) {
 #ifdef CROSSPOINT_BOARD_MURPHY_M4
+    if (TouchNavigator::wasTappedIn(mappedInput, TouchUi::headerBackTapRect(renderer))) {
+      goBack();
+      return;
+    }
     if (TouchNavigator::wasTappedIn(mappedInput, backButtonRect())) {
       goBack();
       return;

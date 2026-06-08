@@ -11,6 +11,8 @@
 #include "activities/network/WifiSelectionActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "util/TouchNavigator.h"
+#include "util/TouchUi.h"
 
 void KOReaderAuthActivity::onWifiSelectionComplete(const bool success) {
   if (!success) {
@@ -80,7 +82,12 @@ void KOReaderAuthActivity::render(RenderLock&&) {
   const auto pageWidth = renderer.getScreenWidth();
   const auto pageHeight = renderer.getScreenHeight();
 
+#ifdef CROSSPOINT_BOARD_MURPHY_M4
+  const Rect screen = UITheme::getInstance().getScreenSafeArea(renderer, false, false);
+  TouchUi::drawHeaderWithBack(renderer, screen, tr(STR_KOREADER_AUTH));
+#else
   GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, tr(STR_KOREADER_AUTH));
+#endif
   const auto height = renderer.getLineHeight(UI_10_FONT_ID);
   const auto top = (pageHeight - height) / 2;
 
@@ -94,13 +101,26 @@ void KOReaderAuthActivity::render(RenderLock&&) {
     renderer.drawCenteredText(UI_10_FONT_ID, top + height + 10, errorMessage.c_str());
   }
 
+#ifdef CROSSPOINT_BOARD_MURPHY_M4
+  if (state == SUCCESS || state == FAILED) {
+    TouchUi::drawTouchButton(renderer, TouchUi::bottomActionRect(renderer), tr(STR_BACK));
+  }
+#else
   const auto labels = mappedInput.mapLabels(tr(STR_BACK), "", "", "");
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+#endif
   renderer.displayBuffer();
 }
 
 void KOReaderAuthActivity::loop() {
   if (state == SUCCESS || state == FAILED) {
+#ifdef CROSSPOINT_BOARD_MURPHY_M4
+    if (TouchNavigator::wasTappedIn(mappedInput, TouchUi::headerBackTapRect(renderer)) ||
+        TouchNavigator::wasTappedIn(mappedInput, TouchUi::bottomActionRect(renderer))) {
+      finish();
+      return;
+    }
+#endif
     if (mappedInput.wasPressed(MappedInputManager::Button::Back) ||
         mappedInput.wasPressed(MappedInputManager::Button::Confirm)) {
       finish();

@@ -11,6 +11,8 @@
 #include "activities/util/KeyboardEntryActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "util/TouchNavigator.h"
+#include "util/TouchUi.h"
 
 namespace {
 constexpr int MENU_ITEMS = 5;
@@ -28,6 +30,10 @@ void KOReaderSettingsActivity::onEnter() {
 void KOReaderSettingsActivity::onExit() { Activity::onExit(); }
 
 void KOReaderSettingsActivity::loop() {
+  if (handleTouch()) {
+    return;
+  }
+
   if (mappedInput.wasPressed(MappedInputManager::Button::Back)) {
     finish();
     return;
@@ -107,6 +113,31 @@ void KOReaderSettingsActivity::handleSelection() {
   }
 }
 
+bool KOReaderSettingsActivity::handleTouch() {
+#ifndef CROSSPOINT_BOARD_MURPHY_M4
+  return false;
+#else
+  if (TouchNavigator::wasTappedIn(mappedInput, TouchUi::headerBackTapRect(renderer))) {
+    finish();
+    return true;
+  }
+
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  const Rect screen = UITheme::getInstance().getScreenSafeArea(renderer, false, false);
+  const int contentTop = screen.y + metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
+  const Rect listBounds{screen.x, contentTop, screen.width, MENU_ITEMS * metrics.listRowHeight};
+  const int tappedIndex =
+      TouchNavigator::tappedListIndex(mappedInput, listBounds, MENU_ITEMS, 0, metrics.listRowHeight, 0);
+  if (tappedIndex < 0) {
+    return mappedInput.wasTapped();
+  }
+
+  selectedIndex = static_cast<size_t>(tappedIndex);
+  handleSelection();
+  return true;
+#endif
+}
+
 void KOReaderSettingsActivity::render(RenderLock&&) {
   renderer.clearScreen();
 
@@ -114,10 +145,20 @@ void KOReaderSettingsActivity::render(RenderLock&&) {
   const auto pageWidth = renderer.getScreenWidth();
   const auto pageHeight = renderer.getScreenHeight();
 
+#ifdef CROSSPOINT_BOARD_MURPHY_M4
+  const Rect screen = UITheme::getInstance().getScreenSafeArea(renderer, false, false);
+  TouchUi::drawHeaderWithBack(renderer, screen, tr(STR_KOREADER_SYNC));
+#else
   GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, tr(STR_KOREADER_SYNC));
+#endif
 
   const int contentTop = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
-  const int contentHeight = pageHeight - contentTop - metrics.buttonHintsHeight - metrics.verticalSpacing * 2;
+  const int contentHeight =
+#ifdef CROSSPOINT_BOARD_MURPHY_M4
+      pageHeight - contentTop;
+#else
+      pageHeight - contentTop - metrics.buttonHintsHeight - metrics.verticalSpacing * 2;
+#endif
   GUI.drawList(
       renderer, Rect{0, contentTop, pageWidth, contentHeight}, static_cast<int>(MENU_ITEMS),
       static_cast<int>(selectedIndex), [](int index) { return std::string(I18N.get(menuNames[index])); }, nullptr,
@@ -142,9 +183,11 @@ void KOReaderSettingsActivity::render(RenderLock&&) {
       },
       true);
 
+#ifndef CROSSPOINT_BOARD_MURPHY_M4
   // Draw help text at bottom
   const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_SELECT), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+#endif
 
   renderer.displayBuffer();
 }

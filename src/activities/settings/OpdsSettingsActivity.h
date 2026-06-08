@@ -33,5 +33,6 @@ class OpdsSettingsActivity final : public Activity {
 
   int getMenuItemCount() const;
   void handleSelection();
+  bool handleTouch();
   bool saveServer();
 };

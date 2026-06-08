@@ -25,4 +25,5 @@ class StatusBarSettingsActivity final : public Activity {
   int visibleItemCount = 0;
 
   void handleSelection();
+  bool handleTouch();
 };
