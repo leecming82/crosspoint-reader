@@ -104,12 +104,12 @@ The received Murphy M4 is now concrete enough to plan around: ESP32-S3, 16 MB fl
 
    Back/navigation note: use a temporary long-press gesture as a universal back fallback, preferably in a low-conflict central zone, but make visible back targets screen-local rather than a fixed global top-left hotspot. Home is a root screen, reader uses center tap for the menu and should offer explicit close/back controls, and settings/menus should place back affordances around their actual header/tab/list layout so they do not collide with tappable content.
 
-   Initial work plan:
+   Completion summary:
 
    1. Done: establish a shared touch event model. Tap detection, coordinate transforms, hit-testing, activity integration, and Murphy-gated center long-press fallback back navigation exist. Global touch-back is now activity-policy gated, with reader activities opted out so reader-specific center touch behavior remains screen-local. Future holds, swipes, and richer gestures should be added as part of the relevant screen workflows rather than blocking the shared event model.
    2. Done: add reusable tappable UI primitives. Basic rectangle, grid, list-row, equal-tab, and footer action hit-testing helpers exist; Home, File Browser, reader page surfaces, EPUB Reader Menu, and confirmation dialogs consume the shared touch helpers where applicable.
-   3. Started: adapt the remaining screens to touch one by one, using the screen inventory below as the working checklist. Each screen should become directly tappable while preserving button navigation and staying board/capability gated.
-   4. Add Murphy-specific hints and settings for touch zones, reader shortcuts, and the reduced physical-button role.
+   3. Done: adapt the remaining screens to touch one by one, using the screen inventory below as the working checklist. Each screen is directly tappable where it has interactive controls, with button navigation preserved and behavior board/capability gated.
+   4. Done: reduce Murphy-specific button hints and physical-button dependence across the converted touch surfaces.
 
    Touch screen inventory:
 
@@ -177,17 +177,31 @@ The received Murphy M4 is now concrete enough to plan around: ESP32-S3, 16 MB fl
 
 10. Fully functional Japanese EPUB
 
-   Validate the Japanese reading experience once touch or another better control scheme is available.
+   Done: the Japanese reading experience is working well enough on Murphy M4 for regular validation and use.
 
    Exit criteria: horizontal and vertical EPUBs render correctly; ruby/furigana survives parse, cache, layout, and render; dictionary cursor geometry follows logical text order; SD fonts and cache keys include board/layout metrics; bookmarks and page progression remain metadata-driven; TOC, footnotes, percent/chapter navigation, orientation changes, anti-aliasing, and progress save/resume work on real Japanese books.
-
-   To-do: fix the lost loading/display of images in both home/library surfaces and the reader before treating Japanese EPUB validation as complete.
 
 11. Power, battery, frontlight, and sensors
 
    Identify and implement battery, charger, wake sources, RTC, buzzer, BMI270, SHT40/AHT20, and warm/cool frontlight only where hardware evidence exists. Power UI should degrade gracefully when a chip is absent or not yet understood, and frontlight controls should stay hidden on boards without frontlight.
 
    Exit criteria: sleep/off paths release display, storage, radios, touch, and frontlight; charging/battery data is shown only when reliable; wake sources are explicit; unknown sensors remain disabled; brightness and color temperature can be changed safely, persisted, restored at boot, turned off before sleep/update/shutdown, and disabled cleanly on non-frontlight boards.
+
+   Hardware and power inventory:
+
+   - [x] Wi-Fi lifecycle and power-down behavior
+   - [ ] Sleep/off entry path
+   - [ ] Wake source identification
+   - [ ] Power button / lock button behavior
+   - [ ] Hardware power-off / power-latch behavior
+   - [ ] Battery level reporting
+   - [ ] USB power / charging detection
+   - [ ] Charger status reporting
+   - [ ] RTC / persistent clock
+   - [ ] Warm/cool frontlight
+   - [ ] Buzzer
+   - [ ] Motion / tilt sensor
+   - [ ] Humidity / temperature sensor
 
    Note: Murphy Cloud firmware confirms temperature/humidity support via an SHT40 path plus AHT20-style probe/fallback on shared I2C plumbing. Battery telemetry strings exist, but the low-level battery sense or gauge path still needs to be identified before enabling battery UI.
 
@@ -197,7 +211,10 @@ The received Murphy M4 is now concrete enough to plan around: ESP32-S3, 16 MB fl
 
    Track grab-bag usability and performance issues discovered during real-book validation that do not belong to hardware bring-up.
 
-   Current note: image-heavy page rendering is visibly slow and should be profiled separately from e-paper refresh time.
+   Current notes:
+
+   - Image-heavy page rendering is visibly slow and should be profiled separately from e-paper refresh time.
+   - Murphy keyboard entry remains clunky; revisit text-entry layout, key sizing, hit targets, and touch feedback after the hardware bring-up work is further along.
 
 13. Optional accelerators and Murphy features
 

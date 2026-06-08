@@ -22,6 +22,7 @@
 #include "activities/network/WifiSelectionActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "network/WifiLifecycle.h"
 #include "util/TouchNavigator.h"
 #include "util/TouchUi.h"
 
@@ -263,8 +264,7 @@ void KOReaderSyncActivity::onExit() {
   Activity::onExit();
 
   if (wifiActivated) {
-    WiFi.disconnect(false);
-    delay(30);
+    WifiLifecycle::disconnectForRestart("KOSync", false);
     silentRestartToReader();
   }
 }

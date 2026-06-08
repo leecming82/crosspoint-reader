@@ -208,7 +208,8 @@ bool KeyboardEntryActivity::handleTouch() {
   const int keyWidth = (keyboardWidth - (contentCols - 1) * keySpacing) / contentCols;
   const int leftMargin = (pageWidth - (contentCols * keyWidth + (contentCols - 1) * keySpacing)) / 2;
   const int bottomRowGap = metrics.keyboardBottomKeySpacing > 0 ? 4 : 0;
-  const int keyboardStartY = pageHeight - metrics.buttonHintsHeight - metrics.verticalSpacing -
+  constexpr int murphyKeyboardBottomMargin = 8;
+  const int keyboardStartY = pageHeight - murphyKeyboardBottomMargin -
                              (keyHeight + keySpacing) * getContentRowCount() - bottomKeyHeight - bottomRowGap +
                              metrics.keyboardVerticalOffset;
 
@@ -232,13 +233,15 @@ bool KeyboardEntryActivity::handleTouch() {
   if (!tap && !longPress) {
     return false;
   }
+  const auto point = longPress ? mappedInput.lastTouchLongPress() : mappedInput.lastTap();
+  constexpr int touchSlop = 4;
 
   for (int row = 0; row < getContentRowCount(); row++) {
     const int rowLeftMargin = urlMode ? urlLeftMargin : leftMargin;
     const int rowY = keyboardStartY + row * (keyHeight + keySpacing);
     for (int col = 0; col < contentCols; col++) {
-      const Rect keyRect{rowLeftMargin + col * (keyWidth + keySpacing), rowY, keyWidth, keyHeight};
-      const auto point = longPress ? mappedInput.lastTouchLongPress() : mappedInput.lastTap();
+      const Rect keyRect{rowLeftMargin + col * (keyWidth + keySpacing) - touchSlop, rowY - touchSlop,
+                         keyWidth + touchSlop * 2, keyHeight + touchSlop * 2};
       if (!TouchNavigator::contains(keyRect, point)) {
         continue;
       }
@@ -263,8 +266,9 @@ bool KeyboardEntryActivity::handleTouch() {
   for (int col = 0; col < BOTTOM_KEY_COUNT; col++) {
     const Rect keyRect{bottomLeftMargin + col * (bottomKeyWidth + bkSpacing), bottomRowY, bottomKeyWidth,
                        bottomKeyHeight};
-    const auto point = longPress ? mappedInput.lastTouchLongPress() : mappedInput.lastTap();
-    if (!TouchNavigator::contains(keyRect, point)) {
+    const Rect expandedKeyRect{keyRect.x - touchSlop, keyRect.y - touchSlop, keyRect.width + touchSlop * 2,
+                               keyRect.height + touchSlop * 2};
+    if (!TouchNavigator::contains(expandedKeyRect, point)) {
       continue;
     }
     selectedRow = getContentRowCount();
@@ -662,8 +666,12 @@ void KeyboardEntryActivity::render(RenderLock&&) {
   const int leftMargin = (pageWidth - (contentCols * keyWidth + (contentCols - 1) * keySpacing)) / 2;
 
   const int bottomRowGap = metrics.keyboardBottomKeySpacing > 0 ? 4 : 0;
+  int keyboardBottomReserve = metrics.buttonHintsHeight + metrics.verticalSpacing;
+#ifdef CROSSPOINT_BOARD_MURPHY_M4
+  keyboardBottomReserve = 8;
+#endif
   const int keyboardStartY = metrics.keyboardBottomAligned
-                                 ? pageHeight - metrics.buttonHintsHeight - metrics.verticalSpacing -
+                                 ? pageHeight - keyboardBottomReserve -
                                        (keyHeight + keySpacing) * getContentRowCount() - bottomKeyHeight -
                                        bottomRowGap + metrics.keyboardVerticalOffset
                                  : inputStartY + inputHeight + lineHeight + metrics.verticalSpacing;

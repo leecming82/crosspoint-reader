@@ -15,6 +15,7 @@
 #include "components/UITheme.h"
 #include "fontIds.h"
 #include "network/HttpDownloader.h"
+#include "network/WifiLifecycle.h"
 #include "util/BookCacheUtils.h"
 #include "util/StringUtils.h"
 #include "util/TouchList.h"
@@ -49,9 +50,7 @@ void OpdsBookBrowserActivity::onExit() {
   entries.clear();
   navigationHistory.clear();
 
-  if (WiFi.getMode() != WIFI_MODE_NULL) {
-    WiFi.disconnect(false);
-    delay(30);
+  if (WifiLifecycle::disconnectForRestart("OPDS", false)) {
     silentRestart();
   }
 }

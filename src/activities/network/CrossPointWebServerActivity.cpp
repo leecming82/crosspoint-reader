@@ -17,6 +17,7 @@
 #include "activities/network/CalibreConnectActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "network/WifiLifecycle.h"
 #include "util/QrUtils.h"
 #include "util/TouchNavigator.h"
 #include "util/TouchUi.h"
@@ -101,16 +102,7 @@ void CrossPointWebServerActivity::onExit() {
   stopDnsServer();
   MDNS.end();
 
-  // Skip reboot if WiFi was never activated (e.g. user backed out of mode selection).
-  if (WiFi.getMode() != WIFI_MODE_NULL) {
-    if (isApMode) {
-      LOG_DBG("WEBACT", "Stopping WiFi AP before silent restart...");
-      WiFi.softAPdisconnect(true);
-    } else {
-      LOG_DBG("WEBACT", "Disconnecting WiFi before silent restart...");
-      WiFi.disconnect(false);
-    }
-    delay(30);
+  if (WifiLifecycle::disconnectForRestart("WEBACT", isApMode)) {
     silentRestart();
   }
 
@@ -149,7 +141,7 @@ void CrossPointWebServerActivity::onNetworkModeSelected(const NetworkMode mode) 
   if (mode == NetworkMode::JOIN_NETWORK) {
     // STA mode - launch WiFi selection
     LOG_DBG("WEBACT", "Turning on WiFi (STA mode)...");
-    WiFi.mode(WIFI_STA);
+    WifiLifecycle::beginStation("WEBACT");
 
     state = WebServerActivityState::WIFI_SELECTION;
     LOG_DBG("WEBACT", "Launching WifiSelectionActivity...");
@@ -202,7 +194,7 @@ void CrossPointWebServerActivity::startAccessPoint() {
   LOG_DBG("WEBACT", "Free heap before AP start: %d bytes", ESP.getFreeHeap());
 
   // Configure and start the AP
-  WiFi.mode(WIFI_AP);
+  WifiLifecycle::beginAccessPoint("WEBACT");
   delay(100);
 
   // Start soft AP

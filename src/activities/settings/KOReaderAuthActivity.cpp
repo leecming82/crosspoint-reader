@@ -11,6 +11,7 @@
 #include "activities/network/WifiSelectionActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "network/WifiLifecycle.h"
 #include "util/TouchNavigator.h"
 #include "util/TouchUi.h"
 
@@ -68,9 +69,7 @@ void KOReaderAuthActivity::onEnter() {
 void KOReaderAuthActivity::onExit() {
   Activity::onExit();
 
-  if (WiFi.getMode() != WIFI_MODE_NULL) {
-    WiFi.disconnect(false);
-    delay(30);
+  if (WifiLifecycle::disconnectForRestart("KOAuth", false)) {
     silentRestart();
   }
 }

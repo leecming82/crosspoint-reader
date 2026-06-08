@@ -16,6 +16,7 @@
 #include "components/UITheme.h"
 #include "fontIds.h"
 #include "network/HttpDownloader.h"
+#include "network/WifiLifecycle.h"
 #include "util/TouchList.h"
 #include "util/TouchNavigator.h"
 #include "util/TouchUi.h"
@@ -27,7 +28,7 @@ FontDownloadActivity::FontDownloadActivity(GfxRenderer& renderer, MappedInputMan
 
 void FontDownloadActivity::onEnter() {
   Activity::onEnter();
-  WiFi.mode(WIFI_STA);
+  WifiLifecycle::beginStation("FONT");
   startActivityForResult(std::make_unique<WifiSelectionActivity>(renderer, mappedInput),
                          [this](const ActivityResult& result) { onWifiSelectionComplete(!result.isCancelled); });
 }
@@ -35,9 +36,7 @@ void FontDownloadActivity::onEnter() {
 void FontDownloadActivity::onExit() {
   Activity::onExit();
 
-  if (WiFi.getMode() != WIFI_MODE_NULL) {
-    WiFi.disconnect(false);
-    delay(30);
+  if (WifiLifecycle::disconnectForRestart("FONT", false)) {
     silentRestart();
   }
 }
