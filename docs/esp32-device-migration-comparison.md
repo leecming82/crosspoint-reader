@@ -194,16 +194,18 @@ The received Murphy M4 is now concrete enough to plan around: ESP32-S3, 16 MB fl
    - [ ] Wake source identification
    - [ ] Power button / lock button behavior
    - [ ] Hardware power-off / power-latch behavior
-   - [ ] Battery level reporting
-   - [ ] USB power / charging detection
-   - [ ] Charger status reporting
+   - [x] Battery level reporting
+   - [ ] USB power / cable-present detection
+   - [x] Charger status reporting
    - [ ] RTC / persistent clock
    - [ ] Warm/cool frontlight
    - [ ] Buzzer
    - [ ] Motion / tilt sensor
    - [ ] Humidity / temperature sensor
 
-   Note: Murphy Cloud firmware confirms temperature/humidity support via an SHT40 path plus AHT20-style probe/fallback on shared I2C plumbing. Battery telemetry strings exist, but the low-level battery sense or gauge path still needs to be identified before enabling battery UI.
+   Note: Murphy Cloud firmware confirms temperature/humidity support via an SHT40 path plus AHT20-style probe/fallback on shared I2C plumbing. Cross-version stock firmware mining (`1.2.20` through `1.3.1`) and hardware testing validate GPIO9 as the battery ADC divider input and GPIO43 as an active-low charger-status input. The app now reports Murphy battery percentage from `analogReadMilliVolts(GPIO9) * 2` using a conservative interpolated Li-ion curve, and shows charging when `GPIO43 == LOW`. GPIO43 is charger-status, not raw USB cable-present; a PC connection at full battery can remain inactive.
+
+   Runtime idle power note: X3/X4 keep the inherited 10 MHz idle CPU floor after 3 seconds of inactivity because that path was tested on the ESP32-C3 boards. Murphy M4 uses a board-specific 40 MHz idle floor instead. ESP32-S3 can theoretically go lower, but Murphy has a larger display path, PSRAM, touch, SD_MMC, and native USB Serial/JTAG, and an earlier diagnostic session saw a watchdog reset soon after entering the 10 MHz low-power path. Revisit lower S3 idle frequencies only with deliberate long-running stability tests.
 
    Current note: Murphy deep sleep is disabled in the HAL until wake/power pins are known. The inherited X4/C3 sleep path assumes `InputManager::POWER_BUTTON_PIN=3` for wake and drives GPIO13 low as a power-latch/shutdown pin; both are unsafe assumptions on Murphy because GPIO3 is display MOSI and GPIO13 is unverified. GPIO47/GPIO48 are frontlight outputs; even input pull-ups can visibly turn the light on, so probes must leave them out or explicitly drive them low/off.
 
@@ -303,7 +305,8 @@ Important implication: this unit uses `app0` at `0x10000`, not the public Murphy
 | Frontlight | Cool / warm channels | `38`, `39` | Historical/conflicting candidate | Older `1.2.4` code has a `Frontlight ready: cool=GPIO%d warm=GPIO%d` neighborhood using `GPIO38`/`GPIO39`; reconcile before enabling. |
 | Buzzer | PWM / LEDC | `46` | Firmware clue | Public changelog mentions buzzer on `GPIO46` / LEDC channel 2; not yet hardware-validated. |
 | Temp/humidity | I2C sensor path | TBD | Confirmed feature, pins unresolved | Murphy Cloud firmware confirms SHT40 plus AHT20-style fallback, likely on shared I2C, but low-level pins/address behavior still need probing. |
-| Battery / charger | Sense or gauge path | TBD | Unknown | Battery telemetry strings exist, but no reliable GPIO/ADC/I2C gauge mapping yet. |
+| Battery | ADC-style input | `9` | Confirmed/app-enabled | Cross-version stock firmware and hardware testing validate GPIO9 as the battery divider ADC. App maps `analogReadMilliVolts(GPIO9) * 2` to status-bar percentage with a conservative interpolated curve. |
+| Charger status | Digital input | `43` active-low | Confirmed/app-enabled | Cross-version stock firmware and hardware testing validate GPIO43 as active-low charger status. `LOW` means charging/status active; it is not raw USB cable-present, so PC-at-full can remain inactive. |
 
 ## Still Unknown
 
@@ -314,7 +317,7 @@ These are the key facts that still need hardware evidence:
 - Touch coordinate transform, calibration offsets, interrupt behavior, and safe sequencing around shared GPIO7 display/touch reset.
 - Warm/cool frontlight PWM pins, frequency, polarity, driver topology, safe duty range, and shutdown requirements.
 - SD wiring and whether stock firmware uses external SD, internal SPIFFS, USB MSC, or a mix.
-- Battery gauge, charger IC, USB/charging detection, RTC, wake-capable GPIOs, and hardware power-off behavior.
+- Battery gauge/ADC calibration, charger IC details, RTC, wake-capable GPIOs, and hardware power-off behavior.
 - Whether the stock firmware exposes diagnostics/API data that reveal board capabilities.
 
 ## Next Read-Only Probes

@@ -248,9 +248,11 @@ void HalGPIO::begin() {
     pinMode(1, INPUT_PULLUP);
     pinMode(2, INPUT_PULLUP);
     pinMode(0, INPUT_PULLUP);
+    pinMode(MURPHY_CHARGE_STATUS_PIN, INPUT_PULLUP);
     murphyRawState = murphyReadPhysicalButtons();
     murphyLastRawState = murphyRawState;
     murphyPhysicalState = murphyRawState;
+    lastUsbConnected = isUsbConnected();
     LOG_INF("GPIO", "Murphy M4 buttons: top=GPIO1, middle=GPIO2, bottom=GPIO0");
     return;
   }
@@ -438,7 +440,8 @@ void HalGPIO::verifyPowerButtonWakeup(uint16_t requiredDurationMs, bool shortPre
 
 bool HalGPIO::isUsbConnected() const {
   if (deviceIsMurphyM4()) {
-    return true;
+    // Murphy exposes an active-low charger-status signal rather than a raw USB-present signal.
+    return digitalRead(MURPHY_CHARGE_STATUS_PIN) == LOW;
   }
   if (deviceIsX3()) {
     // X3: infer USB/charging via BQ27220 Current() register (0x0C, signed mA).

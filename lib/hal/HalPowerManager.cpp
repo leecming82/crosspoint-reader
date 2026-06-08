@@ -4,11 +4,49 @@
 #include <WiFi.h>
 #include <esp_sleep.h>
 
+#include <algorithm>
 #include <cassert>
 
 #include "HalGPIO.h"
 
 HalPowerManager powerManager;  // Singleton instance
+
+namespace {
+uint16_t interpolateBatteryPercent(uint16_t millivolts) {
+  struct Point {
+    uint16_t mv;
+    uint8_t percent;
+  };
+
+  static constexpr Point curve[] = {
+      {3300, 0},
+      {3500, 10},
+      {3800, 50},
+      {4100, 90},
+      {4200, 100},
+  };
+
+  if (millivolts <= curve[0].mv) {
+    return curve[0].percent;
+  }
+  constexpr size_t curveCount = sizeof(curve) / sizeof(curve[0]);
+  for (size_t i = 1; i < curveCount; ++i) {
+    if (millivolts <= curve[i].mv) {
+      const auto& lo = curve[i - 1];
+      const auto& hi = curve[i];
+      const uint32_t spanMv = hi.mv - lo.mv;
+      const uint32_t spanPercent = hi.percent - lo.percent;
+      return lo.percent + ((millivolts - lo.mv) * spanPercent + spanMv / 2) / spanMv;
+    }
+  }
+  return curve[curveCount - 1].percent;
+}
+
+uint16_t readMurphyBatteryMillivolts() {
+  const uint32_t sensedMv = analogReadMilliVolts(MURPHY_BATTERY_ADC_PIN);
+  return static_cast<uint16_t>(std::min<uint32_t>(sensedMv * 2U, 5000U));
+}
+}  // namespace
 
 void HalPowerManager::begin() {
   if (gpio.deviceIsX3()) {
@@ -19,10 +57,19 @@ void HalPowerManager::begin() {
     _batteryUseI2C = true;
   } else if (gpio.deviceIsX4()) {
     pinMode(BAT_GPIO0, INPUT);
+  } else if (gpio.deviceIsMurphyM4()) {
+    pinMode(MURPHY_BATTERY_ADC_PIN, INPUT);
   }
   normalFreq = getCpuFrequencyMhz();
   modeMutex = xSemaphoreCreateMutex();
   assert(modeMutex != nullptr);
+}
+
+int HalPowerManager::idleCpuFrequencyMhz() const {
+  if (gpio.deviceIsMurphyM4()) {
+    return MURPHY_LOW_POWER_FREQ;
+  }
+  return LOW_POWER_FREQ;
 }
 
 void HalPowerManager::setPowerSaving(bool enabled) {
@@ -41,9 +88,10 @@ void HalPowerManager::setPowerSaving(bool enabled) {
   const LockMode mode = currentLockMode;
 
   if (mode == None && enabled && !isLowPower) {
-    LOG_DBG("PWR", "Going to low-power mode");
-    if (!setCpuFrequencyMhz(LOW_POWER_FREQ)) {
-      LOG_DBG("PWR", "Failed to set CPU frequency = %d MHz", LOW_POWER_FREQ);
+    const int lowPowerFreq = idleCpuFrequencyMhz();
+    LOG_DBG("PWR", "Going to low-power mode freq=%d MHz", lowPowerFreq);
+    if (!setCpuFrequencyMhz(lowPowerFreq)) {
+      LOG_DBG("PWR", "Failed to set CPU frequency = %d MHz", lowPowerFreq);
       return;
     }
     isLowPower = true;
@@ -104,8 +152,24 @@ void HalPowerManager::startDeepSleep(HalGPIO& gpio) const {
 }
 
 uint16_t HalPowerManager::getBatteryPercentage() const {
-  if (!gpio.deviceIsX3() && !gpio.deviceIsX4()) {
+  if (!gpio.deviceIsX3() && !gpio.deviceIsX4() && !gpio.deviceIsMurphyM4()) {
     return 0;
+  }
+
+  if (gpio.deviceIsMurphyM4()) {
+    const unsigned long now = millis();
+    if (_batteryLastPollMs != 0 && (now - _batteryLastPollMs) < BATTERY_POLL_MS) {
+      return _batteryCachedPercent;
+    }
+
+    const uint16_t percent = interpolateBatteryPercent(readMurphyBatteryMillivolts());
+    if (_batteryCachedPercent == 0) {
+      _batteryCachedPercent = percent;
+    } else {
+      _batteryCachedPercent = (_batteryCachedPercent * 3 + percent + 2) / 4;
+    }
+    _batteryLastPollMs = now;
+    return _batteryCachedPercent;
   }
 
   if (_batteryUseI2C) {

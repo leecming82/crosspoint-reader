@@ -61,13 +61,9 @@ void logPrintf(const char* level, const char* origin, const char* format, ...) {
     }
   }
   va_end(args);
-#ifdef CROSSPOINT_BOARD_MURPHY_M4
-  logSerial.print(buf);
-#else
   if (logSerial) {
     logSerial.print(buf);
   }
-#endif
   addToLogRingBuffer(buf);
 #ifdef CROSSPOINT_MURPHY_APP1_FLASH_LOG
   MurphyFlashLog::append(buf);

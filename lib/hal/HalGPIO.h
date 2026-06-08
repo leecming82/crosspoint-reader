@@ -25,6 +25,9 @@
 
 #define BAT_GPIO0 0  // Battery voltage
 
+#define MURPHY_BATTERY_ADC_PIN 9       // Battery divider ADC input
+#define MURPHY_CHARGE_STATUS_PIN 43    // Active-low charger status
+
 #define UART0_RXD 20  // Used for USB connection detection
 
 // Xteink X3 Hardware
