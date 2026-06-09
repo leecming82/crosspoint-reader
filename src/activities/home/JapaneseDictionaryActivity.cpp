@@ -30,6 +30,8 @@ constexpr size_t MAX_RADICAL_CANDIDATES = 32;
 constexpr size_t MAX_SELECTED_RADICALS = 6;
 constexpr int KANJI_SEARCH_CELL_HEIGHT = 40;
 constexpr int KANJI_READING_BRACKET_X_ADJUST = 6;
+constexpr int INPUT_CARET_GAP = 3;
+constexpr int INPUT_CARET_MARGIN = 7;
 
 struct DictKeyDef {
   char key;
@@ -203,6 +205,15 @@ std::string joinStrings(const std::vector<std::string>& values, const char* sepa
     out += value;
   }
   return out;
+}
+
+void drawInputCaret(GfxRenderer& renderer, const Rect& rect, const int textX, const int textY, const char* text,
+                    const int fontId, const EpdFontFamily::Style style) {
+  const int lineHeight = renderer.getLineHeight(fontId);
+  const int textWidth = renderer.getTextWidth(fontId, text, style);
+  const int maxCaretX = rect.x + rect.width - INPUT_CARET_MARGIN;
+  const int caretX = std::min(textX + textWidth + INPUT_CARET_GAP, maxCaretX);
+  renderer.drawLine(caretX, textY + 3, caretX, textY + lineHeight - 3, 1, true);
 }
 
 std::string hiraganaToKatakana(const std::string& text) {
@@ -1215,7 +1226,9 @@ void JapaneseDictionaryActivity::drawQueryField() {
       renderer.truncatedText(UI_12_FONT_ID, display.c_str(), rect.width - 20, EpdFontFamily::BOLD);
   const int lineHeight = renderer.getLineHeight(UI_12_FONT_ID);
   const int textY = rect.y + (rect.height - lineHeight) / 2;
-  renderer.drawText(UI_12_FONT_ID, rect.x + 10, textY, clipped.c_str(), true, EpdFontFamily::BOLD);
+  const int textX = rect.x + 10;
+  renderer.drawText(UI_12_FONT_ID, textX, textY, clipped.c_str(), true, EpdFontFamily::BOLD);
+  if (!query.empty()) drawInputCaret(renderer, rect, textX, textY, clipped.c_str(), UI_12_FONT_ID, EpdFontFamily::BOLD);
 }
 
 void JapaneseDictionaryActivity::drawResults() {
@@ -1339,8 +1352,10 @@ void JapaneseDictionaryActivity::drawKanjiSearch() {
   const int searchLineHeight = renderer.getLineHeight(UI_12_FONT_ID);
   const std::string clipped = renderer.truncatedText(UI_12_FONT_ID, display.c_str(), searchRect.width - 20,
                                                      EpdFontFamily::BOLD);
-  renderer.drawText(UI_12_FONT_ID, searchRect.x + 10, searchRect.y + (searchRect.height - searchLineHeight) / 2,
-                    clipped.c_str(), true, EpdFontFamily::BOLD);
+  const int textX = searchRect.x + 10;
+  const int textY = searchRect.y + (searchRect.height - searchLineHeight) / 2;
+  renderer.drawText(UI_12_FONT_ID, textX, textY, clipped.c_str(), true, EpdFontFamily::BOLD);
+  if (!key.empty()) drawInputCaret(renderer, searchRect, textX, textY, clipped.c_str(), UI_12_FONT_ID, EpdFontFamily::BOLD);
 
   const Rect selectedRect = selectedRadicalsRect();
   renderer.drawRoundedRect(selectedRect.x, selectedRect.y, selectedRect.width, selectedRect.height, 1, 4, true);
