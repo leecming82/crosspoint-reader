@@ -169,25 +169,25 @@ Exit criteria: the app opens from Home, accepts a query, and handles missing dic
 
 ### 5. Murphy Touch UI
 
-- [ ] Design a touch-first layout for the 800x480 Murphy viewport.
-- [ ] Keep the query field visible while browsing results.
-- [ ] Render a result list with headword, reading, and short gloss.
-- [ ] Support tapping result rows.
-- [ ] Add clear/search/back controls.
-- [ ] Avoid nested cards and oversized marketing-style surfaces.
-- [ ] Ensure text does not overlap on long headwords/readings/definitions.
+- [x] Design a touch-first layout for the 800x480 Murphy viewport.
+- [x] Keep the query field visible while browsing results.
+- [x] Render a result list with headword, reading, and short gloss.
+- [x] Support tapping result rows.
+- [x] Add clear/search/back controls.
+- [x] Avoid nested cards and oversized marketing-style surfaces.
+- [x] Ensure text does not overlap on long headwords/readings/definitions.
 
 Exit criteria: lookup results are readable and directly tappable on Murphy without relying on hardware buttons.
 
 ### 6. Lookup And Result Browsing
 
-- [ ] Search exact results first.
-- [ ] Add prefix fallback.
-- [ ] Add deinflection results with visible but compact indication where useful.
-- [ ] Rank and cap results for predictable latency.
-- [ ] Add a full definition view.
-- [ ] Add pagination/scrolling for long definitions.
-- [ ] Keep redraws bounded for e-paper.
+- [x] Search exact results first.
+- [x] Add prefix fallback.
+- [x] Add deinflection results with visible but compact indication where useful.
+- [x] Rank and cap results for predictable latency.
+- [x] Add a full definition view.
+- [x] Add pagination/scrolling for long definitions.
+- [x] Keep redraws bounded for e-paper.
 
 Exit criteria: common typed queries return useful Jitendex results and long definitions can be read without layout corruption.
 

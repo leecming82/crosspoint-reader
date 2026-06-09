@@ -6,8 +6,9 @@
 #include <Utf8.h>
 
 #include <algorithm>
-#include <array>
+#include <cstring>
 #include <string>
+#include <vector>
 
 #include "MappedInputManager.h"
 #include "components/UITheme.h"
@@ -20,6 +21,9 @@
 namespace {
 constexpr const char* TITLE = "Japanese Dictionary";
 constexpr int RESULT_ROW_HEIGHT = 88;
+constexpr size_t STAGED_RESULT_LIMIT = JapaneseDictionaryActivity::MAX_RESULTS;
+constexpr size_t NORMAL_RESULT_LIMIT = 8;
+constexpr size_t MAX_QUERY_CHARS = 32;
 
 struct DictKeyDef {
   char key;
@@ -172,6 +176,154 @@ std::string matchTitle(const JapaneseDictionaryMatch& match) {
   return title;
 }
 
+std::string hiraganaToKatakana(const std::string& text) {
+  std::string out;
+  out.reserve(text.size());
+  const auto* p = reinterpret_cast<const unsigned char*>(text.c_str());
+  while (*p != '\0') {
+    uint32_t cp = utf8NextCodepoint(&p);
+    if (cp >= 0x3041 && cp <= 0x3096) {
+      cp += 0x60;
+    } else if (cp == '-') {
+      cp = 0x30FC;
+    }
+    utf8AppendCodepoint(cp, out);
+  }
+  return out;
+}
+
+int32_t searchSequenceGroupId(const int32_t sequence) { return sequence < 0 ? -sequence : sequence; }
+
+bool searchHasTermVariant(const std::string& terms, const std::string& term) {
+  size_t start = 0;
+  while (start <= terms.size()) {
+    const size_t end = terms.find("・", start);
+    const size_t actualEnd = end == std::string::npos ? terms.size() : end;
+    if (terms.substr(start, actualEnd - start) == term) return true;
+    if (end == std::string::npos) break;
+    start = end + strlen("・");
+  }
+  return false;
+}
+
+void appendSearchTermVariant(JapaneseDictionaryMatch& match, const std::string& term) {
+  if (term.empty() || searchHasTermVariant(match.terms, term)) return;
+  if (!match.terms.empty()) match.terms += "・";
+  match.terms += term;
+  if (match.termCount < UINT8_MAX) ++match.termCount;
+}
+
+bool mergeSearchResult(JapaneseDictionaryMatch* matches, const size_t count, const JapaneseDictionaryMatch& candidate) {
+  const int32_t candidateGroup = searchSequenceGroupId(candidate.sequence);
+  for (size_t i = 0; i < count; ++i) {
+    if (searchSequenceGroupId(matches[i].sequence) == candidateGroup && matches[i].reading == candidate.reading &&
+        matches[i].definition == candidate.definition) {
+      appendSearchTermVariant(matches[i], candidate.term);
+      return true;
+    }
+  }
+  return false;
+}
+
+size_t appendSearchResults(JapaneseDictionaryMatch* outMatches, size_t found, const size_t maxMatches,
+                           const JapaneseDictionaryMatch* candidates, const size_t candidateCount) {
+  if (outMatches == nullptr || candidates == nullptr) return found;
+  for (size_t i = 0; i < candidateCount && found < maxMatches; ++i) {
+    if (!mergeSearchResult(outMatches, found, candidates[i])) {
+      outMatches[found++] = candidates[i];
+    }
+  }
+  return found;
+}
+
+bool rankedBefore(const JapaneseDictionaryMatch& a, const JapaneseDictionaryMatch& b) {
+  if (a.tier != b.tier) return a.tier < b.tier;
+  if (a.score != b.score) return a.score > b.score;
+  if (a.deinflectionDepth != b.deinflectionDepth) return a.deinflectionDepth < b.deinflectionDepth;
+  if (a.flags != b.flags) return a.flags < b.flags;
+  return a.term < b.term;
+}
+
+bool endsWith(const std::string& text, const char* suffix) {
+  const size_t suffixLen = strlen(suffix);
+  return text.size() > suffixLen && text.compare(text.size() - suffixLen, suffixLen, suffix) == 0;
+}
+
+bool hasLikelyInflectionEnding(const std::string& query) {
+  static constexpr const char* ENDINGS[] = {"ました", "ません", "ましたら", "ませんでした", "なかった", "かった",
+                                            "くない", "くて",   "ければ",   "れば",         "られる",   "れる",
+                                            "せる",   "させる", "ない",     "ます",         "たい",     "た",
+                                            "て",     "だ",     "で",       "ば",           "ぬ"};
+  for (const char* ending : ENDINGS) {
+    if (endsWith(query, ending)) return true;
+  }
+  return false;
+}
+
+size_t stagedSearchLimit(const size_t found) {
+  constexpr size_t MERGE_SLACK = 2;
+  if (found >= NORMAL_RESULT_LIMIT) return 0;
+  return std::min(STAGED_RESULT_LIMIT, NORMAL_RESULT_LIMIT - found + MERGE_SLACK);
+}
+
+std::vector<size_t> utf8CharStarts(const std::string& text, const size_t maxChars) {
+  std::vector<size_t> starts;
+  starts.reserve(std::min(maxChars, text.size()) + 1);
+  const auto* begin = reinterpret_cast<const unsigned char*>(text.c_str());
+  const auto* p = begin;
+  while (*p != '\0' && starts.size() < maxChars) {
+    starts.push_back(static_cast<size_t>(p - begin));
+    utf8NextCodepoint(&p);
+  }
+  starts.push_back(static_cast<size_t>(p - begin));
+  return starts;
+}
+
+size_t lookupSegmentedExact(JapaneseDictionary& dictionary, const std::string& query, JapaneseDictionaryMatch* outMatches,
+                            const size_t maxMatches) {
+  if (!dictionary.isOpen() || query.empty() || outMatches == nullptr || maxMatches < 2) return 0;
+
+  const std::vector<size_t> starts = utf8CharStarts(query, MAX_QUERY_CHARS + 1);
+  if (starts.size() < 5) return 0;
+  const size_t charCount = starts.size() - 1;
+
+  std::vector<std::string> segments;
+  segments.reserve(maxMatches);
+  size_t charPos = 0;
+  while (charPos < charCount && segments.size() < maxMatches) {
+    bool matched = false;
+    const size_t remaining = charCount - charPos;
+    if (remaining < 2) return 0;
+
+    for (size_t segmentChars = remaining; segmentChars >= 2; --segmentChars) {
+      const std::string segment = query.substr(starts[charPos], starts[charPos + segmentChars] - starts[charPos]);
+      if (dictionary.hasExact(segment)) {
+        segments.push_back(segment);
+        charPos += segmentChars;
+        matched = true;
+        break;
+      }
+      if (segmentChars == 2) break;
+    }
+    if (!matched) return 0;
+  }
+
+  if (segments.size() < 2 || charPos != charCount) return 0;
+
+  size_t found = 0;
+  for (size_t segmentIndex = 0; segmentIndex < segments.size() && found < maxMatches; ++segmentIndex) {
+    const size_t remainingSegments = segments.size() - segmentIndex - 1;
+    const size_t available = maxMatches - found;
+    if (available <= remainingSegments) return 0;
+    const size_t segmentLimit = available - remainingSegments;
+    const size_t segmentFound = dictionary.lookupExact(segments[segmentIndex], outMatches + found, segmentLimit);
+    if (segmentFound == 0) return 0;
+    found += segmentFound;
+  }
+
+  return found >= segments.size() ? found : 0;
+}
+
 ResultPageLayout calculateResultPageLayout(int selectedIndex, int itemCount, int listHeight, const int resultRowHeight,
                                            const int pagerRowHeight) {
   itemCount = std::max(0, itemCount);
@@ -300,14 +452,17 @@ void JapaneseDictionaryActivity::clearQuery() {
   committedKana.clear();
   pendingRomaji.clear();
   results.clear();
+  exactCursor = JapaneseDictionaryExactCursor{};
   searched = false;
   selectedResult = 0;
+  detailLineOffset = 0;
   viewMode = ViewMode::Editing;
 }
 
 void JapaneseDictionaryActivity::search() {
   finalizePendingRomaji();
   results.clear();
+  exactCursor = JapaneseDictionaryExactCursor{};
   selectedResult = 0;
   searched = true;
 
@@ -326,10 +481,136 @@ void JapaneseDictionaryActivity::search() {
     return;
   }
 
-  std::array<JapaneseDictionaryMatch, MAX_RESULTS> matches;
-  const size_t found = dictionary.lookupExactThenPrefix(query, matches.data(), matches.size(), 48);
+  std::vector<JapaneseDictionaryMatch> matches(MAX_RESULTS);
+  std::vector<JapaneseDictionaryMatch> staged(STAGED_RESULT_LIMIT);
+  size_t found = 0;
+  size_t stagedCount = 0;
+  const std::string katakanaQuery = hiraganaToKatakana(query);
+  const bool likelyInflected = hasLikelyInflectionEnding(query);
+  const bool allowKatakanaFallback = !likelyInflected;
+
+  if (dictionary.beginExactLookup(query, exactCursor)) {
+    stagedCount = dictionary.lookupExactNext(exactCursor, staged.data(), NORMAL_RESULT_LIMIT);
+  }
+  found = appendSearchResults(matches.data(), found, matches.size(), staged.data(), stagedCount);
+
+  if (allowKatakanaFallback && found < NORMAL_RESULT_LIMIT && katakanaQuery != query) {
+    stagedCount = dictionary.lookupExact(katakanaQuery, staged.data(), stagedSearchLimit(found));
+    found = appendSearchResults(matches.data(), found, matches.size(), staged.data(), stagedCount);
+  }
+
+  std::sort(matches.begin(), matches.begin() + found, rankedBefore);
+  if (found > NORMAL_RESULT_LIMIT) found = NORMAL_RESULT_LIMIT;
+
+  if (found < NORMAL_RESULT_LIMIT) {
+    stagedCount = dictionary.lookupPrefix(query, staged.data(), stagedSearchLimit(found));
+    found = appendSearchResults(matches.data(), found, NORMAL_RESULT_LIMIT, staged.data(), stagedCount);
+  }
+
+  if (allowKatakanaFallback && found < NORMAL_RESULT_LIMIT && katakanaQuery != query) {
+    stagedCount = dictionary.lookupPrefix(katakanaQuery, staged.data(), stagedSearchLimit(found));
+    found = appendSearchResults(matches.data(), found, NORMAL_RESULT_LIMIT, staged.data(), stagedCount);
+  }
+
+  if (found < NORMAL_RESULT_LIMIT && likelyInflected) {
+    stagedCount = dictionary.lookupDeinflected(query, staged.data(), stagedSearchLimit(found));
+    found = appendSearchResults(matches.data(), found, NORMAL_RESULT_LIMIT, staged.data(), stagedCount);
+  }
+
+  if (found == 0) {
+    found = lookupSegmentedExact(dictionary, query, matches.data(), matches.size());
+  }
+
   results.assign(matches.begin(), matches.begin() + found);
+  detailLineOffset = 0;
   viewMode = ViewMode::Results;
+}
+
+bool JapaneseDictionaryActivity::hasMoreExactResults() const {
+  return dictionaryOpen && exactCursor.active && !exactCursor.exhausted && results.size() < MAX_RESULTS;
+}
+
+int JapaneseDictionaryActivity::resultLayoutItemCount() const {
+  const size_t virtualMoreRow = hasMoreExactResults() ? 1 : 0;
+  return static_cast<int>(std::min(MAX_RESULTS, results.size() + virtualMoreRow));
+}
+
+bool JapaneseDictionaryActivity::appendNextExactResultPage() {
+  if (!hasMoreExactResults()) return false;
+
+  const size_t oldCount = results.size();
+  std::vector<JapaneseDictionaryMatch> merged(MAX_RESULTS);
+  for (size_t i = 0; i < oldCount && i < merged.size(); ++i) {
+    merged[i] = results[i];
+  }
+
+  std::vector<JapaneseDictionaryMatch> staged(STAGED_RESULT_LIMIT);
+  size_t found = oldCount;
+  while (hasMoreExactResults() && found < MAX_RESULTS) {
+    const size_t remaining = MAX_RESULTS - found;
+    const size_t pageLimit = std::min(remaining, NORMAL_RESULT_LIMIT);
+    const size_t stagedCount = dictionary.lookupExactNext(exactCursor, staged.data(), pageLimit);
+    if (stagedCount == 0) break;
+
+    found = appendSearchResults(merged.data(), found, merged.size(), staged.data(), stagedCount);
+    if (found > oldCount) {
+      results.assign(merged.begin(), merged.begin() + found);
+      return true;
+    }
+  }
+
+  return results.size() > oldCount;
+}
+
+std::vector<std::string> JapaneseDictionaryActivity::detailLines() const {
+  std::vector<std::string> lines;
+  if (results.empty() || selectedResult >= results.size()) return lines;
+
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  const int width = renderer.getScreenWidth() - metrics.contentSidePadding * 2;
+  const ParsedDefinition parsed = parseDefinition(results[selectedResult].definition);
+  if (!parsed.attributes.empty()) {
+    const auto tagLines = renderer.wrappedText(UI_10_FONT_ID, parsed.attributes.c_str(), width, 2, EpdFontFamily::BOLD);
+    lines.insert(lines.end(), tagLines.begin(), tagLines.end());
+  }
+
+  for (size_t i = 0; i < parsed.glosses.size(); ++i) {
+    const std::string prefix = std::to_string(i + 1) + ". ";
+    const auto glossLines = renderer.wrappedText(UI_10_FONT_ID, (prefix + parsed.glosses[i]).c_str(), width, 64);
+    lines.insert(lines.end(), glossLines.begin(), glossLines.end());
+  }
+  return lines;
+}
+
+int JapaneseDictionaryActivity::detailLinesPerPage(const int lineOffset) const {
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  const int lineHeight = renderer.getLineHeight(UI_10_FONT_ID);
+  const int titleTop = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
+  const int contentTop = titleTop + renderer.getLineHeight(UI_12_FONT_ID) + 8;
+  const int contentBottom = renderer.getScreenHeight() - metrics.buttonHintsHeight;
+  const int totalLines = static_cast<int>(detailLines().size());
+  const bool hasPrevious = lineOffset > 0;
+  const int previousHeight = hasPrevious ? metrics.listRowHeight : 0;
+  const int availableBeforeNext = contentBottom - contentTop - previousHeight;
+  int pageLines = std::max(1, availableBeforeNext / lineHeight);
+  if (lineOffset + pageLines < totalLines) {
+    pageLines = std::max(1, (availableBeforeNext - metrics.listRowHeight) / lineHeight);
+  }
+  return pageLines;
+}
+
+int JapaneseDictionaryActivity::detailMaxLineOffset() const {
+  const int totalLines = static_cast<int>(detailLines().size());
+  return std::max(0, totalLines - detailLinesPerPage(std::max(0, totalLines - 1)));
+}
+
+void JapaneseDictionaryActivity::pageDetail(const int direction) {
+  if (direction < 0) {
+    detailLineOffset = std::max(0, detailLineOffset - detailLinesPerPage(std::max(0, detailLineOffset - 1)));
+  } else if (direction > 0) {
+    detailLineOffset = std::min(detailMaxLineOffset(), detailLineOffset + detailLinesPerPage(detailLineOffset));
+  }
+  requestUpdate();
 }
 
 void JapaneseDictionaryActivity::handleBack() {
@@ -349,7 +630,7 @@ void JapaneseDictionaryActivity::handleBack() {
 int JapaneseDictionaryActivity::resultsPerPage() const {
   const auto& metrics = UITheme::getInstance().getMetrics();
   const ResultPageLayout layout =
-      calculateResultPageLayout(static_cast<int>(selectedResult), static_cast<int>(results.size()), resultListRect().height,
+      calculateResultPageLayout(static_cast<int>(selectedResult), resultLayoutItemCount(), resultListRect().height,
                                 RESULT_ROW_HEIGHT, metrics.listRowHeight);
   return std::max(1, layout.itemCount);
 }
@@ -382,6 +663,24 @@ bool JapaneseDictionaryActivity::handleTouch() {
   if (!bundleStatus.complete) return true;
 
   if (viewMode == ViewMode::Detail) {
+    const auto& metrics = UITheme::getInstance().getMetrics();
+    const int titleTop = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
+    const int contentTop = titleTop + renderer.getLineHeight(UI_12_FONT_ID) + 8;
+    const int contentBottom = renderer.getScreenHeight() - metrics.buttonHintsHeight;
+    if (detailLineOffset > 0 &&
+        TouchNavigator::contains(Rect{metrics.contentSidePadding, contentTop,
+                                      renderer.getScreenWidth() - metrics.contentSidePadding * 2, metrics.listRowHeight},
+                                 point)) {
+      pageDetail(-1);
+      return true;
+    }
+    if (detailLineOffset < detailMaxLineOffset() &&
+        TouchNavigator::contains(Rect{metrics.contentSidePadding, contentBottom - metrics.listRowHeight,
+                                      renderer.getScreenWidth() - metrics.contentSidePadding * 2, metrics.listRowHeight},
+                                 point)) {
+      pageDetail(1);
+      return true;
+    }
     return true;
   }
 
@@ -395,8 +694,8 @@ bool JapaneseDictionaryActivity::handleTouch() {
     const auto& metrics = UITheme::getInstance().getMetrics();
     const Rect list = resultListRect();
     const ResultPageLayout layout =
-        calculateResultPageLayout(static_cast<int>(selectedResult), static_cast<int>(results.size()), list.height,
-                                  RESULT_ROW_HEIGHT, metrics.listRowHeight);
+        calculateResultPageLayout(static_cast<int>(selectedResult), resultLayoutItemCount(), list.height, RESULT_ROW_HEIGHT,
+                                  metrics.listRowHeight);
     const int visibleRows = resultVisibleRowCount(layout);
     for (int i = 0; i < visibleRows; ++i) {
       if (!TouchNavigator::contains(resultVisibleRowRect(list, layout, i, RESULT_ROW_HEIGHT, metrics.listRowHeight),
@@ -406,13 +705,19 @@ bool JapaneseDictionaryActivity::handleTouch() {
 
       if (isPreviousResultPageRow(layout, i)) {
         selectedResult = static_cast<size_t>(
-            calculateResultPageLayout(std::max(0, layout.start - 1), static_cast<int>(results.size()), list.height,
+            calculateResultPageLayout(std::max(0, layout.start - 1), resultLayoutItemCount(), list.height,
                                       RESULT_ROW_HEIGHT, metrics.listRowHeight)
                 .start);
         requestUpdate();
         return true;
       }
       if (isNextResultPageRow(layout, i)) {
+        if (layout.start + layout.itemCount >= static_cast<int>(results.size()) && appendNextExactResultPage()) {
+          selectedResult = static_cast<size_t>(std::min(static_cast<int>(results.size()) - 1,
+                                                        layout.start + layout.itemCount));
+          requestUpdate();
+          return true;
+        }
         selectedResult = static_cast<size_t>(std::min(static_cast<int>(results.size()) - 1,
                                                       layout.start + layout.itemCount));
         requestUpdate();
@@ -421,7 +726,15 @@ bool JapaneseDictionaryActivity::handleTouch() {
 
       const int resultIndex = visibleRowToResultIndex(layout, i);
       if (resultIndex < 0) return true;
+      if (resultIndex >= static_cast<int>(results.size())) {
+        if (appendNextExactResultPage()) {
+          selectedResult = static_cast<size_t>(std::min(resultIndex, static_cast<int>(results.size()) - 1));
+          requestUpdate();
+        }
+        return true;
+      }
       selectedResult = static_cast<size_t>(resultIndex);
+      detailLineOffset = 0;
       viewMode = ViewMode::Detail;
       requestUpdate();
       return true;
@@ -479,12 +792,27 @@ void JapaneseDictionaryActivity::loop() {
 
   if (!bundleStatus.complete) return;
 
+  if (viewMode == ViewMode::Detail && !results.empty()) {
+    if (mappedInput.wasPressed(MappedInputManager::Button::Up) ||
+        mappedInput.wasPressed(MappedInputManager::Button::PageBack)) {
+      pageDetail(-1);
+    } else if (mappedInput.wasPressed(MappedInputManager::Button::Down) ||
+               mappedInput.wasPressed(MappedInputManager::Button::PageForward)) {
+      pageDetail(1);
+    }
+    return;
+  }
+
   if ((viewMode == ViewMode::Results || viewMode == ViewMode::Detail) && !results.empty()) {
     if (mappedInput.wasPressed(MappedInputManager::Button::Up)) {
       selectedResult = ButtonNavigator::previousIndex(static_cast<int>(selectedResult), static_cast<int>(results.size()));
       requestUpdate();
     } else if (mappedInput.wasPressed(MappedInputManager::Button::Down)) {
-      selectedResult = ButtonNavigator::nextIndex(static_cast<int>(selectedResult), static_cast<int>(results.size()));
+      if (selectedResult + 1 >= results.size() && appendNextExactResultPage()) {
+        selectedResult = std::min(selectedResult + 1, results.size() - 1);
+      } else {
+        selectedResult = ButtonNavigator::nextIndex(static_cast<int>(selectedResult), static_cast<int>(results.size()));
+      }
       requestUpdate();
     } else if (mappedInput.wasPressed(MappedInputManager::Button::PageBack)) {
       const int perPage = resultsPerPage();
@@ -492,10 +820,14 @@ void JapaneseDictionaryActivity::loop() {
       requestUpdate();
     } else if (mappedInput.wasPressed(MappedInputManager::Button::PageForward)) {
       const int perPage = resultsPerPage();
+      if (static_cast<int>(selectedResult) + perPage >= static_cast<int>(results.size())) {
+        appendNextExactResultPage();
+      }
       selectedResult = static_cast<size_t>(
           std::min(static_cast<int>(results.size()) - 1, static_cast<int>(selectedResult) + perPage));
       requestUpdate();
     } else if (viewMode == ViewMode::Results && mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
+      detailLineOffset = 0;
       viewMode = ViewMode::Detail;
       requestUpdate();
     }
@@ -561,8 +893,8 @@ void JapaneseDictionaryActivity::drawResults() {
   }
 
   const auto layout =
-      calculateResultPageLayout(static_cast<int>(selectedResult), static_cast<int>(results.size()), list.height,
-                                RESULT_ROW_HEIGHT, metrics.listRowHeight);
+      calculateResultPageLayout(static_cast<int>(selectedResult), resultLayoutItemCount(), list.height, RESULT_ROW_HEIGHT,
+                                metrics.listRowHeight);
   const int visibleRows = resultVisibleRowCount(layout);
   for (int i = 0; i < visibleRows; ++i) {
     const Rect row = resultVisibleRowRect(list, layout, i, RESULT_ROW_HEIGHT, metrics.listRowHeight);
@@ -577,9 +909,13 @@ void JapaneseDictionaryActivity::drawResults() {
 
     const int resultIndex = visibleRowToResultIndex(layout, i);
     if (resultIndex < 0) continue;
+    if (resultIndex >= static_cast<int>(results.size())) {
+      TouchUi::drawCenteredPagerRow(renderer, row, 0, tr(STR_NEXT_PAGE));
+      continue;
+    }
     const bool selected = static_cast<size_t>(resultIndex) == selectedResult;
     if (selected) {
-      renderer.fillRoundedRect(row.x, row.y, row.width, row.height - 4, 4, Color::Black);
+      renderer.fillRoundedRect(row.x, row.y, row.width, row.height - 4, 4, Color::LightGray);
     } else {
       renderer.drawLine(row.x, row.y + row.height - 5, row.x + row.width, row.y + row.height - 5, 1, true);
     }
@@ -590,12 +926,12 @@ void JapaneseDictionaryActivity::drawResults() {
                                                             EpdFontFamily::BOLD);
     const auto glossLines = renderer.wrappedText(UI_10_FONT_ID, definitionPreview(match.definition).c_str(),
                                                  row.width - 12, 2);
-    renderer.drawText(UI_12_FONT_ID, row.x + 6, row.y + 6, titleClipped.c_str(), !selected, EpdFontFamily::BOLD);
+    renderer.drawText(UI_12_FONT_ID, row.x + 6, row.y + 6, titleClipped.c_str(), true, EpdFontFamily::BOLD);
     if (!glossLines.empty()) {
-      renderer.drawText(UI_10_FONT_ID, row.x + 6, row.y + 32, glossLines[0].c_str(), !selected);
+      renderer.drawText(UI_10_FONT_ID, row.x + 6, row.y + 32, glossLines[0].c_str(), true);
     }
     if (glossLines.size() > 1) {
-      renderer.drawText(UI_10_FONT_ID, row.x + 6, row.y + 52, glossLines[1].c_str(), !selected);
+      renderer.drawText(UI_10_FONT_ID, row.x + 6, row.y + 52, glossLines[1].c_str(), true);
     }
   }
 }
@@ -607,32 +943,34 @@ void JapaneseDictionaryActivity::drawDetail() {
   const auto& match = results[selectedResult];
   const int x = metrics.contentSidePadding;
   const int width = renderer.getScreenWidth() - metrics.contentSidePadding * 2;
-  int y = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
+  const int titleTop = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
+  int y = titleTop;
 
   const std::string title = renderer.truncatedText(UI_12_FONT_ID, matchTitle(match).c_str(), width, EpdFontFamily::BOLD);
   renderer.drawText(UI_12_FONT_ID, x, y, title.c_str(), true, EpdFontFamily::BOLD);
-  y += renderer.getLineHeight(UI_12_FONT_ID) + 8;
-
-  const ParsedDefinition parsed = parseDefinition(match.definition);
-  const int lineHeight = renderer.getLineHeight(UI_10_FONT_ID);
+  const int contentTop = titleTop + renderer.getLineHeight(UI_12_FONT_ID) + 8;
   const int contentBottom = renderer.getScreenHeight() - metrics.buttonHintsHeight;
+  y = contentTop;
 
-  if (!parsed.attributes.empty() && y + lineHeight < contentBottom) {
-    const std::string tags = renderer.truncatedText(UI_10_FONT_ID, parsed.attributes.c_str(), width, EpdFontFamily::BOLD);
-    renderer.drawText(UI_10_FONT_ID, x, y, tags.c_str(), true, EpdFontFamily::BOLD);
-    y += lineHeight + metrics.verticalSpacing;
+  const std::vector<std::string> lines = detailLines();
+  const int lineHeight = renderer.getLineHeight(UI_10_FONT_ID);
+
+  if (detailLineOffset > 0) {
+    const Rect row{x, y, width, metrics.listRowHeight};
+    TouchUi::drawCenteredPagerRow(renderer, row, 0, tr(STR_PREV_PAGE));
+    y += metrics.listRowHeight;
   }
 
-  for (size_t i = 0; i < parsed.glosses.size() && y + lineHeight <= contentBottom; ++i) {
-    const std::string prefix = std::to_string(i + 1) + ". ";
-    const int remainingLines = std::max(1, (contentBottom - y) / lineHeight);
-    const auto lines = renderer.wrappedText(UI_10_FONT_ID, (prefix + parsed.glosses[i]).c_str(), width, remainingLines);
-    for (const auto& line : lines) {
-      if (y + lineHeight > contentBottom) return;
-      renderer.drawText(UI_10_FONT_ID, x, y, line.c_str(), true);
-      y += lineHeight;
-    }
-    y += 4;
+  const int pageLines = detailLinesPerPage(detailLineOffset);
+  const int endLine = std::min(static_cast<int>(lines.size()), detailLineOffset + pageLines);
+  for (int i = detailLineOffset; i < endLine && y + lineHeight <= contentBottom; ++i) {
+    renderer.drawText(UI_10_FONT_ID, x, y, lines[i].c_str(), true);
+    y += lineHeight;
+  }
+
+  if (detailLineOffset < detailMaxLineOffset()) {
+    const Rect row{x, contentBottom - metrics.listRowHeight, width, metrics.listRowHeight};
+    TouchUi::drawCenteredPagerRow(renderer, row, 0, tr(STR_NEXT_PAGE));
   }
 }
 

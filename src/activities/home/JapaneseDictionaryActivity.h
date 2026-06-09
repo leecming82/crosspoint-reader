@@ -21,13 +21,14 @@ class JapaneseDictionaryActivity final : public Activity {
   static constexpr int COLS = 5;
   static constexpr int ROWS = 6;
   static constexpr int BOTTOM_KEY_COUNT = 5;
-  static constexpr size_t MAX_RESULTS = 8;
+  static constexpr size_t MAX_RESULTS = 32;
 
  private:
   enum class ViewMode { Editing, Results, Detail };
 
   JapaneseDictionaryBundleStatus bundleStatus;
   JapaneseDictionary dictionary;
+  JapaneseDictionaryExactCursor exactCursor;
   std::string committedKana;
   std::string pendingRomaji;
   std::vector<JapaneseDictionaryMatch> results;
@@ -36,6 +37,7 @@ class JapaneseDictionaryActivity final : public Activity {
   bool dictionaryOpen = false;
   bool symbolsMode = false;
   size_t selectedResult = 0;
+  int detailLineOffset = 0;
 
   std::string queryText() const;
   void insertChar(char ch);
@@ -44,6 +46,13 @@ class JapaneseDictionaryActivity final : public Activity {
   void clearQuery();
   void finalizePendingRomaji();
   void search();
+  bool hasMoreExactResults() const;
+  int resultLayoutItemCount() const;
+  bool appendNextExactResultPage();
+  std::vector<std::string> detailLines() const;
+  int detailLinesPerPage(int lineOffset) const;
+  int detailMaxLineOffset() const;
+  void pageDetail(int direction);
   void handleBack();
   int resultsPerPage() const;
   bool handleTouch();
