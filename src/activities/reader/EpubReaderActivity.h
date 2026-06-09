@@ -131,6 +131,7 @@ class EpubReaderActivity final : public Activity {
 
   void renderContents(std::unique_ptr<Page> page, int orientedMarginTop, int orientedMarginRight,
                       int orientedMarginBottom, int orientedMarginLeft);
+  void prebuildAdjacentShortSections(uint16_t viewportWidth, uint16_t viewportHeight);
   void prepareSectionGlyphPack();
   bool hasActiveSectionGlyphPack() const;
   void renderStatusBar() const;

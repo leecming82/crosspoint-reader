@@ -54,6 +54,9 @@ namespace {
 constexpr int PAGE_TURN_RATES[] = {1, 1, 3, 6, 12};
 constexpr size_t KANJI_LOOKUP_CONTEXT_CHARS = 12;
 constexpr unsigned long PENDING_PAGE_TURN_INTENT_TTL_MS = 3000;
+constexpr uint32_t SHORT_SECTION_MAX_BYTES = 8 * 1024;
+constexpr uint32_t SHORT_SECTION_BATCH_MAX_BYTES = 64 * 1024;
+constexpr int SHORT_SECTION_BATCH_MAX_COUNT = 8;
 
 int clampPercent(int percent) {
   if (percent < 0) {
@@ -87,6 +90,24 @@ bool hasVisibleDefinitionText(const std::string& text) {
 bool isCenterScreenPoint(const MappedInputManager::TouchPoint point, const int screenWidth, const int screenHeight) {
   return screenWidth > 0 && screenHeight > 0 && point.x >= screenWidth / 3 && point.x < (screenWidth * 2) / 3 &&
          point.y >= screenHeight / 3 && point.y < (screenHeight * 2) / 3;
+}
+
+uint32_t estimateSpineBytes(const std::shared_ptr<Epub>& epub, const int spineIndex) {
+  if (!epub || spineIndex < 0 || spineIndex >= epub->getSpineItemsCount()) {
+    return 0;
+  }
+
+  const auto spine = epub->getSpineItem(spineIndex);
+  if (spine.sourceEndOffset > spine.sourceStartOffset) {
+    return spine.sourceEndOffset - spine.sourceStartOffset;
+  }
+
+  const uint32_t previousCumulative =
+      spineIndex > 0 ? static_cast<uint32_t>(epub->getCumulativeSpineItemSize(spineIndex - 1)) : 0;
+  if (spine.cumulativeSize > previousCumulative) {
+    return spine.cumulativeSize - previousCumulative;
+  }
+  return spine.cumulativeSize;
 }
 
 bool touchDominatesHorizontal(const MappedInputManager::TouchPoint point, const int screenWidth, const int screenHeight) {
@@ -1338,6 +1359,7 @@ void EpubReaderActivity::render(RenderLock&& lock) {
         showPendingSyncSaveError();
         return;
       }
+      prebuildAdjacentShortSections(viewportWidth, viewportHeight);
       if (auto* fcm = renderer.getFontCacheManager()) {
         fcm->clearPersistentCache();
       }
@@ -1455,6 +1477,51 @@ void EpubReaderActivity::render(RenderLock&& lock) {
 
   if (showBookmarkMessage) {
     GUI.drawPopup(renderer, tr(STR_BOOKMARK_ADDED));
+  }
+}
+
+void EpubReaderActivity::prebuildAdjacentShortSections(const uint16_t viewportWidth, const uint16_t viewportHeight) {
+  if (!epub || currentSpineIndex < 0) {
+    return;
+  }
+
+  uint32_t totalBytes = 0;
+  int considered = 0;
+
+  const int spineCount = epub->getSpineItemsCount();
+  for (int spineIndex = currentSpineIndex + 1; spineIndex < spineCount; ++spineIndex) {
+    if (considered >= SHORT_SECTION_BATCH_MAX_COUNT) {
+      break;
+    }
+
+    const uint32_t estimatedBytes = estimateSpineBytes(epub, spineIndex);
+    if (estimatedBytes == 0 || estimatedBytes > SHORT_SECTION_MAX_BYTES) {
+      break;
+    }
+    if (totalBytes + estimatedBytes > SHORT_SECTION_BATCH_MAX_BYTES) {
+      break;
+    }
+
+    ++considered;
+    totalBytes += estimatedBytes;
+
+    Section candidate(epub, spineIndex, renderer);
+    if (candidate.loadSectionFile(effectiveReaderFontId(), SETTINGS.getReaderLineCompression(),
+                                  SETTINGS.extraParagraphSpacing, SETTINGS.paragraphAlignment, viewportWidth,
+                                  viewportHeight, SETTINGS.hyphenationEnabled, SETTINGS.embeddedStyle,
+                                  SETTINGS.imageRendering, SETTINGS.focusReadingEnabled, SETTINGS.orientation,
+                                  static_cast<uint8_t>(effectiveWritingMode))) {
+      continue;
+    }
+
+    if (!candidate.createSectionFile(effectiveReaderFontId(), SETTINGS.getReaderLineCompression(),
+                                     SETTINGS.extraParagraphSpacing, SETTINGS.paragraphAlignment, viewportWidth,
+                                     viewportHeight, SETTINGS.hyphenationEnabled, SETTINGS.embeddedStyle,
+                                     SETTINGS.imageRendering, SETTINGS.focusReadingEnabled, SETTINGS.orientation,
+                                     static_cast<uint8_t>(effectiveWritingMode))) {
+      LOG_ERR("ERS", "Failed to prebuild short section cache: spine=%d", spineIndex);
+      break;
+    }
   }
 }
 
