@@ -81,6 +81,7 @@ class EpubReaderActivity final : public Activity {
   bool kanjiCursorRefreshPending = false;
   bool kanjiOverlayFastRefreshPending = false;
   bool kanjiCursorRebuildPending = false;
+  bool kanjiLookupPending = false;
   bool kanjiResumeValid = false;
   int kanjiResumeSpineIndex = -1;
   int kanjiResumePageNumber = -1;

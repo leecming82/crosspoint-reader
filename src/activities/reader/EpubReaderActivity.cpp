@@ -52,7 +52,7 @@ namespace {
 // pagesPerRefresh now comes from SETTINGS.getRefreshFrequency()
 // pages per minute, first item is 1 to prevent division by zero if accessed
 constexpr int PAGE_TURN_RATES[] = {1, 1, 3, 6, 12};
-constexpr size_t KANJI_LOOKUP_CONTEXT_CHARS = 12;
+constexpr size_t KANJI_LOOKUP_CONTEXT_CHARS = 6;
 constexpr unsigned long PENDING_PAGE_TURN_INTENT_TTL_MS = 3000;
 constexpr uint32_t SHORT_SECTION_MAX_BYTES = 8 * 1024;
 constexpr uint32_t SHORT_SECTION_BATCH_MAX_BYTES = 64 * 1024;
@@ -88,8 +88,8 @@ bool hasVisibleDefinitionText(const std::string& text) {
 }
 
 bool isCenterScreenPoint(const MappedInputManager::TouchPoint point, const int screenWidth, const int screenHeight) {
-  return screenWidth > 0 && screenHeight > 0 && point.x >= screenWidth / 3 && point.x < (screenWidth * 2) / 3 &&
-         point.y >= screenHeight / 3 && point.y < (screenHeight * 2) / 3;
+  return screenWidth > 0 && screenHeight > 0 && point.x >= screenWidth * 3 / 10 &&
+         point.x < screenWidth * 7 / 10 && point.y >= screenHeight * 3 / 10 && point.y < screenHeight * 7 / 10;
 }
 
 uint32_t estimateSpineBytes(const std::shared_ptr<Epub>& epub, const int spineIndex) {
@@ -1980,6 +1980,10 @@ void EpubReaderActivity::enterKanjiCursorMode() {
     return;
   }
 
+  if (!kanjiDictionary.openDefault()) {
+    LOG_ERR("DICT", "Failed to open dictionary at %s", JapaneseDictionary::DEFAULT_JPDICT_PATH);
+  }
+
   queueKanjiCursorRedraw();
   flushKanjiCursorRefresh();
 }
@@ -2163,6 +2167,7 @@ void EpubReaderActivity::clearKanjiCursorState(const bool saveResumePosition, co
   kanjiCursorRefreshPending = false;
   kanjiOverlayFastRefreshPending = false;
   kanjiCursorRebuildPending = false;
+  kanjiLookupPending = false;
   kanjiCursorRectValid = false;
   releaseKanjiCursorPageCache(/*releaseIndexCapacity=*/true);
   kanjiDictionary.close();
@@ -2291,6 +2296,9 @@ bool EpubReaderActivity::drawKanjiCursor() {
   }
 
   renderer.drawRect(rect.x, rect.y, rect.width, rect.height, 2, true);
+  if (kanjiLookupPending && rect.width > 8 && rect.height > 8) {
+    renderer.drawRect(rect.x + 4, rect.y + 4, rect.width - 8, rect.height - 8, 1, true);
+  }
   kanjiCursorRectValid = true;
   kanjiCursorRectX = rect.x;
   kanjiCursorRectY = rect.y;
@@ -2377,6 +2385,9 @@ std::string EpubReaderActivity::extractKanjiLookupText(const size_t maxChars) co
 void EpubReaderActivity::showKanjiPopup() {
   if (!kanjiCursorActive || kanjiIndex.empty()) return;
   kanjiPopupActive = true;
+  kanjiLookupPending = true;
+  queueKanjiCursorRedraw();
+  flushKanjiCursorRefresh();
 
   // Extract the selected kanji and the forward context that dictionary lookup will receive.
   const std::string lookupText = extractKanjiLookupText(KANJI_LOOKUP_CONTEXT_CHARS);
@@ -2384,10 +2395,10 @@ void EpubReaderActivity::showKanjiPopup() {
           lookupText.c_str());
   kanjiPopupMatches.clear();
   kanjiPopupMatchIndex = 0;
-  kanjiDictionary.lookupContext(lookupText, kanjiPopupMatches, 8, KANJI_LOOKUP_CONTEXT_CHARS);
-  LOG_DBG("DICT", "Lookup result matches=%d dict=%s", static_cast<int>(kanjiPopupMatches.size()),
-          kanjiDictionary.getBasePath().c_str());
-  kanjiDictionary.close();
+  const bool lookupOk = kanjiDictionary.lookupContext(lookupText, kanjiPopupMatches, 8, KANJI_LOOKUP_CONTEXT_CHARS);
+  LOG_DBG("DICT", "Lookup result ok=%d matches=%d dict=%s", lookupOk ? 1 : 0,
+          static_cast<int>(kanjiPopupMatches.size()), kanjiDictionary.getBasePath().c_str());
+  kanjiLookupPending = false;
 
   drawKanjiPopup();
 }
@@ -2491,8 +2502,8 @@ void EpubReaderActivity::hideKanjiPopup() {
     kanjiResumeIndexPos = kanjiIndexPos;
   }
   kanjiPopupActive = false;
+  kanjiLookupPending = false;
   releaseKanjiPopupMatches();
-  kanjiDictionary.close();
   releaseKanjiCursorPageCache(/*releaseIndexCapacity=*/true);
   kanjiCursorRectValid = false;
   kanjiCursorRebuildPending = true;
