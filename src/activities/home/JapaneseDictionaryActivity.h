@@ -45,6 +45,7 @@ class JapaneseDictionaryActivity final : public Activity {
   bool dictionaryOpen = false;
   bool kanjiIndexOpen = false;
   bool symbolsMode = false;
+  bool kanjiKeyboardVisible = true;
   size_t selectedResult = 0;
   int detailLineOffset = 0;
   int radicalPageOffset = 0;

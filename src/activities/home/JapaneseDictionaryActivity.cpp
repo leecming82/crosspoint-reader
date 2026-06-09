@@ -28,7 +28,7 @@ constexpr size_t MAX_QUERY_CHARS = 32;
 constexpr size_t MAX_KANJI_CANDIDATES = 160;
 constexpr size_t MAX_RADICAL_CANDIDATES = 32;
 constexpr size_t MAX_SELECTED_RADICALS = 6;
-constexpr int KANJI_SEARCH_CELL_HEIGHT = 40;
+constexpr int KANJI_SEARCH_MIN_CELL_SIDE = 64;
 constexpr int KANJI_READING_BRACKET_X_ADJUST = 6;
 constexpr int INPUT_CARET_GAP = 3;
 constexpr int INPUT_CARET_MARGIN = 7;
@@ -437,10 +437,12 @@ void drawBodyLine(const GfxRenderer& renderer, const int y, const char* text, co
                     bold ? EpdFontFamily::BOLD : EpdFontFamily::REGULAR);
 }
 
-int kanjiGridColumns(const Rect& rect) { return std::max(1, rect.width / 52); }
+int kanjiGridColumns(const Rect& rect) { return std::max(1, rect.width / KANJI_SEARCH_MIN_CELL_SIDE); }
+
+int kanjiGridCellSide(const Rect& rect) { return std::max(1, rect.width / kanjiGridColumns(rect)); }
 
 int kanjiGridRows(const GfxRenderer& renderer, const Rect& rect) {
-  return std::max(1, (rect.height - renderer.getLineHeight(UI_10_FONT_ID) - 8) / KANJI_SEARCH_CELL_HEIGHT);
+  return std::max(1, (rect.height - renderer.getLineHeight(UI_10_FONT_ID) - 8) / kanjiGridCellSide(rect));
 }
 }  // namespace
 
@@ -645,6 +647,7 @@ void JapaneseDictionaryActivity::openKanjiSearch() {
   selectedRadicals.clear();
   radicalCandidates.clear();
   kanjiCandidates.clear();
+  kanjiKeyboardVisible = true;
   viewMode = ViewMode::KanjiSearch;
   refreshKanjiSearchCandidates();
 }
@@ -809,6 +812,11 @@ void JapaneseDictionaryActivity::pageDetail(const int direction) {
 
 void JapaneseDictionaryActivity::handleBack() {
   if (viewMode == ViewMode::KanjiSearch) {
+    if (!kanjiKeyboardVisible) {
+      kanjiKeyboardVisible = true;
+      requestUpdate();
+      return;
+    }
     closeKanjiSearch();
     requestUpdate();
     return;
@@ -866,26 +874,48 @@ Rect JapaneseDictionaryActivity::kanjiRadicalsRect(const bool hasKanji) const {
   const Rect selected = selectedRadicalsRect();
   const int y = selected.y + selected.height + 6;
   const TouchKeyboardLayout keyboard(renderer, ROWS, COLS, BOTTOM_KEY_COUNT, 8, false, 0, COLS);
-  const int bottom = keyboard.keyboardTopY() - 6;
-  const int available = std::max(KANJI_SEARCH_CELL_HEIGHT, bottom - y);
-  const int h = hasKanji ? std::max(KANJI_SEARCH_CELL_HEIGHT * 2, available / 3) : available;
+  const int bottom =
+      kanjiKeyboardVisible ? keyboard.keyboardTopY() - 6 : renderer.getScreenHeight() - metrics.contentSidePadding;
+  const int width = renderer.getScreenWidth() - metrics.contentSidePadding * 2;
+  const Rect sizingRect{metrics.contentSidePadding, y, width, 1};
+  const int titleH = renderer.getLineHeight(UI_10_FONT_ID) + 8;
+  const int cellSide = kanjiGridCellSide(sizingRect);
+  const int available = std::max(titleH + cellSide, bottom - y);
+  int h = available;
+  if (hasKanji) {
+    const int minGrid = titleH + cellSide;
+    const int gap = 8;
+    if (available >= minGrid * 2 + gap) {
+      const int desired = std::max(titleH + cellSide * 2, available / 3);
+      h = std::min(desired, available - gap - minGrid);
+    } else {
+      h = std::max(minGrid, available / 2);
+    }
+  }
   return Rect{metrics.contentSidePadding, y, renderer.getScreenWidth() - metrics.contentSidePadding * 2, h};
 }
 
 Rect JapaneseDictionaryActivity::kanjiCandidatesRect(const bool hasRadicals) const {
   const auto& metrics = UITheme::getInstance().getMetrics();
   const TouchKeyboardLayout keyboard(renderer, ROWS, COLS, BOTTOM_KEY_COUNT, 8, false, 0, COLS);
-  const int bottom = keyboard.keyboardTopY() - 6;
+  const int bottom =
+      kanjiKeyboardVisible ? keyboard.keyboardTopY() - 6 : renderer.getScreenHeight() - metrics.contentSidePadding;
   if (!hasRadicals) {
     const Rect selected = selectedRadicalsRect();
     const int y = selected.y + selected.height + 6;
+    const int width = renderer.getScreenWidth() - metrics.contentSidePadding * 2;
+    const Rect sizingRect{metrics.contentSidePadding, y, width, 1};
+    const int minGrid = renderer.getLineHeight(UI_10_FONT_ID) + 8 + kanjiGridCellSide(sizingRect);
     return Rect{metrics.contentSidePadding, y, renderer.getScreenWidth() - metrics.contentSidePadding * 2,
-                std::max(KANJI_SEARCH_CELL_HEIGHT, bottom - y)};
+                std::max(minGrid, bottom - y)};
   }
   const Rect radicals = kanjiRadicalsRect(true);
   const int y = radicals.y + radicals.height + 8;
+  const int width = renderer.getScreenWidth() - metrics.contentSidePadding * 2;
+  const Rect sizingRect{metrics.contentSidePadding, y, width, 1};
+  const int minGrid = renderer.getLineHeight(UI_10_FONT_ID) + 8 + kanjiGridCellSide(sizingRect);
   return Rect{metrics.contentSidePadding, y, renderer.getScreenWidth() - metrics.contentSidePadding * 2,
-              std::max(KANJI_SEARCH_CELL_HEIGHT, bottom - y)};
+              std::max(minGrid, bottom - y)};
 }
 
 bool JapaneseDictionaryActivity::handleTouch() {
@@ -902,6 +932,12 @@ bool JapaneseDictionaryActivity::handleTouch() {
   if (!bundleStatus.complete) return true;
 
   if (viewMode == ViewMode::KanjiSearch) {
+    if (!kanjiKeyboardVisible && TouchNavigator::contains(kanjiSearchRect(), point)) {
+      kanjiKeyboardVisible = true;
+      requestUpdate();
+      return true;
+    }
+
     const Rect selectedRect = selectedRadicalsRect();
     if (TouchNavigator::contains(selectedRect, point) && !selectedRadicals.empty()) {
       const int cellW = std::max(1, selectedRect.width / static_cast<int>(selectedRadicals.size()));
@@ -922,9 +958,10 @@ bool JapaneseDictionaryActivity::handleTouch() {
         const int cols = kanjiGridColumns(rect);
         const int rows = kanjiGridRows(renderer, rect);
         const int cellW = std::max(1, rect.width / cols);
+        const int cellSide = kanjiGridCellSide(rect);
         if (point.y >= gridY) {
           const int col = std::clamp((point.x - rect.x) / cellW, 0, cols - 1);
-          const int row = std::clamp((point.y - gridY) / KANJI_SEARCH_CELL_HEIGHT, 0, rows - 1);
+          const int row = std::clamp((point.y - gridY) / cellSide, 0, rows - 1);
           const int slot = row * cols + col;
           const int slots = rows * cols;
           const bool hasPrev = radicalPageOffset > 0;
@@ -954,9 +991,10 @@ bool JapaneseDictionaryActivity::handleTouch() {
         const int cols = kanjiGridColumns(rect);
         const int rows = kanjiGridRows(renderer, rect);
         const int cellW = std::max(1, rect.width / cols);
+        const int cellSide = kanjiGridCellSide(rect);
         if (point.y >= gridY) {
           const int col = std::clamp((point.x - rect.x) / cellW, 0, cols - 1);
-          const int row = std::clamp((point.y - gridY) / KANJI_SEARCH_CELL_HEIGHT, 0, rows - 1);
+          const int row = std::clamp((point.y - gridY) / cellSide, 0, rows - 1);
           const int slot = row * cols + col;
           const int slots = rows * cols;
           const bool hasPrev = kanjiPageOffset > 0;
@@ -978,39 +1016,42 @@ bool JapaneseDictionaryActivity::handleTouch() {
       }
     }
 
-    const TouchKeyboardLayout keyboard(renderer, ROWS, COLS, BOTTOM_KEY_COUNT, 8, false, 0, COLS);
-    int hitRow = 0;
-    int hitCol = 0;
-    if (keyboard.hitContentKey(point.x, point.y, hitRow, hitCol)) {
-      insertKanjiSearchChar(symbolsMode ? SYMBOL_ROWS[hitRow][hitCol].key : KEY_ROWS[hitRow][hitCol].key);
-      requestUpdate();
-      return true;
-    }
-    if (keyboard.hitBottomKey(point.x, point.y, hitCol)) {
-      switch (hitCol) {
-        case 0:
-          closeKanjiSearch();
-          break;
-        case 1:
-          backspaceKanjiSearch();
-          break;
-        case 2:
-          selectedRadicals.clear();
-          clearKanjiSearchInput();
-          refreshKanjiSearchCandidates();
-          break;
-        case 3:
-          symbolsMode = !symbolsMode;
-          break;
-        case 4:
-          finalizeKanjiSearchPending();
-          refreshKanjiSearchCandidates();
-          break;
-        default:
-          break;
+    if (kanjiKeyboardVisible) {
+      const TouchKeyboardLayout keyboard(renderer, ROWS, COLS, BOTTOM_KEY_COUNT, 8, false, 0, COLS);
+      int hitRow = 0;
+      int hitCol = 0;
+      if (keyboard.hitContentKey(point.x, point.y, hitRow, hitCol)) {
+        insertKanjiSearchChar(symbolsMode ? SYMBOL_ROWS[hitRow][hitCol].key : KEY_ROWS[hitRow][hitCol].key);
+        requestUpdate();
+        return true;
       }
-      requestUpdate();
-      return true;
+      if (keyboard.hitBottomKey(point.x, point.y, hitCol)) {
+        switch (hitCol) {
+          case 0:
+            closeKanjiSearch();
+            break;
+          case 1:
+            backspaceKanjiSearch();
+            break;
+          case 2:
+            selectedRadicals.clear();
+            clearKanjiSearchInput();
+            refreshKanjiSearchCandidates();
+            break;
+          case 3:
+            symbolsMode = !symbolsMode;
+            break;
+          case 4:
+            finalizeKanjiSearchPending();
+            refreshKanjiSearchCandidates();
+            kanjiKeyboardVisible = false;
+            break;
+          default:
+            break;
+        }
+        requestUpdate();
+        return true;
+      }
     }
 
     return true;
@@ -1396,13 +1437,14 @@ void JapaneseDictionaryActivity::drawKanjiSearch() {
     const int rows = kanjiGridRows(renderer, rect);
     const int slots = rows * cols;
     const int cellW = std::max(1, rect.width / cols);
+    const int cellSide = kanjiGridCellSide(rect);
     const bool hasPrev = pageOffset > 0;
     const bool hasNext = pageOffset + slots - (hasPrev ? 1 : 0) < static_cast<int>(items.size());
 
     for (int slot = 0; slot < slots; ++slot) {
       const int x = rect.x + (slot % cols) * cellW;
-      const int y = gridY + (slot / cols) * KANJI_SEARCH_CELL_HEIGHT;
-      const Rect cell{x + 2, y + 2, cellW - 4, KANJI_SEARCH_CELL_HEIGHT - 4};
+      const int y = gridY + (slot / cols) * cellSide;
+      const Rect cell{x + 2, y + 2, cellW - 4, cellSide - 4};
       std::string text;
       bool pager = false;
       if (hasPrev && slot == 0) {
@@ -1440,7 +1482,7 @@ void JapaneseDictionaryActivity::drawKanjiSearch() {
     drawGrid(kanjiCandidatesRect(hasRadicals), "Kanji", kanjiCandidates, kanjiPageOffset, false);
   }
 
-  drawKeyboard();
+  if (kanjiKeyboardVisible) drawKeyboard();
 }
 
 void JapaneseDictionaryActivity::drawKeyboard() {
