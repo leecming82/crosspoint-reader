@@ -234,14 +234,33 @@ bool KeyboardEntryActivity::handleTouch() {
     return false;
   }
   const auto point = longPress ? mappedInput.lastTouchLongPress() : mappedInput.lastTap();
-  constexpr int touchSlop = 4;
+  constexpr int touchSlopY = 8;
+  constexpr int urlEdgeSlopX = 12;
+
+  const auto midpointColumnRect = [](const int left, const int keyW, const int spacing, const int col, const int cols,
+                                     const int edgeLeft, const int edgeRight, const int yTop, const int yBottom) {
+    const int centerX = left + col * (keyW + spacing) + keyW / 2;
+    const int x0 = col == 0 ? edgeLeft : (left + (col - 1) * (keyW + spacing) + keyW / 2 + centerX) / 2;
+    const int x1 = col == cols - 1 ? edgeRight : (centerX + left + (col + 1) * (keyW + spacing) + keyW / 2) / 2;
+    return Rect{x0, yTop, x1 - x0, yBottom - yTop};
+  };
 
   for (int row = 0; row < getContentRowCount(); row++) {
     const int rowLeftMargin = urlMode ? urlLeftMargin : leftMargin;
     const int rowY = keyboardStartY + row * (keyHeight + keySpacing);
+    const int centerY = rowY + keyHeight / 2;
+    const int yTop =
+        row == 0 ? rowY - touchSlopY
+                 : (keyboardStartY + (row - 1) * (keyHeight + keySpacing) + keyHeight / 2 + centerY) / 2;
+    const int yBottom = row == getContentRowCount() - 1
+                            ? rowY + keyHeight + touchSlopY
+                            : (centerY + keyboardStartY + (row + 1) * (keyHeight + keySpacing) + keyHeight / 2) / 2;
+    const int rowRight = rowLeftMargin + contentCols * keyWidth + (contentCols - 1) * keySpacing;
+    const int edgeLeft = urlMode ? rowLeftMargin - urlEdgeSlopX : 0;
+    const int edgeRight = urlMode ? rowRight + urlEdgeSlopX : pageWidth;
     for (int col = 0; col < contentCols; col++) {
-      const Rect keyRect{rowLeftMargin + col * (keyWidth + keySpacing) - touchSlop, rowY - touchSlop,
-                         keyWidth + touchSlop * 2, keyHeight + touchSlop * 2};
+      const Rect keyRect = midpointColumnRect(rowLeftMargin, keyWidth, keySpacing, col, contentCols, edgeLeft,
+                                              edgeRight, yTop, yBottom);
       if (!TouchNavigator::contains(keyRect, point)) {
         continue;
       }
@@ -263,12 +282,13 @@ bool KeyboardEntryActivity::handleTouch() {
   }
 
   const int bottomRowY = keyboardStartY + getContentRowCount() * (keyHeight + keySpacing) + bottomRowGap;
+  const int bottomYTop = bottomRowY - touchSlopY;
+  const int bottomYBottom = bottomRowY + bottomKeyHeight + touchSlopY;
   for (int col = 0; col < BOTTOM_KEY_COUNT; col++) {
-    const Rect keyRect{bottomLeftMargin + col * (bottomKeyWidth + bkSpacing), bottomRowY, bottomKeyWidth,
-                       bottomKeyHeight};
-    const Rect expandedKeyRect{keyRect.x - touchSlop, keyRect.y - touchSlop, keyRect.width + touchSlop * 2,
-                               keyRect.height + touchSlop * 2};
-    if (!TouchNavigator::contains(expandedKeyRect, point)) {
+    const Rect keyRect =
+        midpointColumnRect(bottomLeftMargin, bottomKeyWidth, bkSpacing, col, BOTTOM_KEY_COUNT, 0, pageWidth,
+                           bottomYTop, bottomYBottom);
+    if (!TouchNavigator::contains(keyRect, point)) {
       continue;
     }
     selectedRow = getContentRowCount();
