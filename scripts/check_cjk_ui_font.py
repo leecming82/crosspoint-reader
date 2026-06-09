@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Pre-build check: verify that all CJK characters used in translation YAML files
-are present in the built-in CJK UI font header (cjk_ui_font_20.h).
+are present in the built-in CJK UI font header (cjk_ui_font_29.h).
 
 If missing characters are found, the build fails with an actionable error message.
 
@@ -51,7 +51,7 @@ def extract_codepoints_from_header(header_path):
 
 def check(project_root):
     translations_dir = project_root / "lib" / "I18n" / "translations"
-    header_path = project_root / "lib" / "GfxRenderer" / "cjk_ui_font_20.h"
+    header_path = project_root / "lib" / "GfxRenderer" / "cjk_ui_font_29.h"
 
     if not translations_dir.is_dir():
         return True
@@ -68,10 +68,10 @@ def check(project_root):
 
     if missing:
         print(f"\n*** CJK UI Font Check Failed ***")
-        print(f"{len(missing)} characters used in translations are missing from cjk_ui_font_20.h:\n")
+        print(f"{len(missing)} characters used in translations are missing from cjk_ui_font_29.h:\n")
         print("  " + "".join(missing))
         print(f"\nRun the following to regenerate:")
-        print(f"  python3 scripts/generate_cjk_ui_font.py --size 20 --font <path-to-font.otf>")
+        print(f"  python3 scripts/generate_cjk_ui_font.py --size 29 --font <path-to-font.otf>")
         print()
         return False
 
