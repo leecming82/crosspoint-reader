@@ -64,6 +64,7 @@ class SdCardFont {
   bool buildSectionGlyphPackFromCodepoints(const uint32_t* codepoints, uint32_t cpCount, uint8_t styleMask,
                                            const char* path, bool includeVerticalSubstitutions = true);
   bool loadSectionGlyphPack(const char* path);
+  bool ensureGenericCjkGlyphPack(uint8_t styleMask = 0x0F);
   void clearSectionGlyphPack();
   bool hasSectionGlyphPack() const { return sectionGlyphPackActive_; }
 
@@ -203,6 +204,7 @@ class SdCardFont {
   uint8_t styleCount_ = 0;
 
   char filePath_[128] = {};
+  uint64_t fileSize_ = 0;
 
   // Overflow context: glyphMissHandler needs to know which style it's serving
   struct OverflowContext {
@@ -258,6 +260,7 @@ class SdCardFont {
   bool populateMiniDataFromCurrentBuffers(uint8_t styleIdx, const uint32_t* codepoints, uint32_t cpCount);
   int32_t findGlobalGlyphIndex(const PerStyle& s, uint32_t codepoint) const;
   int fetchAdvancesForCodepoints(const uint32_t* codepoints, uint32_t cpCount, uint8_t styleMask);
+  std::string genericCjkGlyphPackPath() const;
   template <typename Iter>
   int buildAdvanceTableRange(Iter begin, Iter end, bool includeSpace, bool includeHyphen, uint8_t styleMask);
   int prewarmStyle(uint8_t styleIdx, const uint32_t* codepoints, uint32_t cpCount, bool metadataOnly);

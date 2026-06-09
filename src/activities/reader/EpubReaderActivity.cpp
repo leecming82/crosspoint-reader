@@ -1467,26 +1467,31 @@ void EpubReaderActivity::prepareSectionGlyphPack() {
   }
 
   const int fontId = effectiveReaderFontId();
-  if (activeGlyphPackSpineIndex == currentSpineIndex && activeGlyphPackFontId == fontId) {
+  auto fontIt = renderer.getSdCardFonts().find(fontId);
+  if (fontIt == renderer.getSdCardFonts().end() || !fontIt->second) {
+    activeGlyphPackSpineIndex = currentSpineIndex;
+    activeGlyphPackFontId = fontId;
+    activeGlyphPackReady = false;
     return;
   }
 
-  activeGlyphPackSpineIndex = currentSpineIndex;
-  activeGlyphPackFontId = fontId;
-  activeGlyphPackReady = false;
+  if (activeGlyphPackFontId == fontId && activeGlyphPackReady && fontIt->second->hasSectionGlyphPack()) {
+    activeGlyphPackSpineIndex = currentSpineIndex;
+    return;
+  }
 
   for (auto& [id, font] : renderer.getSdCardFonts()) {
-    if (font) {
+    if (font && id != fontId) {
       font->clearSectionGlyphPack();
     }
   }
 
-  auto fontIt = renderer.getSdCardFonts().find(fontId);
-  if (fontIt == renderer.getSdCardFonts().end() || !fontIt->second) {
-    return;
+  activeGlyphPackSpineIndex = currentSpineIndex;
+  activeGlyphPackFontId = fontId;
+  activeGlyphPackReady = fontIt->second->hasSectionGlyphPack();
+  if (!activeGlyphPackReady && isJapaneseLanguageBook()) {
+    activeGlyphPackReady = fontIt->second->ensureGenericCjkGlyphPack(0x0F);
   }
-
-  activeGlyphPackReady = fontIt->second->loadSectionGlyphPack(section->getGlyphPackPath().c_str());
 }
 
 bool EpubReaderActivity::hasActiveSectionGlyphPack() const {

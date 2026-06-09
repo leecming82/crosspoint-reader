@@ -6,11 +6,13 @@
 
 #include <algorithm>
 #include <climits>
+#include <cstdio>
 #include <cstring>
 #include <memory>
 #include <vector>
 
 #include "EpdFontFamily.h"
+#include "JapaneseGlyphSets.h"
 
 static_assert(sizeof(EpdGlyph) == 16, "EpdGlyph must be 16 bytes to match .cpfont file layout");
 static_assert(sizeof(EpdUnicodeInterval) == 12, "EpdUnicodeInterval must be 12 bytes to match .cpfont file layout");
@@ -122,6 +124,20 @@ bool buildMiniIntervalsFromCodepoints(const uint32_t* codepoints, uint32_t cpCou
   return true;
 }
 
+std::string parentDirectory(const char* path) {
+  const char* slash = strrchr(path, '/');
+  if (!slash) return "";
+  return std::string(path, slash - path);
+}
+
+std::string basenameWithoutExtension(const char* path) {
+  const char* slash = strrchr(path, '/');
+  const char* start = slash ? slash + 1 : path;
+  const char* dot = strrchr(start, '.');
+  if (!dot || dot == start) return std::string(start);
+  return std::string(start, dot - start);
+}
+
 }  // namespace
 
 SdCardFont::~SdCardFont() { freeAll(); }
@@ -193,6 +209,7 @@ void SdCardFont::freeAll() {
   }
   styleCount_ = 0;
   contentHash_ = 0;
+  fileSize_ = 0;
   loaded_ = false;
 }
 
@@ -551,6 +568,7 @@ bool SdCardFont::load(const char* path) {
     LOG_ERR("SDCF", "Failed to open .cpfont: %s", path);
     return false;
   }
+  fileSize_ = file.fileSize64();
 
   // Read and validate global header
   uint8_t headerBuf[HEADER_SIZE];
@@ -1233,6 +1251,50 @@ bool SdCardFont::buildSectionGlyphPackFromCodepoints(const uint32_t* sourceCodep
   clearCache();
 
   return true;
+}
+
+std::string SdCardFont::genericCjkGlyphPackPath() const {
+  if (!loaded_ || filePath_[0] == '\0') return "";
+
+  const std::string dir = parentDirectory(filePath_);
+  const std::string base = basenameWithoutExtension(filePath_);
+  char suffix[64] = {};
+  snprintf(suffix, sizeof(suffix), ".jis12-common-v1-%08lx-%llu.glyphpack",
+           static_cast<unsigned long>(contentHash_), static_cast<unsigned long long>(fileSize_));
+
+  const std::string packDir = dir.empty() ? ".glyphpacks" : dir + "/.glyphpacks";
+  return packDir + "/" + base + suffix;
+}
+
+bool SdCardFont::ensureGenericCjkGlyphPack(uint8_t styleMask) {
+#ifndef BOARD_HAS_PSRAM
+  return false;
+#else
+  if (!psramFound()) return false;
+  if (!loaded_) return false;
+
+  const std::string path = genericCjkGlyphPackPath();
+  if (path.empty()) return false;
+
+  if (!Storage.exists(path.c_str())) {
+    const std::string dir = parentDirectory(path.c_str());
+    if (!dir.empty() && !Storage.exists(dir.c_str())) {
+      Storage.mkdir(dir.c_str());
+    }
+
+    std::vector<uint32_t> codepoints;
+    JapaneseGlyphSets::buildJisLevel12CommonCodepoints(codepoints);
+    if (codepoints.empty()) return false;
+
+    if (!buildSectionGlyphPackFromCodepoints(codepoints.data(), static_cast<uint32_t>(codepoints.size()), styleMask,
+                                             path.c_str(), true)) {
+      LOG_ERR("SDCF", "Failed to build generic CJK glyph pack");
+      return false;
+    }
+  }
+
+  return loadSectionGlyphPack(path.c_str());
+#endif
 }
 
 bool SdCardFont::loadSectionGlyphPack(const char* path) {

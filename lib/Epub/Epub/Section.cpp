@@ -449,9 +449,7 @@ bool Section::createSectionFile(const int fontId, const float lineCompression, c
     const auto& sdFonts = renderer.getSdCardFonts();
     auto fontIt = sdFonts.find(fontId);
     if (fontIt != sdFonts.end() && fontIt->second) {
-      fontIt->second->buildSectionGlyphPackFromCodepoints(
-          sectionCodepoints.data(), static_cast<uint32_t>(sectionCodepoints.size()), 0x0F, getGlyphPackPath().c_str(),
-          includeVerticalSubstitutions);
+      fontIt->second->ensureGenericCjkGlyphPack(0x0F);
     }
   }
 
