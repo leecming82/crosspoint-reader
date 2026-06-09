@@ -346,8 +346,9 @@ void EpubReaderBookmarksActivity::render(RenderLock&&) {
   const int rowHeight = metrics.listWithSubtitleRowHeight;
   const int listRows = std::max(1, listBounds.height / rowHeight);
   const auto layout = TouchList::calculatePageLayout(selectorIndex, static_cast<int>(bookmarks.size()), listRows);
+  const int visibleSelected = layout.previous ? selectorIndex - layout.start + 1 : selectorIndex - layout.start;
   GUI.drawList(
-      renderer, listBounds, TouchList::visibleRowCount(layout), -1,
+      renderer, listBounds, TouchList::visibleRowCount(layout), visibleSelected,
       [this, layout](int visibleRow) {
         if (TouchList::isPreviousPageRow(layout, visibleRow)) {
           return std::string(tr(STR_PREV_PAGE));

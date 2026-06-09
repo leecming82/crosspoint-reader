@@ -192,8 +192,9 @@ void XtcReaderChapterSelectionActivity::render(RenderLock&&) {
     const int rowHeight = metrics.listRowHeight;
     const int listRows = std::max(1, listBounds.height / rowHeight);
     const auto layout = TouchList::calculatePageLayout(selectorIndex, static_cast<int>(chapters.size()), listRows);
+    const int visibleSelected = layout.previous ? selectorIndex - layout.start + 1 : selectorIndex - layout.start;
     GUI.drawList(
-        renderer, listBounds, TouchList::visibleRowCount(layout), -1,
+        renderer, listBounds, TouchList::visibleRowCount(layout), visibleSelected,
         [this, layout, &chapters, listBounds, &metrics](int visibleRow) {
           if (TouchList::isPreviousPageRow(layout, visibleRow)) {
             return std::string(tr(STR_PREV_PAGE));

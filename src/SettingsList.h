@@ -290,7 +290,11 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
 
   std::vector<SettingInfo> v = baseList;
 #ifdef CROSSPOINT_BOARD_MURPHY_M4
-  v.erase(std::remove_if(v.begin(), v.end(), [](const SettingInfo& s) { return s.category == StrId::STR_CAT_CONTROLS; }),
+  v.erase(std::remove_if(v.begin(), v.end(),
+                         [](const SettingInfo& s) {
+                           return s.category == StrId::STR_CAT_CONTROLS && s.nameId != StrId::STR_SIDE_BTN_LAYOUT &&
+                                  s.nameId != StrId::STR_SHORT_PWR_BTN;
+                         }),
           v.end());
 #endif
   if (registry && registry->getFamilyCount() > 0) {

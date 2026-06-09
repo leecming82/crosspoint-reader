@@ -73,6 +73,7 @@ class HalGPIO {
   unsigned long murphyPowerPressStart = 0;
   unsigned long murphyPowerPressFinish = 0;
   bool murphyPowerLongPressActive = false;
+  bool murphyLongPressHandled = false;
   bool murphyFrontlightEvent = false;
   bool murphyScreenshotEvent = false;
   bool murphySleepEvent = false;

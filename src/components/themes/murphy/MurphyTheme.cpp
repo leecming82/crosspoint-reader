@@ -125,17 +125,20 @@ void MurphyTheme::drawTabBar(const GfxRenderer& renderer, Rect rect, const std::
 void MurphyTheme::drawButtonMenu(GfxRenderer& renderer, Rect rect, int buttonCount, int selectedIndex,
                                  const std::function<std::string(int index)>& buttonLabel,
                                  const std::function<UIIcon(int index)>& rowIcon) const {
-  (void)selectedIndex;
-
   const int tileWidth = rect.width - MurphyMetrics::values.contentSidePadding * 2;
 
   for (int i = 0; i < buttonCount; ++i) {
+    const bool isSelected = i == selectedIndex;
     Rect tileRect =
         Rect{rect.x + MurphyMetrics::values.contentSidePadding,
              rect.y + i * (MurphyMetrics::values.menuRowHeight + MurphyMetrics::values.menuSpacing), tileWidth,
              MurphyMetrics::values.menuRowHeight};
 
-    renderer.drawRoundedRect(tileRect.x, tileRect.y, tileRect.width, tileRect.height, 1, cornerRadius, true);
+    if (isSelected) {
+      renderer.fillRoundedRect(tileRect.x, tileRect.y, tileRect.width, tileRect.height, cornerRadius, Color::LightGray);
+    } else {
+      renderer.drawRoundedRect(tileRect.x, tileRect.y, tileRect.width, tileRect.height, 1, cornerRadius, true);
+    }
 
     std::string labelStr = buttonLabel(i);
     const char* label = labelStr.c_str();
@@ -173,7 +176,7 @@ void MurphyTheme::drawList(const GfxRenderer& renderer, Rect rect, int itemCount
   if (showScroll) {
     const int scrollAreaHeight = rect.height;
     const int scrollBarHeight = std::max(1, (scrollAreaHeight * pageItems) / itemCount);
-    const int currentPage = selectedIndex / pageItems;
+    const int currentPage = std::max(0, selectedIndex) / pageItems;
     const int scrollBarY = rect.y + ((scrollAreaHeight - scrollBarHeight) * currentPage) / (totalPages - 1);
     const int scrollBarX = rect.x + rect.width - MurphyMetrics::values.scrollBarRightOffset;
     renderer.drawLine(scrollBarX, rect.y, scrollBarX, rect.y + scrollAreaHeight, true);
@@ -191,9 +194,14 @@ void MurphyTheme::drawList(const GfxRenderer& renderer, Rect rect, int itemCount
   const int baseTextX = rowIcon != nullptr ? iconX + listIconSize + hPaddingInSelection + 2 : rowX + 14;
 
   for (int i = pageStartIndex; i < itemCount && i < pageStartIndex + pageItems; i++) {
+    const bool isSelected = i == selectedIndex;
     const int rowY = rect.y + (i % pageItems) * rowHeight;
     const Rect rowRect{rowX, rowY + 2, rowWidth, rowHeight - 4};
-    renderer.drawRoundedRect(rowRect.x, rowRect.y, rowRect.width, rowRect.height, 1, cornerRadius, true);
+    if (isSelected) {
+      renderer.fillRoundedRect(rowRect.x, rowRect.y, rowRect.width, rowRect.height, cornerRadius, Color::LightGray);
+    } else {
+      renderer.drawRoundedRect(rowRect.x, rowRect.y, rowRect.width, rowRect.height, 1, cornerRadius, true);
+    }
 
     int rowTextWidth = rowWidth - (baseTextX - rowX) - hPaddingInSelection;
     std::string valueText;
@@ -224,7 +232,7 @@ void MurphyTheme::drawList(const GfxRenderer& renderer, Rect rect, int itemCount
 
     renderer.drawText(UI_12_FONT_ID, baseTextX, titleY, item.c_str(), true);
 
-    if (rowDimmed && rowDimmed(i)) {
+    if (rowDimmed && rowDimmed(i) && !isSelected) {
       const int titleWidth = renderer.getTextWidth(UI_12_FONT_ID, item.c_str());
       const int lineH = renderer.getLineHeight(UI_12_FONT_ID);
       for (int py = titleY; py < titleY + lineH; py++)
@@ -240,8 +248,12 @@ void MurphyTheme::drawList(const GfxRenderer& renderer, Rect rect, int itemCount
 
     if (!valueText.empty()) {
       const int valueY = rowY + (rowHeight - renderer.getLineHeight(UI_10_FONT_ID)) / 2;
-      renderer.drawText(UI_10_FONT_ID, rect.x + contentWidth - MurphyMetrics::values.contentSidePadding - valueWidth,
-                        valueY, valueText.c_str(), true);
+      const int valueX = rect.x + contentWidth - MurphyMetrics::values.contentSidePadding - valueWidth;
+      if (isSelected && highlightValue) {
+        renderer.fillRoundedRect(valueX - hPaddingInSelection / 2, rowRect.y + 4, valueWidth + hPaddingInSelection,
+                                 rowRect.height - 8, cornerRadius, Color::Black);
+      }
+      renderer.drawText(UI_10_FONT_ID, valueX, valueY, valueText.c_str(), !(isSelected && highlightValue));
     }
   }
 }

@@ -212,7 +212,15 @@ uint8_t murphyReadPhysicalButtons() {
 }
 
 uint8_t murphyShortPressButton(uint8_t physicalButton) {
-  (void)physicalButton;
+  if (physicalButton == MURPHY_BTN_TOP) {
+    return HalGPIO::BTN_UP;
+  }
+  if (physicalButton == MURPHY_BTN_MIDDLE) {
+    return HalGPIO::BTN_DOWN;
+  }
+  if (physicalButton == MURPHY_BTN_BOTTOM) {
+    return HalGPIO::BTN_POWER;
+  }
   return 0xFF;
 }
 
@@ -271,16 +279,17 @@ void HalGPIO::update() {
         murphyPhysicalState = rawState;
         murphyPressStart = now;
         murphyPowerLongPressActive = false;
+        murphyLongPressHandled = false;
         murphyCurrentState = 0;
       } else if (previousPhysicalState != 0 && rawState == 0) {
         const unsigned long heldTime = now - murphyPressStart;
-        if (heldTime < MURPHY_LONG_PRESS_MS) {
+        if (heldTime >= MURPHY_LONG_PRESS_MS && !murphyLongPressHandled) {
           if (murphyPhysicalState == MURPHY_BTN_TOP) {
             murphyFrontlightEvent = true;
+            murphyLongPressHandled = true;
           } else if (murphyPhysicalState == MURPHY_BTN_MIDDLE) {
             murphyScreenshotEvent = true;
-          } else if (murphyPhysicalState == MURPHY_BTN_BOTTOM) {
-            murphySleepEvent = true;
+            murphyLongPressHandled = true;
           }
         }
         const uint8_t logicalButton = heldTime >= MURPHY_LONG_PRESS_MS ? murphyLongPressButton(murphyPhysicalState)
@@ -299,16 +308,24 @@ void HalGPIO::update() {
         murphyPressFinish = now;
         murphyPhysicalState = 0;
         murphyPowerLongPressActive = false;
+        murphyLongPressHandled = false;
       }
     }
 
-    if (murphyRawState == MURPHY_BTN_BOTTOM && !murphyPowerLongPressActive &&
-        (now - murphyPressStart) >= MURPHY_LONG_PRESS_MS) {
-      const uint8_t powerMask = 1 << BTN_POWER;
-      murphyPowerLongPressActive = true;
-      murphyPowerPressStart = murphyPressStart;
-      murphyCurrentState |= powerMask;
-      murphyPressedEvents |= powerMask;
+    if (murphyRawState != 0 && !murphyLongPressHandled && (now - murphyPressStart) >= MURPHY_LONG_PRESS_MS) {
+      if (murphyRawState == MURPHY_BTN_TOP) {
+        murphyFrontlightEvent = true;
+        murphyLongPressHandled = true;
+      } else if (murphyRawState == MURPHY_BTN_MIDDLE) {
+        murphyScreenshotEvent = true;
+        murphyLongPressHandled = true;
+      } else if (murphyRawState == MURPHY_BTN_BOTTOM && !murphyPowerLongPressActive) {
+        const uint8_t powerMask = 1 << BTN_POWER;
+        murphyPowerLongPressActive = true;
+        murphyPowerPressStart = murphyPressStart;
+        murphyCurrentState |= powerMask;
+        murphyPressedEvents |= powerMask;
+      }
     }
 
     const bool connected = isUsbConnected();

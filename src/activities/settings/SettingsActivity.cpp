@@ -606,8 +606,10 @@ void SettingsActivity::render(RenderLock&&) {
   const auto& settings = *currentSettings;
 
 #ifdef CROSSPOINT_BOARD_MURPHY_M4
+  const int visibleSelectedSetting =
+      selectedSettingIndex > 0 ? (hasPreviousListPage() ? 1 : 0) + (selectedSettingIndex - 1 - currentListPageStart()) : -1;
   GUI.drawList(
-      renderer, listRect(), visibleListRowCount(), -1,
+      renderer, listRect(), visibleListRowCount(), visibleSelectedSetting,
       [this, &settings](int visibleRow) {
         if (isPreviousPageRow(visibleRow)) {
           return std::string(tr(STR_PREV_PAGE));

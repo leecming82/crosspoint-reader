@@ -475,8 +475,9 @@ void EpubReaderMenuActivity::render(RenderLock&&) {
   const auto& items = activeMenuItems();
 
 #ifdef CROSSPOINT_BOARD_MURPHY_M4
+  const int visibleSelected = (hasPreviousListPage() ? 1 : 0) + (selectedIndex - currentListPageStart());
   GUI.drawList(
-      renderer, listRect, visibleListRowCount(), -1,
+      renderer, listRect, visibleListRowCount(), visibleSelected,
       [this, &items](int visibleRow) {
         if (isPreviousPageRow(visibleRow)) {
           return std::string(tr(STR_PREV_PAGE));
