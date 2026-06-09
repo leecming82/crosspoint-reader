@@ -43,6 +43,9 @@ std::string homeMemoryStatusText() {
 
 int HomeActivity::getMenuItemCount() const {
   int count = 4;  // File Browser, Recents, File transfer, Settings
+#ifdef CROSSPOINT_BOARD_MURPHY_M4
+  count++;
+#endif
   if (!recentBooks.empty()) {
     count += recentBooks.size();
   }
@@ -55,6 +58,9 @@ int HomeActivity::getMenuItemCount() const {
 int HomeActivity::getMenuButtonCount() const {
   const auto& metrics = UITheme::getInstance().getMetrics();
   int count = 4;  // File Browser, Recents, File transfer, Settings
+#ifdef CROSSPOINT_BOARD_MURPHY_M4
+  count++;
+#endif
   if (hasOpdsServers) {
     count++;
   }
@@ -254,6 +260,9 @@ void HomeActivity::activateSelection() {
     case HomeMenuItem::RECENTS:
       onRecentsOpen();
       break;
+    case HomeMenuItem::JAPANESE_DICTIONARY:
+      onJapaneseDictionaryOpen();
+      break;
     case HomeMenuItem::OPDS_BROWSER:
       onOpdsBrowserOpen();
       break;
@@ -339,13 +348,26 @@ void HomeActivity::render(RenderLock&&) {
                           std::bind(&HomeActivity::storeCoverBuffer, this));
 
   // Build menu items dynamically
-  std::vector<const char*> menuItems = {tr(STR_BROWSE_FILES), tr(STR_MENU_RECENT_BOOKS), tr(STR_FILE_TRANSFER),
-                                        tr(STR_SETTINGS_TITLE)};
-  std::vector<UIIcon> menuIcons = {Folder, Recent, Transfer, Settings};
+  std::vector<const char*> menuItems = {tr(STR_BROWSE_FILES), tr(STR_MENU_RECENT_BOOKS),
+#ifdef CROSSPOINT_BOARD_MURPHY_M4
+                                        "Japanese Dictionary",
+#endif
+                                        tr(STR_FILE_TRANSFER), tr(STR_SETTINGS_TITLE)};
+  std::vector<UIIcon> menuIcons = {Folder, Recent,
+#ifdef CROSSPOINT_BOARD_MURPHY_M4
+                                   Library,
+#endif
+                                   Transfer, Settings};
 
   if (hasOpdsServers) {
-    menuItems.insert(menuItems.begin() + 2, tr(STR_OPDS_BROWSER));
-    menuIcons.insert(menuIcons.begin() + 2, Library);
+    constexpr int opdsInsertIndex =
+#ifdef CROSSPOINT_BOARD_MURPHY_M4
+        3;
+#else
+        2;
+#endif
+    menuItems.insert(menuItems.begin() + opdsInsertIndex, tr(STR_OPDS_BROWSER));
+    menuIcons.insert(menuIcons.begin() + opdsInsertIndex, Library);
   }
 
   if (metrics.homeContinueReadingInMenu && !recentBooks.empty()) {
@@ -380,6 +402,8 @@ void HomeActivity::onSelectBook(const std::string& path) { activityManager.goToR
 void HomeActivity::onFileBrowserOpen() { activityManager.goToFileBrowser(); }
 
 void HomeActivity::onRecentsOpen() { activityManager.goToRecentBooks(); }
+
+void HomeActivity::onJapaneseDictionaryOpen() { activityManager.goToJapaneseDictionary(); }
 
 void HomeActivity::onSettingsOpen() { activityManager.goToSettings(); }
 

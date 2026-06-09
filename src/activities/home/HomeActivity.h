@@ -38,6 +38,10 @@ class HomeActivity final : public Activity {
     ++i;
     if (item == HomeMenuItem::RECENTS) return i;
     ++i;
+#ifdef CROSSPOINT_BOARD_MURPHY_M4
+    if (item == HomeMenuItem::JAPANESE_DICTIONARY) return i;
+    ++i;
+#endif
     if (item == HomeMenuItem::OPDS_BROWSER) return hasOpdsUrl ? i : 0;
     if (hasOpdsUrl) ++i;
     if (item == HomeMenuItem::FILE_TRANSFER) return i;
@@ -51,6 +55,9 @@ class HomeActivity final : public Activity {
     int i = 0;
     if (idx == i++) return HomeMenuItem::FILE_BROWSER;
     if (idx == i++) return HomeMenuItem::RECENTS;
+#ifdef CROSSPOINT_BOARD_MURPHY_M4
+    if (idx == i++) return HomeMenuItem::JAPANESE_DICTIONARY;
+#endif
     if (hasOpdsUrl && idx == i++) return HomeMenuItem::OPDS_BROWSER;
     if (idx == i++) return HomeMenuItem::FILE_TRANSFER;
     if (idx == i) return HomeMenuItem::SETTINGS_MENU;
@@ -59,6 +66,7 @@ class HomeActivity final : public Activity {
   void onSelectBook(const std::string& path);
   void onFileBrowserOpen();
   void onRecentsOpen();
+  void onJapaneseDictionaryOpen();
   void onSettingsOpen();
   void onFileTransferOpen();
   void onOpdsBrowserOpen();

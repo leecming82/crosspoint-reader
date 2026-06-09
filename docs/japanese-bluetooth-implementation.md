@@ -149,7 +149,7 @@ Exit criteria: a test or diagnostic path can open `/jpdict` and return real matc
 - [x] Port or share `RomajiKana` from `~/cardputer-jpdict`.
 - [x] Maintain committed kana plus pending romaji state.
 - [x] Convert incrementally as the user types.
-- [ ] Support final composition on search/enter.
+- [x] Support final composition on search/enter.
 - [x] Support backspace over pending romaji and committed UTF-8 kana.
 - [ ] Handle direct kana input without forcing it through romaji composition.
 - [x] Add a Hardware Diagnostics keyboard tester item that opens a test screen with an on-screen keyboard, a typed-text display, and a picker for English typing vs romaji-to-kana mode.
@@ -158,12 +158,12 @@ Exit criteria: typing `nihongo` produces `にほんご` predictably, mixed direc
 
 ### 4. Dictionary Activity Skeleton
 
-- [ ] Add `JapaneseDictionaryActivity`.
-- [ ] Add a Home-screen Dictionary item on Murphy.
-- [ ] Add a loading/missing-data state.
-- [ ] Add query state and empty results state.
-- [ ] Consume touch keyboard input first.
-- [ ] Preserve physical-button fallback for back/result navigation where natural.
+- [x] Add `JapaneseDictionaryActivity`.
+- [x] Add a Home-screen Dictionary item on Murphy.
+- [x] Add a loading/missing-data state.
+- [x] Add query state and empty results state.
+- [x] Consume touch keyboard input first.
+- [x] Preserve physical-button fallback for back/result navigation where natural.
 
 Exit criteria: the app opens from Home, accepts a query, and handles missing dictionary data gracefully.
 

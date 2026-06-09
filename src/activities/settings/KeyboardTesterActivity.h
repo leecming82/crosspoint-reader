@@ -8,8 +8,8 @@ class KeyboardTesterActivity final : public Activity {
   explicit KeyboardTesterActivity(GfxRenderer& renderer, MappedInputManager& mappedInput)
       : Activity("KeyboardTester", renderer, mappedInput) {}
 
-  static constexpr int COLS = 8;
-  static constexpr int ROWS = 5;
+  static constexpr int COLS = 5;
+  static constexpr int ROWS = 6;
 
   void onEnter() override;
   void loop() override;
