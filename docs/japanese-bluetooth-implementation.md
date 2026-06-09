@@ -146,14 +146,15 @@ Exit criteria: a test or diagnostic path can open `/jpdict` and return real matc
 
 ### 3. Romaji-To-Kana Input
 
-- [ ] Port or share `RomajiKana` from `~/cardputer-jpdict`.
-- [ ] Maintain committed kana plus pending romaji state.
-- [ ] Convert incrementally as the user types.
+- [x] Port or share `RomajiKana` from `~/cardputer-jpdict`.
+- [x] Maintain committed kana plus pending romaji state.
+- [x] Convert incrementally as the user types.
 - [ ] Support final composition on search/enter.
-- [ ] Support backspace over pending romaji and committed UTF-8 kana.
+- [x] Support backspace over pending romaji and committed UTF-8 kana.
 - [ ] Handle direct kana input without forcing it through romaji composition.
+- [x] Add a Hardware Diagnostics keyboard tester item that opens a test screen with an on-screen keyboard, a typed-text display, and a picker for English typing vs romaji-to-kana mode.
 
-Exit criteria: typing `nihongo` produces `にほんご` predictably, and mixed direct Japanese input still works.
+Exit criteria: typing `nihongo` produces `にほんご` predictably, mixed direct Japanese input still works, and Hardware Diagnostics can exercise both English and romaji keyboard modes.
 
 ### 4. Dictionary Activity Skeleton
 

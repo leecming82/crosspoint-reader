@@ -30,6 +30,7 @@ class HardwareDiagnosticsActivity final : public Activity {
 
   void refreshReadings();
   Rect refreshButtonRect() const;
+  Rect keyboardTesterButtonRect() const;
   Rect frontlight47Rect() const;
   Rect frontlight48Rect() const;
   void cycleFrontlightCool();

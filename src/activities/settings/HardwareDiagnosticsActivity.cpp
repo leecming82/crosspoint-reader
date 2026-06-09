@@ -11,10 +11,12 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <memory>
 #include <string>
 
 #include "CrossPointSettings.h"
 #include "MappedInputManager.h"
+#include "activities/settings/KeyboardTesterActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
 #include "util/TouchNavigator.h"
@@ -147,6 +149,12 @@ Rect HardwareDiagnosticsActivity::refreshButtonRect() const {
   return Rect{0, renderer.getScreenHeight() - metrics.listRowHeight, renderer.getScreenWidth(), metrics.listRowHeight};
 }
 
+Rect HardwareDiagnosticsActivity::keyboardTesterButtonRect() const {
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  return Rect{0, renderer.getScreenHeight() - metrics.listRowHeight * 2, renderer.getScreenWidth(),
+              metrics.listRowHeight};
+}
+
 Rect HardwareDiagnosticsActivity::frontlight47Rect() const {
   const auto& metrics = UITheme::getInstance().getMetrics();
   const int y = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing + 18 +
@@ -199,6 +207,10 @@ void HardwareDiagnosticsActivity::loop() {
   }
   if (TouchNavigator::wasTappedIn(mappedInput, frontlight48Rect())) {
     cycleFrontlightWarm();
+    return;
+  }
+  if (TouchNavigator::wasTappedIn(mappedInput, keyboardTesterButtonRect())) {
+    startActivityForResult(std::make_unique<KeyboardTesterActivity>(renderer, mappedInput), nullptr);
     return;
   }
   if (TouchNavigator::wasTappedIn(mappedInput, refreshButtonRect())) {
@@ -275,6 +287,7 @@ void HardwareDiagnosticsActivity::render(RenderLock&&) {
   drawDiagnosticRow(renderer, y, valueX, "GPIO48 warm", frontlight48Value);
 
 #ifdef CROSSPOINT_BOARD_MURPHY_M4
+  TouchUi::drawTouchButton(renderer, keyboardTesterButtonRect(), "Keyboard tester");
   TouchUi::drawTouchButton(renderer, refreshButtonRect(), "Refresh");
 #else
   const auto labels = mappedInput.mapLabels(tr(STR_BACK), "Refresh", "", "");
