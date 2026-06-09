@@ -1,6 +1,7 @@
 #include "JapaneseDictionaryActivity.h"
 
 #include <GfxRenderer.h>
+#include <HalStorage.h>
 #include <I18n.h>
 #include <RomajiKana.h>
 #include <Utf8.h>
@@ -28,6 +29,8 @@ constexpr size_t MAX_QUERY_CHARS = 32;
 constexpr size_t MAX_KANJI_CANDIDATES = 160;
 constexpr size_t MAX_RADICAL_CANDIDATES = 32;
 constexpr size_t MAX_SELECTED_RADICALS = 6;
+constexpr size_t MAX_SEARCH_HISTORY = 10;
+constexpr const char* SEARCH_HISTORY_FILE = "/.crosspoint/japanese_search_history.txt";
 constexpr int KANJI_SEARCH_MIN_CELL_SIDE = 64;
 constexpr int KANJI_READING_BRACKET_X_ADJUST = 6;
 constexpr int INPUT_CARET_GAP = 3;
@@ -129,6 +132,11 @@ std::string trimCopy(std::string item) {
   while (!item.empty() && item.front() == ' ') item.erase(item.begin());
   while (!item.empty() && item.back() == ' ') item.pop_back();
   return item;
+}
+
+void appendHistoryLine(std::string& out, const std::string& line) {
+  out += line;
+  out.push_back('\n');
 }
 
 std::vector<std::string> definitionItems(const std::string& definition) {
@@ -459,6 +467,7 @@ void JapaneseDictionaryActivity::onEnter() {
   selectedRadicals.clear();
   radicalCandidates.clear();
   kanjiCandidates.clear();
+  searchHistory.clear();
   searched = false;
   viewMode = ViewMode::Editing;
   dictionaryOpen = false;
@@ -467,6 +476,7 @@ void JapaneseDictionaryActivity::onEnter() {
   selectedResult = 0;
   radicalPageOffset = 0;
   kanjiPageOffset = 0;
+  loadSearchHistory();
   requestUpdate();
 }
 
@@ -572,6 +582,47 @@ void JapaneseDictionaryActivity::clearKanjiSearchInput() {
   kanjiPageOffset = 0;
 }
 
+void JapaneseDictionaryActivity::loadSearchHistory() {
+  searchHistory.clear();
+  if (!Storage.exists(SEARCH_HISTORY_FILE)) return;
+
+  const String content = Storage.readFile(SEARCH_HISTORY_FILE);
+  std::string data(content.c_str());
+  size_t start = 0;
+  while (start <= data.size() && searchHistory.size() < MAX_SEARCH_HISTORY) {
+    const size_t end = data.find('\n', start);
+    std::string line = data.substr(start, end == std::string::npos ? std::string::npos : end - start);
+    if (!line.empty() && line.back() == '\r') line.pop_back();
+    line = trimCopy(line);
+    if (!line.empty() && line.size() <= 128 && !containsString(searchHistory, line)) {
+      searchHistory.push_back(line);
+    }
+    if (end == std::string::npos) break;
+    start = end + 1;
+  }
+}
+
+void JapaneseDictionaryActivity::saveSearchHistory() const {
+  Storage.mkdir("/.crosspoint");
+  std::string content;
+  for (const auto& query : searchHistory) {
+    appendHistoryLine(content, query);
+  }
+  Storage.writeFile(SEARCH_HISTORY_FILE, String(content.c_str()));
+}
+
+void JapaneseDictionaryActivity::recordSearchHistory(const std::string& query) {
+  const std::string normalized = trimCopy(query);
+  if (normalized.empty()) return;
+
+  searchHistory.erase(std::remove(searchHistory.begin(), searchHistory.end(), normalized), searchHistory.end());
+  searchHistory.insert(searchHistory.begin(), normalized);
+  if (searchHistory.size() > MAX_SEARCH_HISTORY) {
+    searchHistory.resize(MAX_SEARCH_HISTORY);
+  }
+  saveSearchHistory();
+}
+
 bool JapaneseDictionaryActivity::openKanjiIndex() {
   if (kanjiIndexOpen && kanjiIndex.isOpen()) return true;
   kanjiIndexOpen = kanjiIndex.openDefault();
@@ -666,6 +717,7 @@ void JapaneseDictionaryActivity::search() {
     viewMode = ViewMode::Editing;
     return;
   }
+  recordSearchHistory(query);
 
   if (!dictionaryOpen) {
     dictionaryOpen = dictionary.openDefault();
@@ -854,6 +906,22 @@ Rect JapaneseDictionaryActivity::resultListRect() const {
   const int y = q.y + q.height + metrics.verticalSpacing;
   return Rect{metrics.contentSidePadding, y, renderer.getScreenWidth() - metrics.contentSidePadding * 2,
               renderer.getScreenHeight() - y - metrics.buttonHintsHeight};
+}
+
+Rect JapaneseDictionaryActivity::searchHistoryRect() const {
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  const Rect q = queryRect();
+  const TouchKeyboardLayout keyboard(renderer, ROWS, COLS, BOTTOM_KEY_COUNT, 8, false, 0, COLS);
+  const int y = q.y + q.height + metrics.verticalSpacing;
+  const int bottom = keyboard.keyboardTopY() - metrics.verticalSpacing;
+  return Rect{metrics.contentSidePadding, y, renderer.getScreenWidth() - metrics.contentSidePadding * 2,
+              std::max(0, bottom - y)};
+}
+
+int JapaneseDictionaryActivity::searchHistoryVisibleRows() const {
+  const Rect rect = searchHistoryRect();
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  return std::min(static_cast<int>(searchHistory.size()), std::max(0, rect.height / metrics.listRowHeight));
 }
 
 Rect JapaneseDictionaryActivity::kanjiSearchRect() const {
@@ -1139,6 +1207,21 @@ bool JapaneseDictionaryActivity::handleTouch() {
     return true;
   }
 
+  if (viewMode == ViewMode::Editing && queryText().empty() && !searchHistory.empty()) {
+    const auto& metrics = UITheme::getInstance().getMetrics();
+    const Rect history = searchHistoryRect();
+    const int visibleRows = searchHistoryVisibleRows();
+    for (int i = 0; i < visibleRows; ++i) {
+      const Rect row{history.x, history.y + i * metrics.listRowHeight, history.width, metrics.listRowHeight};
+      if (!TouchNavigator::contains(row, point)) continue;
+      committedKana = searchHistory[static_cast<size_t>(i)];
+      pendingRomaji.clear();
+      search();
+      requestUpdate();
+      return true;
+    }
+  }
+
   const TouchKeyboardLayout keyboard(renderer, ROWS, COLS, BOTTOM_KEY_COUNT, 8, false, 0, COLS);
   int hitRow = 0;
   int hitCol = 0;
@@ -1270,6 +1353,22 @@ void JapaneseDictionaryActivity::drawQueryField() {
   const int textX = rect.x + 10;
   renderer.drawText(UI_12_FONT_ID, textX, textY, clipped.c_str(), true, EpdFontFamily::BOLD);
   if (!query.empty()) drawInputCaret(renderer, rect, textX, textY, clipped.c_str(), UI_12_FONT_ID, EpdFontFamily::BOLD);
+}
+
+void JapaneseDictionaryActivity::drawSearchHistory() {
+  if (queryText().empty() == false || searchHistory.empty()) return;
+
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  const Rect rect = searchHistoryRect();
+  const int visibleRows = searchHistoryVisibleRows();
+  for (int i = 0; i < visibleRows; ++i) {
+    const Rect row{rect.x, rect.y + i * metrics.listRowHeight, rect.width, metrics.listRowHeight};
+    const std::string clipped =
+        renderer.truncatedText(UI_12_FONT_ID, searchHistory[static_cast<size_t>(i)].c_str(), row.width - 20);
+    const int textY = row.y + (row.height - renderer.getLineHeight(UI_12_FONT_ID)) / 2;
+    renderer.drawText(UI_12_FONT_ID, row.x + 10, textY, clipped.c_str(), true);
+    renderer.drawLine(row.x, row.y + row.height - 1, row.x + row.width, row.y + row.height - 1, 1, true);
+  }
 }
 
 void JapaneseDictionaryActivity::drawResults() {
@@ -1522,6 +1621,7 @@ void JapaneseDictionaryActivity::render(RenderLock&&) {
       drawKanjiSearch();
     } else if (viewMode == ViewMode::Editing) {
       drawQueryField();
+      drawSearchHistory();
       drawKeyboard();
     } else {
       drawQueryField();

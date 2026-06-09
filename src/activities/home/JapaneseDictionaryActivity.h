@@ -40,6 +40,7 @@ class JapaneseDictionaryActivity final : public Activity {
   std::vector<std::string> selectedRadicals;
   std::vector<std::string> radicalCandidates;
   std::vector<std::string> kanjiCandidates;
+  std::vector<std::string> searchHistory;
   bool searched = false;
   ViewMode viewMode = ViewMode::Editing;
   bool dictionaryOpen = false;
@@ -64,6 +65,9 @@ class JapaneseDictionaryActivity final : public Activity {
   void finalizePendingRomaji();
   void finalizeKanjiSearchPending();
   void search();
+  void loadSearchHistory();
+  void saveSearchHistory() const;
+  void recordSearchHistory(const std::string& query);
   void openKanjiSearch();
   void closeKanjiSearch();
   bool openKanjiIndex();
@@ -83,12 +87,15 @@ class JapaneseDictionaryActivity final : public Activity {
   bool handleTouch();
   Rect queryRect() const;
   Rect resultListRect() const;
+  Rect searchHistoryRect() const;
+  int searchHistoryVisibleRows() const;
   Rect kanjiSearchRect() const;
   Rect selectedRadicalsRect() const;
   Rect kanjiRadicalsRect(bool hasKanji) const;
   Rect kanjiCandidatesRect(bool hasRadicals) const;
   void drawMissingState();
   void drawQueryField();
+  void drawSearchHistory();
   void drawResults();
   void drawDetail();
   void drawKanjiSearch();
