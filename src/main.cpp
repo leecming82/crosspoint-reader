@@ -5,6 +5,7 @@
 #include <GfxRenderer.h>
 #include <HalClock.h>
 #include <HalDisplay.h>
+#include <HalEnvSensor.h>
 #include <HalFrontlight.h>
 #include <HalGPIO.h>
 #include <HalPowerManager.h>
@@ -368,6 +369,7 @@ void setup() {
   gpio.begin();
   halFrontlight.begin();
   mappedInputManager.beginTouch();
+  halEnvSensor.begin();
   powerManager.begin();
   halClock.begin();
   halTiltSensor.begin();
@@ -376,11 +378,11 @@ void setup() {
   const auto& board = gpio.getBoardProfile();
   LOG_INF("MAIN",
           "Board profile: %s (%s), soc=%s, display=%ux%u visible=%ux%u, psram=%d budget=%lu, touch=%d/%s, "
-          "frontlight=%d channels=%u, rtc=%d, batteryGauge=%d, charger=%d, tilt=%d",
+          "frontlight=%d channels=%u, rtc=%d, batteryGauge=%d, charger=%d, tilt=%d, env=%d",
           board.label, board.id, socFamilyName(board.socFamily), board.displayWidth, board.displayHeight,
           board.visibleWidth, board.visibleHeight, board.hasPsram, static_cast<unsigned long>(board.psramCacheBudgetBytes),
           board.inputHasTouch, board.touchController, board.hasFrontlight, board.frontlightChannels, board.hasRtc,
-          board.hasBatteryGauge, board.hasChargerControl, board.hasTiltSensor);
+          board.hasBatteryGauge, board.hasChargerControl, board.hasTiltSensor, board.hasEnvironmentalSensor);
   HalSystem::logBootDiagnostics(board);
 
   // SD Card Initialization

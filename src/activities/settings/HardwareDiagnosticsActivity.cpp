@@ -2,6 +2,7 @@
 
 #include <Arduino.h>
 #include <GfxRenderer.h>
+#include <HalEnvSensor.h>
 #include <HalFrontlight.h>
 #include <HalGPIO.h>
 #include <I18n.h>
@@ -10,7 +11,9 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <string>
 
+#include "CrossPointSettings.h"
 #include "MappedInputManager.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
@@ -50,29 +53,56 @@ uint16_t diagnosticBatteryPercent(const uint16_t millivolts) {
   return curve[curveCount - 1].percent;
 }
 
-void drawDiagnosticRow(const GfxRenderer& renderer, const int y, const char* label, const char* value) {
+int diagnosticValueX(const GfxRenderer& renderer) {
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  const int x = metrics.contentSidePadding;
+  const char* labels[] = {
+      "Sample time", "GPIO43", "GPIO9", "Temp/RH", "Heap", "PSRAM", "GPIO47 cool", "GPIO48 warm",
+  };
+
+  int maxLabelWidth = 0;
+  for (const char* label : labels) {
+    maxLabelWidth = std::max(maxLabelWidth, renderer.getTextWidth(UI_12_FONT_ID, label, EpdFontFamily::BOLD));
+  }
+
+  return x + maxLabelWidth + 24;
+}
+
+void drawDiagnosticRow(const GfxRenderer& renderer, const int y, const int valueX, const char* label,
+                       const char* value) {
   const auto& metrics = UITheme::getInstance().getMetrics();
   const int x = metrics.contentSidePadding;
   const int width = renderer.getScreenWidth() - metrics.contentSidePadding * 2;
-  const int labelWidth = std::min(190, width / 2);
+  const int valueWidth = std::max(0, x + width - valueX);
+  const std::string displayValue = renderer.truncatedText(UI_12_FONT_ID, value, valueWidth);
 
   renderer.drawText(UI_12_FONT_ID, x, y, label, true, EpdFontFamily::BOLD);
-  renderer.drawText(UI_12_FONT_ID, x + labelWidth, y, value, true);
+  renderer.drawText(UI_12_FONT_ID, valueX, y, displayValue.c_str(), true);
+}
+
+void formatMemory(char* out, const size_t outSize, const uint32_t bytes) {
+  if (bytes >= 1024 * 1024) {
+    snprintf(out, outSize, "%.1f M", static_cast<double>(bytes) / (1024.0 * 1024.0));
+    return;
+  }
+  snprintf(out, outSize, "%lu K", static_cast<unsigned long>((bytes + 512) / 1024));
 }
 }  // namespace
 
 void HardwareDiagnosticsActivity::onEnter() {
   Activity::onEnter();
   halFrontlight.begin();
-  halFrontlight.off();
-  frontlight47Duty = 0;
-  frontlight48Duty = 0;
+  halFrontlight.set(SETTINGS.frontlightCoolDuty, SETTINGS.frontlightWarmDuty);
+  frontlightDirty = false;
   refreshReadings();
   requestUpdate();
 }
 
 void HardwareDiagnosticsActivity::onExit() {
-  halFrontlight.off();
+  if (frontlightDirty) {
+    SETTINGS.saveToFile();
+    frontlightDirty = false;
+  }
   Activity::onExit();
 }
 
@@ -86,12 +116,19 @@ void HardwareDiagnosticsActivity::refreshReadings() {
   batterySenseMv = analogReadMilliVolts(MURPHY_BATTERY_ADC_PIN);
   batterySystemMv = std::min(batterySenseMv * 2, 5000);
   batteryPercent = diagnosticBatteryPercent(static_cast<uint16_t>(batterySystemMv));
+  envAvailable = halEnvSensor.isAvailable();
+  HalEnvSensor::Reading envReading;
+  envReadOk = envAvailable && halEnvSensor.read(envReading);
+  if (envReadOk) {
+    envTemperatureC = envReading.temperatureC;
+    envHumidityPercent = envReading.humidityPercent;
+  }
   sampleMs = millis();
   LOG_INF("DIAG",
           "Murphy hardware diagnostics GPIO43=%d charging=%d GPIO9 raw=%d senseMv=%d batteryMv=%d pct=%d "
-          "frontlight47=%d frontlight48=%d",
-          chargeRaw, charging, batteryRaw, batterySenseMv, batterySystemMv, batteryPercent, frontlight47Duty,
-          frontlight48Duty);
+          "env=%d envOk=%d tempC=%.1f rh=%.1f frontlight47=%d frontlight48=%d",
+          chargeRaw, charging, batteryRaw, batterySenseMv, batterySystemMv, batteryPercent, envAvailable ? 1 : 0,
+          envReadOk ? 1 : 0, envTemperatureC, envHumidityPercent, SETTINGS.frontlightCoolDuty, SETTINGS.frontlightWarmDuty);
 #else
   chargeRaw = -1;
   charging = -1;
@@ -99,6 +136,8 @@ void HardwareDiagnosticsActivity::refreshReadings() {
   batterySenseMv = -1;
   batterySystemMv = -1;
   batteryPercent = -1;
+  envAvailable = false;
+  envReadOk = false;
   sampleMs = millis();
 #endif
 }
@@ -111,7 +150,7 @@ Rect HardwareDiagnosticsActivity::refreshButtonRect() const {
 Rect HardwareDiagnosticsActivity::frontlight47Rect() const {
   const auto& metrics = UITheme::getInstance().getMetrics();
   const int y = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing + 18 +
-                (renderer.getLineHeight(UI_12_FONT_ID) + 14) * 9 - 8;
+                (renderer.getLineHeight(UI_12_FONT_ID) + 14) * 6 - 8;
   return Rect{0, y, renderer.getScreenWidth(), renderer.getLineHeight(UI_12_FONT_ID) + 20};
 }
 
@@ -120,29 +159,31 @@ Rect HardwareDiagnosticsActivity::frontlight48Rect() const {
   return Rect{row.x, row.y + row.height, row.width, row.height};
 }
 
-void HardwareDiagnosticsActivity::cycleFrontlight47() {
+void HardwareDiagnosticsActivity::cycleFrontlightCool() {
   int nextDuty = 0;
   for (const int duty : FRONTLIGHT_DUTY_LEVELS) {
-    if (duty > frontlight47Duty) {
+    if (duty > SETTINGS.frontlightCoolDuty) {
       nextDuty = duty;
       break;
     }
   }
-  frontlight47Duty = nextDuty;
-  halFrontlight.setRaw(HalFrontlight::Channel::Cool, static_cast<uint8_t>(frontlight47Duty));
+  SETTINGS.frontlightCoolDuty = static_cast<uint8_t>(nextDuty);
+  halFrontlight.set(SETTINGS.frontlightCoolDuty, SETTINGS.frontlightWarmDuty);
+  frontlightDirty = true;
   requestUpdate();
 }
 
-void HardwareDiagnosticsActivity::cycleFrontlight48() {
+void HardwareDiagnosticsActivity::cycleFrontlightWarm() {
   int nextDuty = 0;
   for (const int duty : FRONTLIGHT_DUTY_LEVELS) {
-    if (duty > frontlight48Duty) {
+    if (duty > SETTINGS.frontlightWarmDuty) {
       nextDuty = duty;
       break;
     }
   }
-  frontlight48Duty = nextDuty;
-  halFrontlight.setRaw(HalFrontlight::Channel::Warm, static_cast<uint8_t>(frontlight48Duty));
+  SETTINGS.frontlightWarmDuty = static_cast<uint8_t>(nextDuty);
+  halFrontlight.set(SETTINGS.frontlightCoolDuty, SETTINGS.frontlightWarmDuty);
+  frontlightDirty = true;
   requestUpdate();
 }
 
@@ -153,11 +194,11 @@ void HardwareDiagnosticsActivity::loop() {
     return;
   }
   if (TouchNavigator::wasTappedIn(mappedInput, frontlight47Rect())) {
-    cycleFrontlight47();
+    cycleFrontlightCool();
     return;
   }
   if (TouchNavigator::wasTappedIn(mappedInput, frontlight48Rect())) {
-    cycleFrontlight48();
+    cycleFrontlightWarm();
     return;
   }
   if (TouchNavigator::wasTappedIn(mappedInput, refreshButtonRect())) {
@@ -190,55 +231,48 @@ void HardwareDiagnosticsActivity::render(RenderLock&&) {
                  tr(STR_HARDWARE_DIAGNOSTICS));
 #endif
 
-  char chargeRawValue[24];
-  char chargingValue[24];
+  char chargeValue[32];
   char batteryValue[48];
-  char batterySenseMvValue[32];
-  char batterySystemMvValue[32];
-  char batteryPercentValue[32];
+  char envValue[48];
   char sampledValue[32];
   char heapValue[48];
   char psramValue[48];
   char frontlight47Value[32];
   char frontlight48Value[32];
 
-  snprintf(chargeRawValue, sizeof(chargeRawValue), "%d", chargeRaw);
-  snprintf(chargingValue, sizeof(chargingValue), "%s", charging > 0 ? "yes" : "no");
-  snprintf(batteryValue, sizeof(batteryValue), "%d", batteryRaw);
-  snprintf(batterySenseMvValue, sizeof(batterySenseMvValue), "%d mV", batterySenseMv);
-  snprintf(batterySystemMvValue, sizeof(batterySystemMvValue), "%d mV", batterySystemMv);
-  snprintf(batteryPercentValue, sizeof(batteryPercentValue), "%d%%", batteryPercent);
-  snprintf(sampledValue, sizeof(sampledValue), "%lu ms", sampleMs);
-  snprintf(heapValue, sizeof(heapValue), "%u free", static_cast<unsigned>(ESP.getFreeHeap()));
-  snprintf(psramValue, sizeof(psramValue), "%u free", static_cast<unsigned>(ESP.getFreePsram()));
-  snprintf(frontlight47Value, sizeof(frontlight47Value), "duty %d", frontlight47Duty);
-  snprintf(frontlight48Value, sizeof(frontlight48Value), "duty %d", frontlight48Duty);
+  snprintf(chargeValue, sizeof(chargeValue), "%d (%s)", chargeRaw, charging > 0 ? "yes" : "no");
+  snprintf(batteryValue, sizeof(batteryValue), "%d (%d mV)", batteryRaw, batterySystemMv);
+  if (envReadOk) {
+    snprintf(envValue, sizeof(envValue), "%.1f C (%.1f%%)", envTemperatureC, envHumidityPercent);
+  } else {
+    snprintf(envValue, sizeof(envValue), "%s", envAvailable ? "read error" : "not found");
+  }
+  snprintf(sampledValue, sizeof(sampledValue), "%.1f s", static_cast<double>(sampleMs) / 1000.0);
+  formatMemory(heapValue, sizeof(heapValue), ESP.getFreeHeap());
+  formatMemory(psramValue, sizeof(psramValue), ESP.getFreePsram());
+  snprintf(frontlight47Value, sizeof(frontlight47Value), "duty %u", SETTINGS.frontlightCoolDuty);
+  snprintf(frontlight48Value, sizeof(frontlight48Value), "duty %u", SETTINGS.frontlightWarmDuty);
 
   const auto& layoutMetrics = UITheme::getInstance().getMetrics();
   int y = layoutMetrics.topPadding + layoutMetrics.headerHeight + layoutMetrics.verticalSpacing + 18;
   const int lineStep = renderer.getLineHeight(UI_12_FONT_ID) + 14;
+  const int valueX = diagnosticValueX(renderer);
 
-  drawDiagnosticRow(renderer, y, "GPIO43", chargeRawValue);
+  drawDiagnosticRow(renderer, y, valueX, "Sample time", sampledValue);
   y += lineStep;
-  drawDiagnosticRow(renderer, y, "Charging", chargingValue);
+  drawDiagnosticRow(renderer, y, valueX, "GPIO43", chargeValue);
   y += lineStep;
-  drawDiagnosticRow(renderer, y, "GPIO9 raw", batteryValue);
+  drawDiagnosticRow(renderer, y, valueX, "GPIO9", batteryValue);
   y += lineStep;
-  drawDiagnosticRow(renderer, y, "GPIO9 sense", batterySenseMvValue);
+  drawDiagnosticRow(renderer, y, valueX, "Temp/RH", envValue);
   y += lineStep;
-  drawDiagnosticRow(renderer, y, "Battery", batterySystemMvValue);
+  drawDiagnosticRow(renderer, y, valueX, "Heap", heapValue);
   y += lineStep;
-  drawDiagnosticRow(renderer, y, "Battery %", batteryPercentValue);
+  drawDiagnosticRow(renderer, y, valueX, "PSRAM", psramValue);
   y += lineStep;
-  drawDiagnosticRow(renderer, y, "Sample time", sampledValue);
+  drawDiagnosticRow(renderer, y, valueX, "GPIO47 cool", frontlight47Value);
   y += lineStep;
-  drawDiagnosticRow(renderer, y, "Heap", heapValue);
-  y += lineStep;
-  drawDiagnosticRow(renderer, y, "PSRAM", psramValue);
-  y += lineStep;
-  drawDiagnosticRow(renderer, y, "GPIO47", frontlight47Value);
-  y += lineStep;
-  drawDiagnosticRow(renderer, y, "GPIO48", frontlight48Value);
+  drawDiagnosticRow(renderer, y, valueX, "GPIO48 warm", frontlight48Value);
 
 #ifdef CROSSPOINT_BOARD_MURPHY_M4
   TouchUi::drawTouchButton(renderer, refreshButtonRect(), "Refresh");

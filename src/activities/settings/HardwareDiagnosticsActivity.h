@@ -21,14 +21,17 @@ class HardwareDiagnosticsActivity final : public Activity {
   int batterySenseMv = -1;
   int batterySystemMv = -1;
   int batteryPercent = -1;
-  int frontlight47Duty = 0;
-  int frontlight48Duty = 0;
+  bool envAvailable = false;
+  bool envReadOk = false;
+  float envTemperatureC = 0.0f;
+  float envHumidityPercent = 0.0f;
   unsigned long sampleMs = 0;
+  bool frontlightDirty = false;
 
   void refreshReadings();
   Rect refreshButtonRect() const;
   Rect frontlight47Rect() const;
   Rect frontlight48Rect() const;
-  void cycleFrontlight47();
-  void cycleFrontlight48();
+  void cycleFrontlightCool();
+  void cycleFrontlightWarm();
 };

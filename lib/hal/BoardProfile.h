@@ -32,6 +32,7 @@ struct BoardCapabilityProfile {
   bool hasBatteryGauge;
   bool hasChargerControl;
   bool hasTiltSensor;
+  bool hasEnvironmentalSensor;
   bool sdRequired;
   bool sdUsesSdMmc;
   bool sdMmc4Bit;
