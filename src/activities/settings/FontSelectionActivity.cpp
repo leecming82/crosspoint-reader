@@ -25,7 +25,6 @@ void FontSelectionActivity::onEnter() {
   fonts_.reserve(CrossPointSettings::BUILTIN_FONT_COUNT + (registry_ ? registry_->getFamilyCount() : 0));
 
   fonts_.push_back({I18N.get(StrId::STR_NOTO_SERIF), true, CrossPointSettings::NOTOSERIF});
-  fonts_.push_back({I18N.get(StrId::STR_NOTO_SANS), true, CrossPointSettings::NOTOSANS});
 
   if (registry_) {
     const auto& families = registry_->getFamilies();

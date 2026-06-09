@@ -213,6 +213,8 @@ bool CrossPointSettings::loadFromBinaryFile() {
       serialization::readPod(inputFile, legacyFontFamily);
       if (legacyFontFamily < BUILTIN_FONT_COUNT) {
         fontFamily = legacyFontFamily;
+      } else if (legacyFontFamily == LEGACY_NOTOSANS) {
+        fontFamily = NOTOSERIF;
       } else if (legacyFontFamily == LEGACY_OPENDYSLEXIC) {
         fontFamily = NOTOSERIF;
         strncpy(sdFontFamilyName, "OpenDyslexic", sizeof(sdFontFamilyName) - 1);
@@ -322,16 +324,6 @@ float CrossPointSettings::getReaderLineCompression() const {
         case WIDE:
           return 1.1f;
       }
-    case NOTOSANS:
-      switch (lineSpacing) {
-        case TIGHT:
-          return 0.90f;
-        case NORMAL:
-        default:
-          return 0.95f;
-        case WIDE:
-          return 1.0f;
-      }
   }
 }
 
@@ -383,18 +375,6 @@ int CrossPointSettings::getReaderFontId(uint8_t fontSizeEnum) const {
           return NOTOSERIF_16_FONT_ID;
         case EXTRA_LARGE:
           return NOTOSERIF_18_FONT_ID;
-      }
-    case NOTOSANS:
-      switch (fontSizeEnum) {
-        case SMALL:
-          return NOTOSANS_12_FONT_ID;
-        case MEDIUM:
-        default:
-          return NOTOSANS_14_FONT_ID;
-        case LARGE:
-          return NOTOSANS_16_FONT_ID;
-        case EXTRA_LARGE:
-          return NOTOSANS_18_FONT_ID;
       }
   }
 }
