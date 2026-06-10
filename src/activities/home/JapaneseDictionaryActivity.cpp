@@ -883,7 +883,39 @@ void JapaneseDictionaryActivity::handleBack() {
     requestUpdate();
     return;
   }
+  if (viewMode == ViewMode::Editing && !queryText().empty()) {
+    clearQuery();
+    requestUpdate();
+    return;
+  }
   onGoHome(HomeMenuItem::JAPANESE_DICTIONARY);
+}
+
+bool JapaneseDictionaryActivity::handleConfirm() {
+  if (!bundleStatus.complete) return false;
+
+  if (viewMode == ViewMode::Editing && !queryText().empty()) {
+    search();
+    requestUpdate();
+    return true;
+  }
+
+  if (viewMode == ViewMode::Results && !results.empty()) {
+    detailLineOffset = 0;
+    viewMode = ViewMode::Detail;
+    requestUpdate();
+    return true;
+  }
+
+  if (viewMode == ViewMode::KanjiSearch && kanjiKeyboardVisible) {
+    finalizeKanjiSearchPending();
+    refreshKanjiSearchCandidates();
+    kanjiKeyboardVisible = false;
+    requestUpdate();
+    return true;
+  }
+
+  return false;
 }
 
 int JapaneseDictionaryActivity::resultsPerPage() const {
@@ -1264,12 +1296,27 @@ bool JapaneseDictionaryActivity::handleTouch() {
 void JapaneseDictionaryActivity::loop() {
   if (handleTouch()) return;
 
+#ifdef CROSSPOINT_BOARD_MURPHY_M4
+  if (mappedInput.wasReleased(MappedInputManager::Button::Up)) {
+    handleBack();
+    return;
+  }
+  if (mappedInput.wasReleased(MappedInputManager::Button::Down)) {
+    handleConfirm();
+    return;
+  }
+#else
   if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
     handleBack();
     return;
   }
+#endif
 
   if (!bundleStatus.complete) return;
+
+#ifndef CROSSPOINT_BOARD_MURPHY_M4
+  if (mappedInput.wasReleased(MappedInputManager::Button::Confirm) && handleConfirm()) return;
+#endif
 
   if (viewMode == ViewMode::KanjiSearch) return;
 
@@ -1306,10 +1353,6 @@ void JapaneseDictionaryActivity::loop() {
       }
       selectedResult = static_cast<size_t>(
           std::min(static_cast<int>(results.size()) - 1, static_cast<int>(selectedResult) + perPage));
-      requestUpdate();
-    } else if (viewMode == ViewMode::Results && mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
-      detailLineOffset = 0;
-      viewMode = ViewMode::Detail;
       requestUpdate();
     }
   }
@@ -1446,7 +1489,8 @@ void JapaneseDictionaryActivity::drawDetail() {
   int y = titleTop;
 
   const int headerLineHeight = renderer.getLineHeight(UI_12_FONT_ID);
-  const std::string title = renderer.truncatedText(UI_12_FONT_ID, match.term.c_str(), width, EpdFontFamily::BOLD);
+  const std::string headwords = match.terms.empty() ? match.term : match.terms;
+  const std::string title = renderer.truncatedText(UI_12_FONT_ID, headwords.c_str(), width, EpdFontFamily::BOLD);
   renderer.drawText(UI_12_FONT_ID, x, y, title.c_str(), true, EpdFontFamily::BOLD);
   y += headerLineHeight;
   if (hasDistinctReading(match)) {

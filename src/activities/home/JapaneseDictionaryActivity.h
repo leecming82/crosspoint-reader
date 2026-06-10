@@ -83,6 +83,7 @@ class JapaneseDictionaryActivity final : public Activity {
   int detailMaxLineOffset() const;
   void pageDetail(int direction);
   void handleBack();
+  bool handleConfirm();
   int resultsPerPage() const;
   bool handleTouch();
   Rect queryRect() const;
