@@ -1553,7 +1553,7 @@ void JapaneseDictionaryActivity::drawKanjiSearch() {
   if (!kanjiIndexOpen && !kanjiIndex.isOpen()) {
     const int y = selectedRect.y + selectedRect.height + metrics.verticalSpacing;
     renderer.drawText(UI_12_FONT_ID, metrics.contentSidePadding, y, "Kanji index could not be opened.", true);
-    drawKeyboard();
+    if (kanjiKeyboardVisible) drawKeyboard();
     return;
   }
 
@@ -1564,7 +1564,7 @@ void JapaneseDictionaryActivity::drawKanjiSearch() {
     const char* message = key.empty() && selectedRadicals.empty() ? "Type a reading, radical, or stroke count."
                                                                   : "No kanji matches.";
     renderer.drawText(UI_12_FONT_ID, metrics.contentSidePadding, y, message, true);
-    drawKeyboard();
+    if (kanjiKeyboardVisible) drawKeyboard();
     return;
   }
 

@@ -25,12 +25,12 @@ Implemented:
 - Kanji search by reading, radical/component alias, radical stroke count,
   component, and total kanji stroke count.
 - Selected kanji insertion into the dictionary query.
+- Persistent recent query history on the empty search screen.
 
 Still worth improving:
 
 - E-paper typing polish: partial refresh, batching, cursor treatment, and
   clearer pending-romaji display.
-- Recent query history if useful.
 - Final home placement/icon/label polish.
 - Broader no-regression validation for SD_MMC, reader caches, sleep, Wi-Fi, and
   diagnostics.
@@ -122,9 +122,13 @@ copy of the Cardputer app:
 - Full definitions show the term on the first line and the reading on its own
   bracketed line.
 - Kanji search uses a vertically stacked layout: input, selected parts, parts
-  grid, kanji grid, keyboard.
+  grid, kanji grid, and keyboard while editing. After Search, the keyboard hides
+  so the parts/kanji grids can use the extra height; tapping Back or the search
+  box brings the keyboard back.
 - Radical/component taps add filters; kanji taps insert into the main query.
 - The soft keyboard is the primary input method.
+- The empty main search screen shows recent queries above the keyboard; tapping
+  one runs that lookup immediately.
 
 ## Completed Milestones
 
@@ -147,11 +151,9 @@ keyboard use proved good enough.
 - Batch redraws when typing quickly.
 - Use partial updates where safe.
 - Keep pending romaji visually distinct from committed kana.
-- Add a clear cursor treatment.
 - Validate repeated lookup/edit cycles for ghosting and responsiveness.
 - Verify dictionary lookup does not destabilize SD_MMC or reader caches.
 - Verify touch keyboard and dictionary rendering do not create display artifacts.
-- Decide whether recent query history is useful.
 
 ## Future JMnedict / Multi-Dictionary Work
 
