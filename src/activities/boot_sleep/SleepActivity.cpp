@@ -163,7 +163,7 @@ void SleepActivity::renderDefaultSleepScreen() const {
     renderer.invertScreen();
   }
 
-  renderer.displayBuffer(HalDisplay::FULL_REFRESH);
+  displaySleepScreenBuffer();
 }
 
 void SleepActivity::renderBitmapSleepScreen(const Bitmap& bitmap) const {
@@ -218,7 +218,11 @@ void SleepActivity::renderBitmapSleepScreen(const Bitmap& bitmap) const {
     renderer.invertScreen();
   }
 
-  renderer.displayBuffer(HalDisplay::FULL_REFRESH);
+  if (hasGreyscale) {
+    renderer.displayBuffer(HalDisplay::HALF_REFRESH);
+  } else {
+    displaySleepScreenBuffer();
+  }
 
   if (hasGreyscale) {
     bitmap.rewindToData();
@@ -325,5 +329,9 @@ void SleepActivity::renderLastScreenSleepScreen() const {
 
 void SleepActivity::renderBlankSleepScreen() const {
   renderer.clearScreen();
-  renderer.displayBuffer(HalDisplay::FULL_REFRESH);
+  displaySleepScreenBuffer();
+}
+
+void SleepActivity::displaySleepScreenBuffer() const {
+  renderer.displayBuffer(HalDisplay::HALF_REFRESH);
 }
