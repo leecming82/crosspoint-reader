@@ -788,7 +788,7 @@ void BaseTheme::drawStatusBar(GfxRenderer& renderer, const float bookProgress, c
                         showBatteryPercentage);
   }
 
-  // Draw Clock (X3 only — DS3231 RTC)
+  // Draw Clock
   int clockTextWidth = 0;
   if (SETTINGS.statusBarClock && halClock.isAvailable()) {
     char timeBuf[9];

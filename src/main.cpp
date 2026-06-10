@@ -124,8 +124,9 @@ static bool deepSleepInProgress = false;
 namespace {
 
 #ifdef CROSSPOINT_BOARD_MURPHY_M4
-// Temporary opt-in calibration logger for collecting Murphy M4 voltage/runtime data.
-// Create BATTERY_LOG_ENABLE_PATH on SD to enable; remove it after the battery curve is tuned.
+// Opt-in calibration logger for collecting Murphy M4 voltage/runtime data.
+// Create BATTERY_LOG_ENABLE_PATH on SD to enable; the RTC-backed wall_epoch column
+// makes multi-day battery logs comparable across deep sleep cycles.
 constexpr char BATTERY_LOG_ENABLE_PATH[] = "/.crosspoint/battery-log.enable";
 constexpr char BATTERY_LOG_PATH[] = "/.crosspoint/battery-log.csv";
 constexpr unsigned long BATTERY_LOG_INTERVAL_MS = 5UL * 60UL * 1000UL;
@@ -156,7 +157,7 @@ void appendMurphyBatteryLog(const char* event) {
     return;
   }
 
-  // Temporary calibration log: write the schema once per boot without querying file size.
+  // Write the schema once per boot without querying file size.
   if (!wroteHeaderThisBoot) {
     logFile.print("event,ms,wall_epoch,battery_mv,sense_mv,raw_adc,percent,charging,wifi,cpu_mhz,frontlight_cool,"
                   "frontlight_warm\n");
@@ -448,7 +449,6 @@ void setup() {
   powerManager.begin();
   halClock.begin();
   halTiltSensor.begin();
-  halClock.begin();
 
   const auto& board = gpio.getBoardProfile();
   LOG_INF("MAIN",
@@ -474,6 +474,7 @@ void setup() {
   HalSystem::checkPanic();
 
   SETTINGS.loadFromFile();
+  halClock.seedSystemTimeFromRTC(SETTINGS.clockUtcOffsetQ);
   applyFrontlightSettings();
   APP_STATE.loadFromFile();
   RECENT_BOOKS.loadFromFile();

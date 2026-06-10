@@ -242,17 +242,12 @@ void WifiSelectionActivity::checkConnectionStatus() {
     connectedIP = ipStr;
     autoConnecting = false;
 
-    // Sync time from NTP on the first successful WiFi connection only. X3 also
-    // writes its DS3231; Murphy seeds ESP system time so RTC-domain deep-sleep
-    // retention can be measured without repeated NTP corrections.
-    if (!SETTINGS.clockHasBeenSynced) {
-      const bool synced =
-          halClock.isAvailable() ? halClock.syncFromNTP()
-                                 : (gpio.deviceIsMurphyM4() ? halClock.syncSystemTimeFromNTP() : false);
-      if (synced) {
-        SETTINGS.clockHasBeenSynced = 1;
-        SETTINGS.saveToFile();
-      }
+    // Sync time whenever WiFi is explicitly connected. Hardware RTC boards update
+    // their RTC; boards without a supported RTC just seed ESP system time.
+    if (halClock.isAvailable()) {
+      halClock.syncFromNTP(SETTINGS.clockUtcOffsetQ);
+    } else if (gpio.deviceIsMurphyM4()) {
+      halClock.syncSystemTimeFromNTP();
     }
 
     // Save this as the last connected network - SD card operations need lock as

@@ -2,6 +2,7 @@
 
 #include <Arduino.h>
 #include <GfxRenderer.h>
+#include <HalClock.h>
 #include <HalEnvSensor.h>
 #include <HalFrontlight.h>
 #include <HalGPIO.h>
@@ -11,7 +12,6 @@
 
 #include <algorithm>
 #include <cstdio>
-#include <ctime>
 #include <memory>
 #include <string>
 
@@ -25,8 +25,6 @@
 
 namespace {
 constexpr int FRONTLIGHT_DUTY_LEVELS[] = {0, 16, 32, 64, 96, 128, 192, 255};
-constexpr time_t DIAGNOSTIC_TIME_VALID_EPOCH_MIN = 1704067200;  // 2024-01-01T00:00:00Z
-constexpr time_t SGT_OFFSET_SECONDS = 8 * 60 * 60;
 
 uint16_t diagnosticBatteryPercent(const uint16_t millivolts) {
   struct Point {
@@ -103,17 +101,10 @@ void formatMemory(char* out, const size_t outSize, const uint32_t bytes) {
   snprintf(out, outSize, "%lu K", static_cast<unsigned long>((bytes + 512) / 1024));
 }
 
-void formatDiagnosticTime(char* out, const size_t outSize, const time_t epoch) {
-  if (epoch < DIAGNOSTIC_TIME_VALID_EPOCH_MIN) {
+void formatDiagnosticTime(char* out, const size_t outSize) {
+  if (!halClock.formatDateTime(out, outSize)) {
     snprintf(out, outSize, "not set");
-    return;
   }
-
-  const time_t sgtEpoch = epoch + SGT_OFFSET_SECONDS;
-  struct tm sgtTime;
-  gmtime_r(&sgtEpoch, &sgtTime);
-  snprintf(out, outSize, "%04d-%02d-%02d %02d:%02d:%02d SGT", sgtTime.tm_year + 1900, sgtTime.tm_mon + 1,
-           sgtTime.tm_mday, sgtTime.tm_hour, sgtTime.tm_min, sgtTime.tm_sec);
 }
 }  // namespace
 
@@ -152,13 +143,12 @@ void HardwareDiagnosticsActivity::refreshReadings() {
     envHumidityPercent = envReading.humidityPercent;
   }
   sampleMs = millis();
-  sampleEpoch = time(nullptr);
   LOG_INF("DIAG",
-          "Murphy hardware diagnostics sampleEpoch=%lld GPIO43=%d charging=%d GPIO9 raw=%d senseMv=%d batteryMv=%d pct=%d "
+          "Murphy hardware diagnostics GPIO43=%d charging=%d GPIO9 raw=%d senseMv=%d batteryMv=%d pct=%d "
           "env=%d envOk=%d tempC=%.1f rh=%.1f frontlight47=%d frontlight48=%d",
-          static_cast<long long>(sampleEpoch), chargeRaw, charging, batteryRaw, batterySenseMv, batterySystemMv,
-          batteryPercent, envAvailable ? 1 : 0, envReadOk ? 1 : 0, envTemperatureC, envHumidityPercent,
-          SETTINGS.frontlightCoolDuty, SETTINGS.frontlightWarmDuty);
+          chargeRaw, charging, batteryRaw, batterySenseMv, batterySystemMv, batteryPercent, envAvailable ? 1 : 0,
+          envReadOk ? 1 : 0, envTemperatureC, envHumidityPercent, SETTINGS.frontlightCoolDuty,
+          SETTINGS.frontlightWarmDuty);
 #else
   chargeRaw = -1;
   charging = -1;
@@ -169,7 +159,6 @@ void HardwareDiagnosticsActivity::refreshReadings() {
   envAvailable = false;
   envReadOk = false;
   sampleMs = millis();
-  sampleEpoch = time(nullptr);
 #endif
 }
 
@@ -290,7 +279,7 @@ void HardwareDiagnosticsActivity::render(RenderLock&&) {
     snprintf(envValue, sizeof(envValue), "%s", envAvailable ? "read error" : "not found");
   }
   snprintf(sampledValue, sizeof(sampledValue), "%.1f s", static_cast<double>(sampleMs) / 1000.0);
-  formatDiagnosticTime(clockValue, sizeof(clockValue), sampleEpoch);
+  formatDiagnosticTime(clockValue, sizeof(clockValue));
   formatMemory(heapValue, sizeof(heapValue), ESP.getFreeHeap());
   formatMemory(psramValue, sizeof(psramValue), ESP.getFreePsram());
   snprintf(frontlight47Value, sizeof(frontlight47Value), "duty %u", SETTINGS.frontlightCoolDuty);

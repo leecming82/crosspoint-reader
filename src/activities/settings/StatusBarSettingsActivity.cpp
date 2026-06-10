@@ -18,8 +18,8 @@
 #include "util/TouchUi.h"
 
 namespace {
-// Menu items in their natural order. Clock entries are appended only when the
-// DS3231 RTC is present so X4 devices don't see them at all.
+// Menu items in their natural order. Clock entries are appended only when a
+// board-supported persistent clock is present so X4 devices don't see them.
 enum MenuItem {
   ITEM_CHAPTER_PAGE_COUNT = 0,
   ITEM_BOOK_PROGRESS_PERCENTAGE,
@@ -28,10 +28,10 @@ enum MenuItem {
   ITEM_TITLE,
   ITEM_BATTERY,
   ITEM_XTC_STATUS_BAR,
-  ITEM_CLOCK,             // X3 only
-  ITEM_CLOCK_FORMAT,      // X3 only
-  ITEM_CLOCK_UTC_OFFSET,  // X3 only, launches ClockOffsetActivity
-  ITEM_CLOCK_SYNC,        // X3 only, launches ClockSyncActivity
+  ITEM_CLOCK,
+  ITEM_CLOCK_FORMAT,
+  ITEM_CLOCK_UTC_OFFSET,  // launches ClockOffsetActivity
+  ITEM_CLOCK_SYNC,        // launches ClockSyncActivity
   ITEM_COUNT
 };
 
@@ -306,7 +306,7 @@ void StatusBarSettingsActivity::render(RenderLock&&) {
           case ITEM_CLOCK_UTC_OFFSET:
             return formatUtcOffset(SETTINGS.clockUtcOffsetQ);
           case ITEM_CLOCK_SYNC:
-            return SETTINGS.clockHasBeenSynced ? tr(STR_CLOCK_SYNCED) : tr(STR_NOT_SET);
+            return "";
           default:
             return "";
         }
@@ -345,7 +345,7 @@ void StatusBarSettingsActivity::render(RenderLock&&) {
           case ITEM_CLOCK_UTC_OFFSET:
             return formatUtcOffset(SETTINGS.clockUtcOffsetQ);
           case ITEM_CLOCK_SYNC:
-            return SETTINGS.clockHasBeenSynced ? tr(STR_CLOCK_SYNCED) : tr(STR_NOT_SET);
+            return "";
           default:
             return tr(STR_HIDE);
         }

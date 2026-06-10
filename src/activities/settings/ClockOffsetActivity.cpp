@@ -20,6 +20,29 @@ constexpr uint8_t MAX_NEG_HOURS = 12;
 constexpr uint8_t MINUTE_STEPS = 4;  // 0, 15, 30, 45
 constexpr uint8_t MINUTES_PER_QUARTER = 15;
 constexpr uint8_t BIAS_QUARTER_HOURS = 48;  // 0 stored = UTC-12, 48 stored = UTC+0
+#ifdef CROSSPOINT_BOARD_MURPHY_M4
+constexpr int FIELD_PADDING_X = 18;
+constexpr int FIELD_HEIGHT = 54;
+constexpr int LABEL_GAP = 20;
+constexpr int FIELD_GAP = 18;
+constexpr int COLON_GAP = 8;
+constexpr int ADJUST_BUTTON_HEIGHT = 72;
+constexpr int ADJUST_BUTTON_BOTTOM_MARGIN = 18;
+#else
+constexpr int FIELD_PADDING_X = 6;
+constexpr int FIELD_HEIGHT_EXTRA = 2;
+constexpr int LABEL_GAP = 16;
+constexpr int FIELD_GAP = 12;
+constexpr int COLON_GAP = 5;
+constexpr int ADJUST_BUTTON_HEIGHT = 54;
+constexpr int ADJUST_BUTTON_BOTTOM_MARGIN = 16;
+#endif
+
+struct OffsetFieldLayout {
+  Rect sign;
+  Rect hours;
+  Rect minutes;
+};
 
 // Convert a (sign, hours, quarter) triple into the biased storage value.
 // Returns a value in [0, 104].
@@ -44,6 +67,48 @@ void decodeOffset(uint8_t biased, uint8_t& sign, uint8_t& hours, uint8_t& quarte
   }
   hours = static_cast<uint8_t>(signedQuarter / 4);
   quarter = static_cast<uint8_t>(signedQuarter % 4);
+}
+
+OffsetFieldLayout offsetFieldLayout(const GfxRenderer& renderer) {
+  auto widthOf = [&](const char* s) { return renderer.getTextWidth(UI_12_FONT_ID, s, EpdFontFamily::BOLD); };
+  const int lineHeight = renderer.getLineHeight(UI_12_FONT_ID);
+#ifdef CROSSPOINT_BOARD_MURPHY_M4
+  const int fieldHeight = FIELD_HEIGHT;
+#else
+  const int fieldHeight = lineHeight + FIELD_HEIGHT_EXTRA;
+#endif
+  const int centreY = renderer.getScreenHeight() / 2 - 40;
+  const int fieldY = centreY - (fieldHeight - lineHeight) / 2;
+  const int labelWidth = widthOf("UTC");
+  const int signBoxW = std::max(widthOf("+"), widthOf("-")) + FIELD_PADDING_X * 2;
+  const int hoursBoxW = std::max(widthOf("14"), widthOf("12")) + FIELD_PADDING_X * 2;
+  const int colonWidth = widthOf(":");
+  const int minutesBoxW = std::max({widthOf("00"), widthOf("15"), widthOf("30"), widthOf("45")}) + FIELD_PADDING_X * 2;
+  const int totalWidth =
+      labelWidth + LABEL_GAP + signBoxW + FIELD_GAP + hoursBoxW + COLON_GAP + colonWidth + COLON_GAP + minutesBoxW;
+
+  int x = (renderer.getScreenWidth() - totalWidth) / 2 + labelWidth + LABEL_GAP;
+  const Rect signRect{x, fieldY, signBoxW, fieldHeight};
+  x += signBoxW + FIELD_GAP;
+  const Rect hoursRect{x, fieldY, hoursBoxW, fieldHeight};
+  x += hoursBoxW + COLON_GAP + colonWidth + COLON_GAP;
+  const Rect minutesRect{x, fieldY, minutesBoxW, fieldHeight};
+  return OffsetFieldLayout{signRect, hoursRect, minutesRect};
+}
+
+Rect minusButtonRect(const GfxRenderer& renderer) {
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  const int gap = metrics.contentSidePadding;
+  const int buttonWidth = (renderer.getScreenWidth() - metrics.contentSidePadding * 2 - gap) / 2;
+  const int buttonY = renderer.getScreenHeight() - ADJUST_BUTTON_HEIGHT - ADJUST_BUTTON_BOTTOM_MARGIN;
+  return Rect{metrics.contentSidePadding, buttonY, buttonWidth, ADJUST_BUTTON_HEIGHT};
+}
+
+Rect plusButtonRect(const GfxRenderer& renderer) {
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  const Rect minusRect = minusButtonRect(renderer);
+  return Rect{minusRect.x + minusRect.width + metrics.contentSidePadding, minusRect.y, minusRect.width,
+              minusRect.height};
 }
 }  // namespace
 
@@ -117,13 +182,8 @@ void ClockOffsetActivity::loop() {
     return;
   }
 
-  const auto& metrics = UITheme::getInstance().getMetrics();
-  constexpr int buttonHeight = 54;
-  const int gap = metrics.contentSidePadding;
-  const int buttonWidth = (renderer.getScreenWidth() - metrics.contentSidePadding * 2 - gap) / 2;
-  const int buttonY = renderer.getScreenHeight() - buttonHeight - 16;
-  const Rect minusRect{metrics.contentSidePadding, buttonY, buttonWidth, buttonHeight};
-  const Rect plusRect{minusRect.x + minusRect.width + gap, buttonY, buttonWidth, buttonHeight};
+  const Rect minusRect = minusButtonRect(renderer);
+  const Rect plusRect = plusButtonRect(renderer);
   if (TouchNavigator::wasTappedIn(mappedInput, minusRect)) {
     adjustActiveField(-1);
     requestUpdate();
@@ -135,24 +195,18 @@ void ClockOffsetActivity::loop() {
     return;
   }
 
-  const int centreY = renderer.getScreenHeight() / 2 - 40;
-  const int fieldTapY = centreY - 12;
-  constexpr int fieldTapHeight = 54;
-  const int screenWidth = renderer.getScreenWidth();
-  const Rect signTap{screenWidth / 2 - 94, fieldTapY, 54, fieldTapHeight};
-  const Rect hoursTap{screenWidth / 2 - 36, fieldTapY, 62, fieldTapHeight};
-  const Rect minutesTap{screenWidth / 2 + 42, fieldTapY, 62, fieldTapHeight};
-  if (TouchNavigator::wasTappedIn(mappedInput, signTap)) {
+  const OffsetFieldLayout fields = offsetFieldLayout(renderer);
+  if (TouchNavigator::wasTappedIn(mappedInput, fields.sign)) {
     activeField = FIELD_SIGN;
     requestUpdate();
     return;
   }
-  if (TouchNavigator::wasTappedIn(mappedInput, hoursTap)) {
+  if (TouchNavigator::wasTappedIn(mappedInput, fields.hours)) {
     activeField = FIELD_HOURS;
     requestUpdate();
     return;
   }
-  if (TouchNavigator::wasTappedIn(mappedInput, minutesTap)) {
+  if (TouchNavigator::wasTappedIn(mappedInput, fields.minutes)) {
     activeField = FIELD_MINUTES;
     requestUpdate();
     return;
@@ -204,12 +258,14 @@ void ClockOffsetActivity::render(RenderLock&&) {
 
   const int centreY = pageHeight / 2 - 40;
   auto widthOf = [&](const char* s) { return renderer.getTextWidth(UI_12_FONT_ID, s, EpdFontFamily::BOLD); };
-  constexpr int fieldPaddingX = 6;
-  constexpr int labelGap = 16;
-  constexpr int fieldGap = 12;
-  constexpr int colonGap = 5;
   const int lineHeight = renderer.getLineHeight(UI_12_FONT_ID);
-  const int fieldHeight = lineHeight + 2;
+#ifdef CROSSPOINT_BOARD_MURPHY_M4
+  const int fieldHeight = FIELD_HEIGHT;
+#else
+  const int fieldHeight = lineHeight + FIELD_HEIGHT_EXTRA;
+#endif
+  const int fieldTextY = centreY - (fieldHeight - lineHeight) / 2 + (fieldHeight - lineHeight) / 2;
+  const OffsetFieldLayout fields = offsetFieldLayout(renderer);
 
   char signStr[2] = {sign == 1 ? '-' : '+', '\0'};
   char hoursStr[8];
@@ -218,38 +274,27 @@ void ClockOffsetActivity::render(RenderLock&&) {
   snprintf(minutesStr, sizeof(minutesStr), "%02d", minutesQuarter * MINUTES_PER_QUARTER);
 
   const int labelWidth = widthOf("UTC");
-  const int signBoxW = std::max(widthOf("+"), widthOf("-")) + fieldPaddingX * 2;
-  const int hoursBoxW = std::max(widthOf("14"), widthOf("12")) + fieldPaddingX * 2;
-  const int colonWidth = widthOf(":");
-  const int minutesBoxW = std::max({widthOf("00"), widthOf("15"), widthOf("30"), widthOf("45")}) + fieldPaddingX * 2;
-  const int totalWidth =
-      labelWidth + labelGap + signBoxW + fieldGap + hoursBoxW + colonGap + colonWidth + colonGap + minutesBoxW;
+  const int labelX = fields.sign.x - LABEL_GAP - labelWidth;
 
-  int x = (pageWidth - totalWidth) / 2;
-  renderer.drawText(UI_12_FONT_ID, x, centreY, "UTC", true, EpdFontFamily::BOLD);
-  x += labelWidth + labelGap;
+  renderer.drawText(UI_12_FONT_ID, labelX, fieldTextY, "UTC", true, EpdFontFamily::BOLD);
 
-  auto drawField = [&](const char* text, const int boxX, const int boxWidth, const Field field) {
+  auto drawField = [&](const char* text, const Rect rect, const Field field) {
     const bool selected = activeField == field;
-    renderer.fillRectDither(boxX, centreY, boxWidth, fieldHeight, selected ? Color::LightGray : Color::White);
-    renderer.drawRect(boxX, centreY, boxWidth, fieldHeight, true);
+    renderer.fillRectDither(rect.x, rect.y, rect.width, rect.height, selected ? Color::LightGray : Color::White);
+    renderer.drawRect(rect.x, rect.y, rect.width, rect.height, true);
     if (selected) {
-      renderer.drawRect(boxX + 1, centreY + 1, boxWidth - 2, fieldHeight - 2, true);
+      renderer.drawRect(rect.x + 1, rect.y + 1, rect.width - 2, rect.height - 2, true);
     }
-    const int textX = boxX + (boxWidth - widthOf(text)) / 2;
-    renderer.drawText(UI_12_FONT_ID, textX, centreY, text, true, EpdFontFamily::BOLD);
+    const int textX = rect.x + (rect.width - widthOf(text)) / 2;
+    const int textY = rect.y + (rect.height - lineHeight) / 2;
+    renderer.drawText(UI_12_FONT_ID, textX, textY, text, true, EpdFontFamily::BOLD);
   };
 
-  drawField(signStr, x, signBoxW, FIELD_SIGN);
-  x += signBoxW + fieldGap;
-
-  drawField(hoursStr, x, hoursBoxW, FIELD_HOURS);
-  x += hoursBoxW + colonGap;
-
-  renderer.drawText(UI_12_FONT_ID, x, centreY, ":", true, EpdFontFamily::BOLD);
-  x += colonWidth + colonGap;
-
-  drawField(minutesStr, x, minutesBoxW, FIELD_MINUTES);
+  drawField(signStr, fields.sign, FIELD_SIGN);
+  drawField(hoursStr, fields.hours, FIELD_HOURS);
+  const int colonX = fields.hours.x + fields.hours.width + COLON_GAP;
+  renderer.drawText(UI_12_FONT_ID, colonX, fieldTextY, ":", true, EpdFontFamily::BOLD);
+  drawField(minutesStr, fields.minutes, FIELD_MINUTES);
 
   // Live preview of the resulting wall-clock time, so users can verify against a watch.
   if (halClock.isAvailable()) {
@@ -263,12 +308,8 @@ void ClockOffsetActivity::render(RenderLock&&) {
   }
 
 #ifdef CROSSPOINT_BOARD_MURPHY_M4
-  constexpr int buttonHeight = 54;
-  const int gap = metrics.contentSidePadding;
-  const int buttonWidth = (renderer.getScreenWidth() - metrics.contentSidePadding * 2 - gap) / 2;
-  const int buttonY = renderer.getScreenHeight() - buttonHeight - 16;
-  const Rect minusRect{metrics.contentSidePadding, buttonY, buttonWidth, buttonHeight};
-  const Rect plusRect{minusRect.x + minusRect.width + gap, buttonY, buttonWidth, buttonHeight};
+  const Rect minusRect = minusButtonRect(renderer);
+  const Rect plusRect = plusButtonRect(renderer);
   TouchUi::drawTouchButton(renderer, minusRect, "-");
   TouchUi::drawTouchButton(renderer, plusRect, "+");
 #else

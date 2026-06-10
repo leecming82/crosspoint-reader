@@ -28,7 +28,6 @@ class HardwareDiagnosticsActivity final : public Activity {
   float envTemperatureC = 0.0f;
   float envHumidityPercent = 0.0f;
   unsigned long sampleMs = 0;
-  time_t sampleEpoch = 0;
   bool frontlightDirty = false;
 
   void refreshReadings();

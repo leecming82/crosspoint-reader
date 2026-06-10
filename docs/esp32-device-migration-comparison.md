@@ -4,7 +4,7 @@ Date: 2026-06-07
 
 This document tracks the port of this Japanese CrossPoint branch to the Murphy M4 e-reader. The Japanese reader remains the source of truth: ruby/furigana, EPUB writing-mode metadata, vertical tategaki layout, dictionary cursor geometry, SD-backed dictionaries, `.cpfont` fonts, and bounded-memory caches must keep their current semantics.
 
-The received Murphy M4 is now concrete enough to plan around: ESP32-S3, 16 MB flash, native USB serial/JTAG download mode, a 4.26 inch `800x480`/`EPD426` display class, FT6336U touch evidence, warm/cool frontlight evidence, and a device-specific partition table that differs from the public Murphy Cloud manifest. Murphy/Corogoo also appears to have a separate 3.7 inch M4 line, so the shared public repo name `3.7-inch-ink-screen-reader` is treated as a distribution breadcrumb, not target-hardware identity.
+The received Murphy M4 is now concrete enough to plan around: ESP32-S3, 16 MB flash, native USB serial/JTAG download mode, a 4.26 inch `800x480`/`EPD426` display class, FT6336U touch, 4-bit SD_MMC storage, warm/cool frontlight, an external RTC at `0x32`, battery/charger telemetry, environmental sensing, and a device-specific partition table that differs from the public Murphy Cloud manifest. Murphy/Corogoo also appears to have a separate 3.7 inch M4 line, so the shared public repo name `3.7-inch-ink-screen-reader` is treated as a distribution breadcrumb, not target-hardware identity.
 
 ## Milestones
 
@@ -18,11 +18,11 @@ The received Murphy M4 is now concrete enough to plan around: ESP32-S3, 16 MB fl
 
 2. Murphy M4 board profile — done
 
-   Add an ESP32-S3 Murphy M4 PlatformIO environment and board capability descriptor without changing the C3/X3/X4 baseline. Start conservatively: mark touch, frontlight, PSRAM, RTC, charger, gauge, and sensors as unknown or disabled until proven by hardware or logs.
+   Add an ESP32-S3 Murphy M4 PlatformIO environment and board capability descriptor without changing the C3/X3/X4 baseline. Start conservatively, then promote capabilities only as hardware evidence lands.
 
    Exit criteria: the Murphy environment compiles, has the correct flash/partition posture for this unit, emits a board-profile banner over serial, and leaves existing C3 environments behaviorally unchanged.
 
-   Result: added `env:murphy_m4`, `partitions_murphy_m4.csv`, and a `BoardCapabilityProfile` descriptor. The Murphy profile targets ESP32-S3, 16 MB flash, captured app offsets, `800x480` viewport, confirmed 8 MB PSRAM with zero cache budget until allocation is tested, touch disabled with `FT6336U-unverified`, frontlight disabled, RTC/battery/charger/sensors disabled, and SD required. Startup emits a board-profile banner through the existing serial logging path. `pio run -e murphy_m4` and `pio run -e default` pass.
+   Result: added `env:murphy_m4`, `partitions_murphy_m4.csv`, and a `BoardCapabilityProfile` descriptor. The Murphy profile targets ESP32-S3, 16 MB flash, captured app offsets, `800x480` viewport, confirmed 8 MB PSRAM with zero cache budget until allocation is tested, FT6336U touch, two-channel frontlight, external RTC, battery gauge, charger status, environmental sensor, and 4-bit SD_MMC storage. Startup emits a board-profile banner through the existing serial logging path. `pio run -e murphy_m4` and `pio run -e default` pass.
 
 3. Boot, diagnostics, and storage — done
 
@@ -30,7 +30,7 @@ The received Murphy M4 is now concrete enough to plan around: ESP32-S3, 16 MB fl
 
    Exit criteria: custom firmware boots, logs reset reason and memory state, can mount or report storage state, and can recover enough diagnostics to continue hardware bring-up safely even when serial/display/SD are unavailable.
 
-   Result: custom Murphy firmware boots after a manual reset and reaches setup. Because USB serial and SD logging were not reliable on the bring-up unit, Murphy diagnostic builds now mirror `LOG_*` output into a bounded 64 KB scratch log at the start of the blank `app1` slot (`0x6e0000`). The log captures reset reason, wakeup cause, CPU/SDK, heap/internal heap, PSRAM, storage init result, and diagnostic heartbeats. Storage still needs the real Murphy SD pin map, but failures are now observable without serial, SD, or display output.
+   Result: custom Murphy firmware boots after a manual reset and reaches setup. Early Murphy diagnostic builds mirrored `LOG_*` output into a bounded 64 KB scratch log at the start of the blank `app1` slot (`0x6e0000`) while serial and SD logging were unreliable. Storage, display, serial logging, and Hardware Diagnostics are now available in the integrated app.
 
 4. Display bring-up and app integration — done
 
@@ -46,7 +46,7 @@ The received Murphy M4 is now concrete enough to plan around: ESP32-S3, 16 MB fl
 
    Timing note: the SPI-backed HAL writes each 48 KB RAM plane in about `11 ms`; visible refresh time is dominated by panel BUSY. Full-screen black/white probe timings are useful for safety checks, but they are not the same as real text page-turn quality because normal page turns use differential RAM state and the controller's refresh policy.
 
-   Result: `murphy_m4` builds with the M4 display pins, X4 display model, 2-bit grayscale capability enabled, and partial refresh enabled. The regular app can render the `SD card error` screen. The observed repeated flashing at that screen is treated as a Step 5 storage/app-lifecycle issue, not a display-driver blocker.
+   Result: `murphy_m4` builds with the M4 display pins, X4 display model, 2-bit grayscale capability enabled, and partial refresh enabled. The integrated app can render normal screens and reader pages with SD-backed storage.
 
 5. SD card and storage bring-up — done
 
@@ -70,17 +70,17 @@ The received Murphy M4 is now concrete enough to plan around: ESP32-S3, 16 MB fl
 
    Current result: the three normal left-side buttons are digital active-low lines. In the observed top/middle/bottom press order, the probe captured GPIO1, GPIO2, and GPIO0 respectively. The recessed fourth button is treated as hardware reset only. GPIO0 remains the ESP32-S3 boot strap input, so holding the bottom button while pressing Reset can still enter download mode regardless of its in-app mapping.
 
-   Temporary three-button app mapping: top short press emits Up, top long press emits Back; middle short press emits Down, middle long press emits Confirm; bottom short press emits Confirm, bottom long press emits Power. The X4 `InputManager` is bypassed on Murphy because it assumes `POWER_BUTTON_PIN=3`, but GPIO3 is the Murphy display MOSI pin.
+   Current three-button app mapping: top short press opens the global frontlight overlay, middle short press takes a screenshot, and bottom short press enters sleep. The X4 `InputManager` is bypassed on Murphy because it assumes `POWER_BUTTON_PIN=3`, but GPIO3 is the Murphy display MOSI pin.
 
 7. Japanese EPUB smoke test — done
 
    Prove that the existing reader can open a real Japanese EPUB on Murphy M4 and perform basic page navigation before deeper UX and layout validation.
 
-   Exit criteria: a Japanese EPUB opens from SD, metadata/cache generation completes without panic, and a few page flips work with the temporary button mapping.
+   Exit criteria: a Japanese EPUB opens from SD, metadata/cache generation completes without panic, and page navigation works through the current button/touch controls.
 
    Current result: first Japanese EPUB open reached metadata/cache generation but hit a storage cleanup assert when an EPUB temp cache file was missing (`anchor.bin.tmp`) and error handling closed a never-opened `HalFile`. `HalFile::close()` is now idempotent for unopened handles so cache-build failure paths can return errors instead of panicking. Murphy SD_MMC also needs a larger VFS file descriptor pool than the default because EPUB cache finalization can hold more than five temp/cache files open at once; `max_files=12` resolves the observed `no free file descriptors` failure.
 
-   Validation result: a quick, dirty Japanese EPUB smoke test passed on Murphy M4; one Japanese EPUB opens and can flip multiple pages with the temporary button mapping. Full horizontal/vertical/ruby/dictionary validation is deferred until the control scheme is less awkward.
+   Validation result: a Japanese EPUB smoke test passed on Murphy M4; one Japanese EPUB opened and flipped multiple pages. Later validation promoted the Japanese reading path to regular-use quality for horizontal/vertical/ruby/dictionary flows.
 
 8. Touch input — done
 
@@ -90,7 +90,7 @@ The received Murphy M4 is now concrete enough to plan around: ESP32-S3, 16 MB fl
 
    Current result: standalone probing confirms stock touch transport on `SDA=GPIO13`, `SCL=GPIO12`, `INT=GPIO44`, `RST=GPIO7`, `PWR=GPIO45`, address `0x2E`. The earlier `0x38` read on the same I2C pins is the environmental sensor path, not touch. A 3x3 tap capture produced coherent single-touch FT-style frames in an approximately `480x800` raw space. First-pass landscape transform is `displayX = rawX * 800 / 480`, `displayY = rawY * 480 / 800`; sample taps map to roughly `(103,76)`, `(400,82)`, `(725,89)`, `(58,223)`, `(415,220)`, `(748,233)`, `(15,403)`, `(408,408)`, `(708,421)`.
 
-   Integration result: `HalTouch` is enabled for Murphy M4 and is polled through `MappedInputManager`. EPUB reader touch zones are working: left/right thirds page backward/forward, and the physical central `1/9` opens the reader menu. Broader tappable rows, menus, tabs, and dictionary placement move to Step 9/10.
+   Integration result: `HalTouch` is enabled for Murphy M4 and is polled through `MappedInputManager`. EPUB reader touch zones are working: left/right thirds page backward/forward, and the physical central `1/9` opens the reader menu. Core screens, settings, lists, menus, pop-ups, and reader subscreens now have direct touch targets with button fallbacks preserved.
 
    Stock UI reference: the Murphy home screen uses a `3x3` icon grid, with entries ranging from Clock to Read to Settings. Settings uses a broadly similar tabbed menu style, but touch users can directly tap tabs and individual list items that open sub-menus or pop-ups. Reading uses screen zones: tapping the left/right sides navigates pages, while the central `1/9` opens a reader menu with tappable tabs and entries. This is normal touch e-reader behavior and is a useful target for CrossPoint's Murphy touch UX.
 
@@ -183,7 +183,7 @@ The received Murphy M4 is now concrete enough to plan around: ESP32-S3, 16 MB fl
 
 11. Power, battery, frontlight, and sensors
 
-   Identify and implement battery, charger, wake sources, RTC, buzzer, BMI270, SHT40/AHT20, and warm/cool frontlight only where hardware evidence exists. Power UI should degrade gracefully when a chip is absent or not yet understood, and frontlight controls should stay hidden on boards without frontlight.
+   Identify and implement battery, charger, wake sources, RTC, buzzer, motion sensors, SHT40/AHT20, and warm/cool frontlight only where hardware evidence exists. Power UI should degrade gracefully when a chip is absent or not yet understood, and frontlight controls should stay hidden on boards without frontlight.
 
    Exit criteria: sleep/off paths release display, storage, radios, touch, and frontlight; charging/battery data is shown only when reliable; wake sources are explicit; unknown sensors remain disabled; brightness and color temperature can be changed safely, persisted, restored at boot, turned off before sleep/update/shutdown, and disabled cleanly on non-frontlight boards.
 
@@ -197,13 +197,15 @@ The received Murphy M4 is now concrete enough to plan around: ESP32-S3, 16 MB fl
    - [x] Battery level reporting
    - [ ] USB power / cable-present detection
    - [x] Charger status reporting
-   - [ ] RTC / persistent clock
+   - [x] RTC / persistent clock
    - [x] Warm/cool frontlight
    - [ ] Buzzer
    - [ ] Motion / tilt sensor
-   - [ ] Humidity / temperature sensor
+   - [x] Humidity / temperature sensor
 
-   Note: Murphy Cloud firmware confirms temperature/humidity support via an SHT40 path plus AHT20-style probe/fallback on shared I2C plumbing. Cross-version stock firmware mining (`1.2.20` through `1.3.1`) and hardware testing validate GPIO9 as the battery ADC divider input and GPIO43 as an active-low charger-status input. The app now reports Murphy battery percentage from `analogReadMilliVolts(GPIO9) * 2` using a conservative interpolated Li-ion curve, and shows charging when `GPIO43 == LOW`. GPIO43 is charger-status, not raw USB cable-present; a PC connection at full battery can remain inactive.
+   Note: Murphy Cloud firmware confirms temperature/humidity support via an SHT40 path plus AHT20-style probe/fallback on shared I2C plumbing. Hardware probing confirmed an environmental sensor at `0x38` on the shared `GPIO13`/`GPIO12` I2C bus; the app enables the existing AHT20-compatible path. Cross-version stock firmware mining (`1.2.20` through `1.3.1`) and hardware testing validate GPIO9 as the battery ADC divider input and GPIO43 as an active-low charger-status input. The app now reports Murphy battery percentage from `analogReadMilliVolts(GPIO9) * 2` using a conservative interpolated Li-ion curve, and shows charging when `GPIO43 == LOW`. GPIO43 is charger-status, not raw USB cable-present; a PC connection at full battery can remain inactive.
+
+   RTC note: Murphy M4 has an external RTC-like I2C device at `0x32`, not a usable ESP32-S3 32 kHz slow-clock crystal. ESP32 slow-clock diagnostics showed `RC_SLOW` with no valid 32 kHz calibration, and overnight testing drifted by several minutes. The `0x32` device keeps accurate wall time across deep sleep and exposes a BCD time bank at `0x10..0x16` (`seconds`, `minutes`, `hours`, week/status, `day`, `month`, `year`). Its write-enable control behavior matches an SD3078-family RTC with the observed register bank shifted by `+0x10` (`ctrl1=0x1F`, `ctrl2=0x20`). The app now detects this device as Murphy's persistent clock, displays hardware diagnostics from it, seeds ESP system time from it after settings load, and writes it after NTP sync using the configured UTC offset so it remains useful before the next network connection.
 
    Runtime idle power note: X3/X4 keep the inherited 10 MHz idle CPU floor after 3 seconds of inactivity because that path was tested on the ESP32-C3 boards. Murphy M4 uses a board-specific 40 MHz idle floor instead. ESP32-S3 can theoretically go lower, but Murphy has a larger display path, PSRAM, touch, SD_MMC, and native USB Serial/JTAG, and an earlier diagnostic session saw a watchdog reset soon after entering the 10 MHz low-power path. Revisit lower S3 idle frequencies only with deliberate long-running stability tests.
 
@@ -288,13 +290,16 @@ Important implication: this unit uses `app0` at `0x10000`, not the public Murphy
 | E-paper display | BUSY | `8` | Confirmed | Same display tuple; electrical reset response and measured BUSY-high intervals during LUT/update probes. |
 | E-paper display | MISO | None / `-1` | Confirmed for display SPI | Murphy Cloud `1.3.0` SPI setup showed no display MISO; probes use write-only SPI. |
 | E-paper display | RAM addressing | X `0..799`, Y `479..0` | Confirmed behavior | Not GPIO, but critical display wiring behavior: X4-style pixel-addressed X plus reversed Y is required for correct full-frame content. |
-| SD / storage | CLK | `16` | Likely | Stock-firmware mining found an SD_MMC-style tuple around `16,15,17,18,11,14`; not yet mounted on hardware. |
-| SD / storage | CMD | `15` | Likely | Same SD_MMC tuple; not yet hardware-validated. |
-| SD / storage | D0 | `17` | Likely | Same SD_MMC tuple; not yet hardware-validated. |
-| SD / storage | D1 / D2 / D3 or drive pins | `18`, `11`, `14` | Candidate | Same tuple, but exact SD bus width and role split still need validation. |
-| Buttons | Top normal button | `1` | Confirmed | Digital active-low. Temporary mapping: short=Up, long=Back. |
-| Buttons | Middle normal button | `2` | Confirmed | Digital active-low. Temporary mapping: short=Down, long=Confirm. |
-| Buttons | Bottom normal button | `0` | Confirmed | Digital active-low. Temporary mapping: short=Confirm, long=Power. Also ESP32-S3 boot strap/download-mode input when held during Reset. |
+| SD / storage | Enable | `10` | Confirmed/app-enabled | Active-low SD power/enable line. Must be driven `LOW` before `SD_MMC.begin()`; high/pull-up did not mount. |
+| SD / storage | CLK | `16` | Confirmed/app-enabled | 4-bit SD_MMC mode mounted in the integrated app. |
+| SD / storage | CMD | `15` | Confirmed/app-enabled | 4-bit SD_MMC mode mounted in the integrated app. |
+| SD / storage | D0 | `17` | Confirmed/app-enabled | 1-bit and 4-bit SD_MMC probes mounted and passed read/write/delete sanity checks. |
+| SD / storage | D1 | `18` | Confirmed/app-enabled | 4-bit SD_MMC probe mounted and passed read/write/delete sanity checks. |
+| SD / storage | D2 | `11` | Confirmed/app-enabled | 4-bit SD_MMC probe mounted and passed read/write/delete sanity checks. |
+| SD / storage | D3 | `14` | Confirmed/app-enabled | 4-bit SD_MMC probe mounted and passed read/write/delete sanity checks. |
+| Buttons | Top normal button | `1` | Confirmed/app-enabled | Digital active-low. Current app mapping opens the global frontlight overlay. |
+| Buttons | Middle normal button | `2` | Confirmed/app-enabled | Digital active-low. Current app mapping takes a screenshot. |
+| Buttons | Bottom normal button | `0` | Confirmed/app-enabled | Digital active-low. Current app mapping enters sleep. Also ESP32-S3 boot strap/download-mode input when held during Reset. |
 | Buttons | Recessed button | Reset line | Confirmed behavior | Hardware reset only; not handled by firmware. |
 | Touch | I2C SDA | `13` | Confirmed | Stock transport tuple plus standalone probe at address `0x2E`; valid tap frames observed. |
 | Touch | I2C SCL | `12` | Confirmed | Same stock tuple and standalone probe. |
@@ -303,10 +308,12 @@ Important implication: this unit uses `app0` at `0x10000`, not the public Murphy
 | Touch | Reset | `7` | Firmware-confirmed, shared | Stock transport tuple reports `RST=7`; GPIO7 is also the confirmed e-paper reset line, so sequencing must be handled carefully. |
 | Touch | Power / enable | `45` | Firmware-confirmed | Stock transport tuple reports `PWR=45`; probe uses the stock low-enable/reset sequence before I2C. |
 | Touch | Raw coordinate transform | `480x800` raw -> `800x480` display | Probe-confirmed first pass | 3x3 tap capture maps cleanly with `displayX = rawX * 800 / 480`, `displayY = rawY * 480 / 800`; refine edge calibration during app integration. |
+| Shared I2C bus | SDA / SCL | `13` / `12` | Confirmed/app-enabled | Carries touch `0x2E`, external RTC `0x32`, environmental sensor `0x38`, and an unidentified candidate sensor at `0x19`. |
+| RTC / persistent clock | I2C device | `0x32` | Confirmed/app-enabled | External RTC-like device. BCD date/time registers are `0x10..0x16`; write-enable controls align with SD3078-family behavior shifted to `0x1F`/`0x20`. Stores configured local wall time and seeds ESP system time on boot. |
 | Frontlight | Cool / warm channels | `47`, `48` | Confirmed/app-enabled on Murphy M4 | GPIO47 is cool, GPIO48 is warm, both active-high PWM. Tested through duty 255; app exposes persisted two-channel global overlay control. |
-| Frontlight | Cool / warm channels | `38`, `39` | Historical/conflicting candidate | Older `1.2.4` code has a `Frontlight ready: cool=GPIO%d warm=GPIO%d` neighborhood using `GPIO38`/`GPIO39`; reconcile before enabling. |
 | Buzzer | PWM / LEDC | `46` | Firmware clue | Public changelog mentions buzzer on `GPIO46` / LEDC channel 2; not yet hardware-validated. |
-| Temp/humidity | I2C sensor path | TBD | Confirmed feature, pins unresolved | Murphy Cloud firmware confirms SHT40 plus AHT20-style fallback, likely on shared I2C, but low-level pins/address behavior still need probing. |
+| Motion / tilt candidate | I2C device | `0x19` | Candidate | Found on the shared I2C bus. Register dumps look like a live sensor, but the exact part and axis/status mapping are not identified yet. |
+| Temp/humidity | I2C sensor path | `0x38` on shared I2C | Confirmed/app-enabled | Murphy Cloud firmware confirms SHT40 plus AHT20-style fallback. Hardware diagnostics read valid temperature/humidity through the AHT20-compatible path. |
 | Battery | ADC-style input | `9` | Confirmed/app-enabled | Cross-version stock firmware and hardware testing validate GPIO9 as the battery divider ADC. App maps `analogReadMilliVolts(GPIO9) * 2` to status-bar percentage with a conservative interpolated curve. |
 | Charger status | Digital input | `43` active-low | Confirmed/app-enabled | Cross-version stock firmware and hardware testing validate GPIO43 as active-low charger status. `LOW` means charging/status active; it is not raw USB cable-present, so PC-at-full can remain inactive. |
 
@@ -314,22 +321,25 @@ Important implication: this unit uses `app0` at `0x10000`, not the public Murphy
 
 These are the key facts that still need hardware evidence:
 
-- PSRAM speed and stable allocation budget.
-- Display rail sequencing details and long-run partial-refresh limits. Full-frame content, normal X4-style page turns, and grayscale/AA cleanup are validated enough to move forward.
-- Touch coordinate transform, calibration offsets, interrupt behavior, and safe sequencing around shared GPIO7 display/touch reset.
-- Warm/cool frontlight PWM pins, frequency, polarity, driver topology, safe duty range, and shutdown requirements.
-- SD wiring and whether stock firmware uses external SD, internal SPIFFS, USB MSC, or a mix.
-- Battery gauge/ADC calibration, charger IC details, RTC, wake-capable GPIOs, and hardware power-off behavior.
-- Whether the stock firmware exposes diagnostics/API data that reveal board capabilities.
+- PSRAM speed and a stable optional cache budget. PSRAM is present, but the board profile still reserves no cache budget until long-running allocation behavior is tested.
+- Display rail sequencing and long-run partial-refresh limits. Full-frame content, normal X4-style page turns, and grayscale/AA cleanup are validated enough to use.
+- Touch edge calibration, interrupt-driven operation, and reset sequencing around shared GPIO7. Polling touch works today.
+- Frontlight driver topology and measured sleep leakage with the channels off.
+- Battery percentage curve calibration, charger IC identity, and raw USB cable-present detection. GPIO43 is charging/status, not guaranteed cable-present.
+- `0x19` motion-sensor identity and axis/status mapping.
+- Wake-capable GPIO options beyond the current GPIO0 deep-sleep wake path.
+- Hardware power-off / power-latch behavior, if the board exposes one.
 
-## Next Read-Only Probes
+## Possible Future Probes
 
-- Capture normal boot serial logs from reset without forcing download mode. Boot logs may print PSRAM detection, board profile names, display/touch/frontlight init messages, I2C probe results, and active partition metadata.
-- Read a full flash backup and decode bootloader, OTA data, app descriptors, coredump area, NVS, and SPIFFS offline. SPIFFS may contain settings, calibration, diagnostics, or cached hardware facts absent from the OTA image.
-- If stock firmware can join Wi-Fi or enter a USB/transfer mode, query local diagnostics and settings APIs before replacing it. Embedded strings suggest diagnostics, screenshot, settings, font, OTA, and EPUB capability endpoints.
-- Exercise stock frontlight and touch settings, then compare saved settings or diagnostics. This may reveal warm/cool ranges, touch calibration, refresh settings, and whether settings live in NVS or SPIFFS.
+- Identify the `0x19` I2C device with targeted WHOAMI/register probes and compare candidate IMU register maps before enabling tilt.
+- Measure overnight battery voltage drop across deep sleep with frontlight, Wi-Fi, display, touch, and SD powered down, then compare against any future hardware-latch path.
+- Refine the battery curve using multi-day `wall_epoch` logs now that Murphy system time is seeded from the external RTC.
+- Test PSRAM-backed caches under real Japanese EPUB workloads and assign a conservative nonzero Murphy cache budget only after stability is proven.
+- Exercise touch near screen edges and corners to decide whether the first-pass linear transform needs calibration offsets.
+- Probe GPIO43 behavior at low battery, full battery, USB-only, and charger-only states to distinguish charging status from cable presence.
 
-Avoid GPIO brute-force probing on the e-paper or frontlight until a full backup exists and display power sequencing is understood. Wrong rail or PWM assumptions can stress the panel or frontlight hardware.
+Avoid GPIO brute-force probing on the e-paper or frontlight without a targeted hypothesis. Wrong rail or PWM assumptions can stress the panel or frontlight hardware even though a rollback flash image exists.
 
 ## Reference Summary
 
