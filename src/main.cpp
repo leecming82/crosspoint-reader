@@ -129,9 +129,74 @@ constexpr char BATTERY_LOG_ENABLE_PATH[] = "/.crosspoint/battery-log.enable";
 constexpr char BATTERY_LOG_PATH[] = "/.crosspoint/battery-log.csv";
 constexpr unsigned long BATTERY_LOG_INTERVAL_MS = 5UL * 60UL * 1000UL;
 
+bool murphyBatteryLogEnabled() {
+  if (!gpio.deviceIsMurphyM4() || !Storage.ready()) {
+    return false;
+  }
+
+  HalFile enableFile = Storage.open(BATTERY_LOG_ENABLE_PATH);
+  if (!enableFile) {
+    return false;
+  }
+  enableFile.close();
+  return true;
+}
+
+void appendMurphyBatteryLog(const char* event) {
+  static bool wroteHeaderThisBoot = false;
+  static bool wroteBootThisBoot = false;
+
+  if (!murphyBatteryLogEnabled()) {
+    return;
+  }
+
+  HalFile logFile = Storage.open(BATTERY_LOG_PATH, O_WRITE | O_CREAT | O_APPEND);
+  if (!logFile) {
+    return;
+  }
+
+  // Temporary calibration log: write the schema once per boot without querying file size.
+  if (!wroteHeaderThisBoot) {
+    logFile.print("event,ms,battery_mv,sense_mv,raw_adc,percent,charging,wifi,cpu_mhz,frontlight_cool,"
+                  "frontlight_warm\n");
+    wroteHeaderThisBoot = true;
+  }
+
+  auto writeSample = [&](const char* sampleEvent) {
+    const unsigned long now = millis();
+    const int rawAdc = analogRead(MURPHY_BATTERY_ADC_PIN);
+    const uint32_t senseMv = analogReadMilliVolts(MURPHY_BATTERY_ADC_PIN);
+    const uint32_t batteryMv = std::min<uint32_t>(senseMv * 2U, 5000U);
+    const uint16_t percent = powerManager.getBatteryPercentage();
+    const int charging = gpio.isUsbConnected() ? 1 : 0;
+    const int wifiActive = WiFi.getMode() == WIFI_MODE_NULL ? 0 : 1;
+
+    char line[176];
+    const int len = snprintf(line, sizeof(line), "%s,%lu,%lu,%lu,%d,%u,%d,%d,%u,%u,%u\n", sampleEvent, now,
+                             static_cast<unsigned long>(batteryMv), static_cast<unsigned long>(senseMv), rawAdc,
+                             static_cast<unsigned>(percent), charging, wifiActive,
+                             static_cast<unsigned>(getCpuFrequencyMhz()),
+                             static_cast<unsigned>(SETTINGS.frontlightCoolDuty),
+                             static_cast<unsigned>(SETTINGS.frontlightWarmDuty));
+    if (len > 0) {
+      logFile.write(reinterpret_cast<const uint8_t*>(line), static_cast<size_t>(std::min<int>(len, sizeof(line) - 1)));
+    }
+  };
+
+  if (!wroteBootThisBoot) {
+    writeSample("boot");
+    wroteBootThisBoot = true;
+    if (strcmp(event, "boot") == 0) {
+      logFile.close();
+      return;
+    }
+  }
+  writeSample(event);
+  logFile.close();
+}
+
 void appendMurphyBatteryLogIfDue() {
   static unsigned long lastLogMs = 0;
-  static bool wroteHeaderThisBoot = false;
 
   if (!gpio.deviceIsMurphyM4() || !Storage.ready()) {
     return;
@@ -143,41 +208,7 @@ void appendMurphyBatteryLogIfDue() {
   }
   lastLogMs = now;
 
-  HalFile enableFile = Storage.open(BATTERY_LOG_ENABLE_PATH);
-  if (!enableFile) {
-    return;
-  }
-  enableFile.close();
-
-  HalFile logFile = Storage.open(BATTERY_LOG_PATH, O_WRITE | O_CREAT | O_APPEND);
-  if (!logFile) {
-    return;
-  }
-
-  // Avoid querying file size here while SD metadata calls are under investigation.
-  if (!wroteHeaderThisBoot) {
-    logFile.print("ms,battery_mv,sense_mv,raw_adc,percent,charging,wifi,cpu_mhz,frontlight_cool,frontlight_warm\n");
-    wroteHeaderThisBoot = true;
-  }
-
-  const int rawAdc = analogRead(MURPHY_BATTERY_ADC_PIN);
-  const uint32_t senseMv = analogReadMilliVolts(MURPHY_BATTERY_ADC_PIN);
-  const uint32_t batteryMv = std::min<uint32_t>(senseMv * 2U, 5000U);
-  const uint16_t percent = powerManager.getBatteryPercentage();
-  const int charging = gpio.isUsbConnected() ? 1 : 0;
-  const int wifiActive = WiFi.getMode() == WIFI_MODE_NULL ? 0 : 1;
-
-  char line[160];
-  const int len = snprintf(line, sizeof(line), "%lu,%lu,%lu,%d,%u,%d,%d,%u,%u,%u\n", now,
-                           static_cast<unsigned long>(batteryMv), static_cast<unsigned long>(senseMv), rawAdc,
-                           static_cast<unsigned>(percent), charging, wifiActive,
-                           static_cast<unsigned>(getCpuFrequencyMhz()),
-                           static_cast<unsigned>(SETTINGS.frontlightCoolDuty),
-                           static_cast<unsigned>(SETTINGS.frontlightWarmDuty));
-  if (len > 0) {
-    logFile.write(reinterpret_cast<const uint8_t*>(line), static_cast<size_t>(std::min<int>(len, sizeof(line) - 1)));
-  }
-  logFile.close();
+  appendMurphyBatteryLog("periodic");
 }
 #endif
 
@@ -315,6 +346,10 @@ void enterDeepSleep(bool fromTimeout = false) {
   APP_STATE.showBootScreen = !isQuickResumeSleep;
 
   APP_STATE.saveToFile();
+
+#ifdef CROSSPOINT_BOARD_MURPHY_M4
+  appendMurphyBatteryLog("sleep");
+#endif
 
   // Commit to sleeping before goToSleep() runs the outgoing activity's onExit():
   // a WiFi activity would otherwise silentRestart() here and reboot instead.
