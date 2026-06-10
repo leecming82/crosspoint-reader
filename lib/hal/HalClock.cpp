@@ -16,6 +16,7 @@ HalClock halClock;  // Singleton instance
 
 static uint8_t bcdToDec(uint8_t bcd) { return ((bcd >> 4) * 10) + (bcd & 0x0F); }
 static uint8_t decToBcd(uint8_t dec) { return ((dec / 10) << 4) | (dec % 10); }
+static constexpr time_t SYSTEM_TIME_VALID_EPOCH_MIN = 1704067200;  // 2024-01-01T00:00:00Z
 
 void HalClock::begin() {
   if (!gpio.deviceIsX3()) {
@@ -149,15 +150,14 @@ bool HalClock::writeTimeToRTC(uint8_t hour, uint8_t minute, uint8_t second) {
   return true;
 }
 
-bool HalClock::syncFromNTP() {
-  if (!_available) return false;
-
+bool HalClock::syncSystemTimeFromNTP() {
   if (WiFi.status() != WL_CONNECTED) {
     LOG_ERR("CLK", "WiFi not connected, cannot sync NTP");
     return false;
   }
 
-  LOG_INF("CLK", "Starting NTP sync...");
+  LOG_INF("CLK", "Starting system time NTP sync...");
+  sntp_set_sync_status(SNTP_SYNC_STATUS_RESET);
   configTzTime("UTC0", "pool.ntp.org", "time.nist.gov");
 
   // Wait for SNTP sync to complete (up to 5 seconds)
@@ -165,18 +165,34 @@ bool HalClock::syncFromNTP() {
   for (int i = 0; i < maxAttempts; i++) {
     if (sntp_get_sync_status() == SNTP_SYNC_STATUS_COMPLETED) {
       time_t now = time(nullptr);
-      struct tm timeinfo;
-      gmtime_r(&now, &timeinfo);
-
-      if (writeTimeToRTC(timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec)) {
-        LOG_INF("CLK", "RTC set to %02d:%02d:%02d UTC", timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec);
-        return true;
+      if (now < SYSTEM_TIME_VALID_EPOCH_MIN) {
+        LOG_ERR("CLK", "NTP sync completed but system time is invalid");
+        return false;
       }
-      return false;
+      LOG_INF("CLK", "System time synced from NTP");
+      return true;
     }
     delay(100);
   }
 
   LOG_ERR("CLK", "NTP sync timed out");
+  return false;
+}
+
+bool HalClock::syncFromNTP() {
+  if (!_available) return false;
+
+  if (!syncSystemTimeFromNTP()) {
+    return false;
+  }
+
+  time_t now = time(nullptr);
+  struct tm timeinfo;
+  gmtime_r(&now, &timeinfo);
+
+  if (writeTimeToRTC(timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec)) {
+    LOG_INF("CLK", "RTC set to %02d:%02d:%02d UTC", timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec);
+    return true;
+  }
   return false;
 }

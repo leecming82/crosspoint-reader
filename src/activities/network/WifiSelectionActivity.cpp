@@ -2,6 +2,7 @@
 
 #include <GfxRenderer.h>
 #include <HalClock.h>
+#include <HalGPIO.h>
 #include <I18n.h>
 #include <Logging.h>
 #include <WiFi.h>
@@ -241,11 +242,14 @@ void WifiSelectionActivity::checkConnectionStatus() {
     connectedIP = ipStr;
     autoConnecting = false;
 
-    // Sync RTC from NTP on the first successful WiFi connection only. The DS3231
-    // drifts ~2 ppm so one sync is enough; users can force a re-sync from
-    // Settings > Customise Status Bar > Sync clock now.
-    if (halClock.isAvailable() && !SETTINGS.clockHasBeenSynced) {
-      if (halClock.syncFromNTP()) {
+    // Sync time from NTP on the first successful WiFi connection only. X3 also
+    // writes its DS3231; Murphy seeds ESP system time so RTC-domain deep-sleep
+    // retention can be measured without repeated NTP corrections.
+    if (!SETTINGS.clockHasBeenSynced) {
+      const bool synced =
+          halClock.isAvailable() ? halClock.syncFromNTP()
+                                 : (gpio.deviceIsMurphyM4() ? halClock.syncSystemTimeFromNTP() : false);
+      if (synced) {
         SETTINGS.clockHasBeenSynced = 1;
         SETTINGS.saveToFile();
       }

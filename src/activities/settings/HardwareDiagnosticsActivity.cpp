@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <ctime>
 #include <memory>
 #include <string>
 
@@ -24,6 +25,8 @@
 
 namespace {
 constexpr int FRONTLIGHT_DUTY_LEVELS[] = {0, 16, 32, 64, 96, 128, 192, 255};
+constexpr time_t DIAGNOSTIC_TIME_VALID_EPOCH_MIN = 1704067200;  // 2024-01-01T00:00:00Z
+constexpr time_t SGT_OFFSET_SECONDS = 8 * 60 * 60;
 
 uint16_t diagnosticBatteryPercent(const uint16_t millivolts) {
   struct Point {
@@ -59,7 +62,7 @@ int diagnosticValueX(const GfxRenderer& renderer) {
   const auto& metrics = UITheme::getInstance().getMetrics();
   const int x = metrics.contentSidePadding;
   const char* labels[] = {
-      "Sample time", "GPIO43", "GPIO9", "Temp/RH", "Heap", "PSRAM", "GPIO47 cool", "GPIO48 warm",
+      "Sample time", "Clock", "GPIO43", "GPIO9", "Temp/RH", "Heap", "PSRAM", "GPIO47 cool", "GPIO48 warm",
   };
 
   int maxLabelWidth = 0;
@@ -82,12 +85,35 @@ void drawDiagnosticRow(const GfxRenderer& renderer, const int y, const int value
   renderer.drawText(UI_12_FONT_ID, valueX, y, displayValue.c_str(), true);
 }
 
+void drawDiagnosticFullWidthValue(const GfxRenderer& renderer, const int y, const char* label, const char* value) {
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  const int x = metrics.contentSidePadding;
+  const int width = renderer.getScreenWidth() - metrics.contentSidePadding * 2;
+  const std::string displayValue = renderer.truncatedText(UI_12_FONT_ID, value, width);
+
+  renderer.drawText(UI_12_FONT_ID, x, y, label, true, EpdFontFamily::BOLD);
+  renderer.drawText(UI_12_FONT_ID, x, y + renderer.getLineHeight(UI_12_FONT_ID) + 4, displayValue.c_str(), true);
+}
+
 void formatMemory(char* out, const size_t outSize, const uint32_t bytes) {
   if (bytes >= 1024 * 1024) {
     snprintf(out, outSize, "%.1f M", static_cast<double>(bytes) / (1024.0 * 1024.0));
     return;
   }
   snprintf(out, outSize, "%lu K", static_cast<unsigned long>((bytes + 512) / 1024));
+}
+
+void formatDiagnosticTime(char* out, const size_t outSize, const time_t epoch) {
+  if (epoch < DIAGNOSTIC_TIME_VALID_EPOCH_MIN) {
+    snprintf(out, outSize, "not set");
+    return;
+  }
+
+  const time_t sgtEpoch = epoch + SGT_OFFSET_SECONDS;
+  struct tm sgtTime;
+  gmtime_r(&sgtEpoch, &sgtTime);
+  snprintf(out, outSize, "%04d-%02d-%02d %02d:%02d:%02d SGT", sgtTime.tm_year + 1900, sgtTime.tm_mon + 1,
+           sgtTime.tm_mday, sgtTime.tm_hour, sgtTime.tm_min, sgtTime.tm_sec);
 }
 }  // namespace
 
@@ -126,11 +152,13 @@ void HardwareDiagnosticsActivity::refreshReadings() {
     envHumidityPercent = envReading.humidityPercent;
   }
   sampleMs = millis();
+  sampleEpoch = time(nullptr);
   LOG_INF("DIAG",
-          "Murphy hardware diagnostics GPIO43=%d charging=%d GPIO9 raw=%d senseMv=%d batteryMv=%d pct=%d "
+          "Murphy hardware diagnostics sampleEpoch=%lld GPIO43=%d charging=%d GPIO9 raw=%d senseMv=%d batteryMv=%d pct=%d "
           "env=%d envOk=%d tempC=%.1f rh=%.1f frontlight47=%d frontlight48=%d",
-          chargeRaw, charging, batteryRaw, batterySenseMv, batterySystemMv, batteryPercent, envAvailable ? 1 : 0,
-          envReadOk ? 1 : 0, envTemperatureC, envHumidityPercent, SETTINGS.frontlightCoolDuty, SETTINGS.frontlightWarmDuty);
+          static_cast<long long>(sampleEpoch), chargeRaw, charging, batteryRaw, batterySenseMv, batterySystemMv,
+          batteryPercent, envAvailable ? 1 : 0, envReadOk ? 1 : 0, envTemperatureC, envHumidityPercent,
+          SETTINGS.frontlightCoolDuty, SETTINGS.frontlightWarmDuty);
 #else
   chargeRaw = -1;
   charging = -1;
@@ -141,6 +169,7 @@ void HardwareDiagnosticsActivity::refreshReadings() {
   envAvailable = false;
   envReadOk = false;
   sampleMs = millis();
+  sampleEpoch = time(nullptr);
 #endif
 }
 
@@ -158,7 +187,7 @@ Rect HardwareDiagnosticsActivity::keyboardTesterButtonRect() const {
 Rect HardwareDiagnosticsActivity::frontlight47Rect() const {
   const auto& metrics = UITheme::getInstance().getMetrics();
   const int y = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing + 18 +
-                (renderer.getLineHeight(UI_12_FONT_ID) + 14) * 6 - 8;
+                (renderer.getLineHeight(UI_12_FONT_ID) + 14) * 8 - 8;
   return Rect{0, y, renderer.getScreenWidth(), renderer.getLineHeight(UI_12_FONT_ID) + 20};
 }
 
@@ -247,6 +276,7 @@ void HardwareDiagnosticsActivity::render(RenderLock&&) {
   char batteryValue[48];
   char envValue[48];
   char sampledValue[32];
+  char clockValue[32];
   char heapValue[48];
   char psramValue[48];
   char frontlight47Value[32];
@@ -260,6 +290,7 @@ void HardwareDiagnosticsActivity::render(RenderLock&&) {
     snprintf(envValue, sizeof(envValue), "%s", envAvailable ? "read error" : "not found");
   }
   snprintf(sampledValue, sizeof(sampledValue), "%.1f s", static_cast<double>(sampleMs) / 1000.0);
+  formatDiagnosticTime(clockValue, sizeof(clockValue), sampleEpoch);
   formatMemory(heapValue, sizeof(heapValue), ESP.getFreeHeap());
   formatMemory(psramValue, sizeof(psramValue), ESP.getFreePsram());
   snprintf(frontlight47Value, sizeof(frontlight47Value), "duty %u", SETTINGS.frontlightCoolDuty);
@@ -272,6 +303,8 @@ void HardwareDiagnosticsActivity::render(RenderLock&&) {
 
   drawDiagnosticRow(renderer, y, valueX, "Sample time", sampledValue);
   y += lineStep;
+  drawDiagnosticFullWidthValue(renderer, y, "Clock", clockValue);
+  y += lineStep + renderer.getLineHeight(UI_12_FONT_ID) + 4;
   drawDiagnosticRow(renderer, y, valueX, "GPIO43", chargeValue);
   y += lineStep;
   drawDiagnosticRow(renderer, y, valueX, "GPIO9", batteryValue);

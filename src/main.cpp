@@ -23,6 +23,7 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
+#include <sys/time.h>
 
 #include "CrossPointSettings.h"
 #include "CrossPointState.h"
@@ -157,13 +158,15 @@ void appendMurphyBatteryLog(const char* event) {
 
   // Temporary calibration log: write the schema once per boot without querying file size.
   if (!wroteHeaderThisBoot) {
-    logFile.print("event,ms,battery_mv,sense_mv,raw_adc,percent,charging,wifi,cpu_mhz,frontlight_cool,"
+    logFile.print("event,ms,wall_epoch,battery_mv,sense_mv,raw_adc,percent,charging,wifi,cpu_mhz,frontlight_cool,"
                   "frontlight_warm\n");
     wroteHeaderThisBoot = true;
   }
 
   auto writeSample = [&](const char* sampleEvent) {
     const unsigned long now = millis();
+    struct timeval wallTime;
+    gettimeofday(&wallTime, nullptr);
     const int rawAdc = analogRead(MURPHY_BATTERY_ADC_PIN);
     const uint32_t senseMv = analogReadMilliVolts(MURPHY_BATTERY_ADC_PIN);
     const uint32_t batteryMv = std::min<uint32_t>(senseMv * 2U, 5000U);
@@ -171,8 +174,9 @@ void appendMurphyBatteryLog(const char* event) {
     const int charging = gpio.isUsbConnected() ? 1 : 0;
     const int wifiActive = WiFi.getMode() == WIFI_MODE_NULL ? 0 : 1;
 
-    char line[176];
-    const int len = snprintf(line, sizeof(line), "%s,%lu,%lu,%lu,%d,%u,%d,%d,%u,%u,%u\n", sampleEvent, now,
+    char line[224];
+    const int len = snprintf(line, sizeof(line), "%s,%lu,%lld,%lu,%lu,%d,%u,%d,%d,%u,%u,%u\n", sampleEvent, now,
+                             static_cast<long long>(wallTime.tv_sec),
                              static_cast<unsigned long>(batteryMv), static_cast<unsigned long>(senseMv), rawAdc,
                              static_cast<unsigned>(percent), charging, wifiActive,
                              static_cast<unsigned>(getCpuFrequencyMhz()),

@@ -35,6 +35,11 @@ class HalClock {
   // Returns false if RTC is not available.
   bool formatTime(char* buf, size_t bufSize, uint8_t utcOffsetQuarterHoursBiased = 48, bool use12Hour = false) const;
 
+  // Sync ESP system time from an NTP server. Requires WiFi to be connected.
+  // Blocks for up to ~5s while waiting for SNTP response.
+  // Returns true if system time was successfully updated.
+  bool syncSystemTimeFromNTP();
+
   // Sync the DS3231 RTC from an NTP server. Requires WiFi to be connected.
   // Blocks for up to ~5s while waiting for SNTP response.
   // Returns true if the RTC was successfully updated.
