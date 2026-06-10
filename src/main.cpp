@@ -20,6 +20,8 @@
 #include <WiFi.h>
 #include <builtinFonts/all.h>
 
+#include <algorithm>
+#include <cstdio>
 #include <cstring>
 
 #include "CrossPointSettings.h"
@@ -117,6 +119,69 @@ enum class BootResume : uint8_t {
 // device back up against the user's sleep gesture. Never cleared:
 // startDeepSleep() does not return, so a set latch only ends at the wakeup reset.
 static bool deepSleepInProgress = false;
+
+namespace {
+
+#ifdef CROSSPOINT_BOARD_MURPHY_M4
+// Temporary opt-in calibration logger for collecting Murphy M4 voltage/runtime data.
+// Create BATTERY_LOG_ENABLE_PATH on SD to enable; remove it after the battery curve is tuned.
+constexpr char BATTERY_LOG_ENABLE_PATH[] = "/.crosspoint/battery-log.enable";
+constexpr char BATTERY_LOG_PATH[] = "/.crosspoint/battery-log.csv";
+constexpr unsigned long BATTERY_LOG_INTERVAL_MS = 5UL * 60UL * 1000UL;
+
+void appendMurphyBatteryLogIfDue() {
+  static unsigned long lastLogMs = 0;
+  static bool wroteHeaderThisBoot = false;
+
+  if (!gpio.deviceIsMurphyM4() || !Storage.ready()) {
+    return;
+  }
+
+  const unsigned long now = millis();
+  if (lastLogMs != 0 && (now - lastLogMs) < BATTERY_LOG_INTERVAL_MS) {
+    return;
+  }
+  lastLogMs = now;
+
+  HalFile enableFile = Storage.open(BATTERY_LOG_ENABLE_PATH);
+  if (!enableFile) {
+    return;
+  }
+  enableFile.close();
+
+  HalFile logFile = Storage.open(BATTERY_LOG_PATH, O_WRITE | O_CREAT | O_APPEND);
+  if (!logFile) {
+    return;
+  }
+
+  // Avoid querying file size here while SD metadata calls are under investigation.
+  if (!wroteHeaderThisBoot) {
+    logFile.print("ms,battery_mv,sense_mv,raw_adc,percent,charging,wifi,cpu_mhz,frontlight_cool,frontlight_warm\n");
+    wroteHeaderThisBoot = true;
+  }
+
+  const int rawAdc = analogRead(MURPHY_BATTERY_ADC_PIN);
+  const uint32_t senseMv = analogReadMilliVolts(MURPHY_BATTERY_ADC_PIN);
+  const uint32_t batteryMv = std::min<uint32_t>(senseMv * 2U, 5000U);
+  const uint16_t percent = powerManager.getBatteryPercentage();
+  const int charging = gpio.isUsbConnected() ? 1 : 0;
+  const int wifiActive = WiFi.getMode() == WIFI_MODE_NULL ? 0 : 1;
+
+  char line[160];
+  const int len = snprintf(line, sizeof(line), "%lu,%lu,%lu,%d,%u,%d,%d,%u,%u,%u\n", now,
+                           static_cast<unsigned long>(batteryMv), static_cast<unsigned long>(senseMv), rawAdc,
+                           static_cast<unsigned>(percent), charging, wifiActive,
+                           static_cast<unsigned>(getCpuFrequencyMhz()),
+                           static_cast<unsigned>(SETTINGS.frontlightCoolDuty),
+                           static_cast<unsigned>(SETTINGS.frontlightWarmDuty));
+  if (len > 0) {
+    logFile.write(reinterpret_cast<const uint8_t*>(line), static_cast<size_t>(std::min<int>(len, sizeof(line) - 1)));
+  }
+  logFile.close();
+}
+#endif
+
+}  // namespace
 
 namespace {
 void applyFrontlightSettings() {
@@ -648,6 +713,10 @@ void loop() {
   if (gpio.wasUsbStateChanged()) {
     activityManager.requestUpdate();
   }
+
+#ifdef CROSSPOINT_BOARD_MURPHY_M4
+  appendMurphyBatteryLogIfDue();
+#endif
 
   const unsigned long activityStartTime = millis();
   activityManager.loop();
