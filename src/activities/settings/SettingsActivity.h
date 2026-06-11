@@ -24,7 +24,6 @@ enum class SettingAction {
   SdFirmwareUpdate,
   HardwareDiagnostics,
   Language,
-  DownloadFonts,
 };
 
 struct SettingInfo {
@@ -167,6 +166,7 @@ class SettingsActivity final : public Activity {
   void enterCategory(int categoryIndex);
   void toggleCurrentSetting();
   void openSleepTimeoutPicker();
+  void openReaderFontSizePicker();
   void rebuildSettingsLists();
   void syncQuickResumeTimeoutForSleepScreen(bool sleepScreenChanged, bool quickResumeTimeoutChanged);
   Rect backButtonRect() const;

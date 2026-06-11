@@ -10,7 +10,6 @@
 #include "ButtonRemapActivity.h"
 #include "ClearCacheActivity.h"
 #include "CrossPointSettings.h"
-#include "FontDownloadActivity.h"
 #include "FontSelectionActivity.h"
 #include "HardwareDiagnosticsActivity.h"
 #include "KOReaderSettingsActivity.h"
@@ -18,7 +17,7 @@
 #include "MappedInputManager.h"
 #include "OpdsServerListActivity.h"
 #include "OtaUpdateActivity.h"
-#include "SdCardFontSystem.h"
+#include "ReaderFontSizeActivity.h"
 #include "SdFirmwareUpdateActivity.h"
 #include "SettingsList.h"
 #include "StatusBarSettingsActivity.h"
@@ -108,11 +107,7 @@ void SettingsActivity::rebuildSettingsLists() {
   controlsSettings.clear();
   systemSettings.clear();
 
-  // Pick up any fonts uploaded/deleted over the web server since the last
-  // reader activity ran — otherwise the font-family picker shows stale list.
-  sdFontSystem.refreshIfDirty();
-
-  for (auto& setting : getSettingsList(&sdFontSystem.registry())) {
+  for (auto& setting : getSettingsList()) {
     if (setting.category == StrId::STR_NONE_OPT) continue;
     if (setting.category == StrId::STR_CAT_DISPLAY) {
       displaySettings.push_back(setting);
@@ -140,9 +135,6 @@ void SettingsActivity::rebuildSettingsLists() {
   systemSettings.push_back(SettingInfo::Action(StrId::STR_HARDWARE_DIAGNOSTICS, SettingAction::HardwareDiagnostics));
 #endif
   systemSettings.push_back(SettingInfo::Action(StrId::STR_LANGUAGE, SettingAction::Language));
-  // Insert "Manage Fonts" right after the font family setting so users discover it naturally
-  readerSettings.insert(readerSettings.begin() + 1,
-                        SettingInfo::Action(StrId::STR_MANAGE_FONTS, SettingAction::DownloadFonts));
   readerSettings.push_back(SettingInfo::Action(StrId::STR_CUSTOMISE_STATUS_BAR, SettingAction::CustomiseStatusBar));
 
   // Update currentSettings pointer and count for the active category
@@ -445,11 +437,16 @@ void SettingsActivity::toggleCurrentSetting() {
   const auto& setting = (*currentSettings)[selectedSetting];
   const uint8_t previousFontSize = SETTINGS.fontSize;
   const uint8_t previousJapaneseFontSize = SETTINGS.japaneseFontSize;
+  const uint8_t previousTtfFontSize = SETTINGS.readerTtfSizePx;
   const bool sleepScreenChanged = setting.valuePtr == &CrossPointSettings::sleepScreen;
   const bool quickResumeTimeoutChanged = setting.valuePtr == &CrossPointSettings::quickResumeSleepScreen;
 
   if (setting.nameId == StrId::STR_TIME_TO_SLEEP) {
     openSleepTimeoutPicker();
+    return;
+  }
+  if (setting.valuePtr == &CrossPointSettings::readerTtfSizePx) {
+    openReaderFontSizePicker();
     return;
   }
 
@@ -463,7 +460,7 @@ void SettingsActivity::toggleCurrentSetting() {
   } else if (setting.type == SettingType::ENUM && setting.valueGetter && setting.valueSetter) {
     if (setting.nameId == StrId::STR_FONT_FAMILY) {
       // Launch font selection submenu instead of cycling
-      startActivityForResult(std::make_unique<FontSelectionActivity>(renderer, mappedInput, &sdFontSystem.registry()),
+      startActivityForResult(std::make_unique<FontSelectionActivity>(renderer, mappedInput, nullptr),
                              [this](const ActivityResult&) {
                                SETTINGS.saveToFile();
                                rebuildSettingsLists();
@@ -515,13 +512,6 @@ void SettingsActivity::toggleCurrentSetting() {
         startActivityForResult(std::make_unique<HardwareDiagnosticsActivity>(renderer, mappedInput), resultHandler);
 #endif
         break;
-      case SettingAction::DownloadFonts:
-        startActivityForResult(std::make_unique<FontDownloadActivity>(renderer, mappedInput),
-                               [this](const ActivityResult&) {
-                                 SETTINGS.saveToFile();
-                                 rebuildSettingsLists();
-                               });
-        break;
       case SettingAction::Language:
         startActivityForResult(std::make_unique<LanguageSelectActivity>(renderer, mappedInput), resultHandler);
         break;
@@ -535,7 +525,8 @@ void SettingsActivity::toggleCurrentSetting() {
   }
 
   CrossPointSettings::normalizeDependentSettings(SETTINGS);
-  if (SETTINGS.fontSize != previousFontSize || SETTINGS.japaneseFontSize != previousJapaneseFontSize) {
+  if (SETTINGS.fontSize != previousFontSize || SETTINGS.japaneseFontSize != previousJapaneseFontSize ||
+      SETTINGS.readerTtfSizePx != previousTtfFontSize) {
     SETTINGS.resetRubyOffsets();
   }
   syncQuickResumeTimeoutForSleepScreen(sleepScreenChanged, quickResumeTimeoutChanged);
@@ -579,6 +570,21 @@ void SettingsActivity::openSleepTimeoutPicker() {
         }
         requestUpdate();
       });
+}
+
+void SettingsActivity::openReaderFontSizePicker() {
+  const uint8_t previousTtfFontSize = SETTINGS.readerTtfSizePx;
+  startActivityForResult(std::make_unique<ReaderFontSizeActivity>(renderer, mappedInput),
+                         [this, previousTtfFontSize](const ActivityResult& result) {
+                           if (!result.isCancelled) {
+                             SETTINGS.readerTtfSizePx = static_cast<uint8_t>(std::get<IntervalResult>(result.data).value);
+                             if (SETTINGS.readerTtfSizePx != previousTtfFontSize) {
+                               SETTINGS.resetRubyOffsets();
+                             }
+                             SETTINGS.saveToFile();
+                           }
+                           requestUpdate();
+                         });
 }
 
 void SettingsActivity::render(RenderLock&&) {

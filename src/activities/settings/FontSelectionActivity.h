@@ -30,6 +30,7 @@ class FontSelectionActivity final : public Activity {
       Builtin,
       SdCpfont,
       Ttf,
+      Unavailable,
     };
 
     std::string name;
