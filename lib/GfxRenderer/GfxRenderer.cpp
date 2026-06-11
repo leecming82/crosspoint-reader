@@ -440,7 +440,9 @@ void GfxRenderer::drawPixel(const int x, const int y, const bool state) const {
 
   // Bounds checking against runtime panel dimensions
   if (phyX < 0 || phyX >= panelWidth || phyY < 0 || phyY >= panelHeight) {
+#ifdef GFX_LOG_OUT_OF_RANGE_PIXELS
     LOG_ERR("GFX", "!! Outside range (%d, %d) -> (%d, %d)", x, y, phyX, phyY);
+#endif
     return;
   }
 
@@ -473,14 +475,18 @@ int GfxRenderer::getTextWidth(const int fontId, const char* text, const EpdFontF
     return 0;
   }
 
+  std::string visual;
+  const char* renderedText = resolveVisualText(text, visual, baseDir);
+
+  if (readerFontMetricsProvider_ && readerFontMetricsProvider_->handlesFontId(fontId)) {
+    return readerFontMetricsProvider_->getTextAdvanceX(fontId, renderedText, style);
+  }
+
   const auto fontIt = fontMap.find(fontId);
   if (fontIt == fontMap.end()) {
     LOG_ERR("GFX", "Font %d not found", fontId);
     return 0;
   }
-
-  std::string visual;
-  const char* renderedText = resolveVisualText(text, visual, baseDir);
 
   if (cjkUiGlyphSetForFontId(fontId) != nullptr) {
     return measureUiTextWithCjkFallback(fontIt->second, fontId, renderedText, style);
@@ -516,6 +522,11 @@ void GfxRenderer::drawText(const int fontId, const int x, const int y, const cha
 
   if (fontCacheManager_ && fontCacheManager_->isScanning()) {
     fontCacheManager_->recordText(renderedText, fontId, style);
+    return;
+  }
+
+  if (readerFontMetricsProvider_ && readerFontMetricsProvider_->handlesFontId(fontId)) {
+    readerFontMetricsProvider_->drawText(*this, fontId, x, y, renderedText, black, style);
     return;
   }
 
@@ -1509,6 +1520,10 @@ bool GfxRenderer::copyBufferToRegion(int lx, int ly, int lw, int lh, const uint8
 }
 
 int GfxRenderer::getSpaceWidth(const int fontId, const EpdFontFamily::Style style) const {
+  if (readerFontMetricsProvider_ && readerFontMetricsProvider_->handlesFontId(fontId)) {
+    return readerFontMetricsProvider_->getSpaceWidth(fontId, style);
+  }
+
   // Advance table fast-path for SD card fonts during layout
   auto sdIt = sdCardFonts_.find(fontId);
   if (sdIt != sdCardFonts_.end() && sdIt->second->hasAdvanceTable()) {
@@ -1531,6 +1546,10 @@ int GfxRenderer::getSpaceWidth(const int fontId, const EpdFontFamily::Style styl
 
 int GfxRenderer::getSpaceAdvance(const int fontId, const uint32_t leftCp, const uint32_t rightCp,
                                  const EpdFontFamily::Style style) const {
+  if (readerFontMetricsProvider_ && readerFontMetricsProvider_->handlesFontId(fontId)) {
+    return readerFontMetricsProvider_->getSpaceAdvance(fontId, leftCp, rightCp, style);
+  }
+
   // Advance table fast-path for SD card fonts during layout.
   // Kern data is not loaded during layout (consistent with previous metadataOnly behavior),
   // so we return just the space advance without kerning.
@@ -1557,6 +1576,10 @@ int GfxRenderer::getSpaceAdvance(const int fontId, const uint32_t leftCp, const 
 
 int GfxRenderer::getKerning(const int fontId, const uint32_t leftCp, const uint32_t rightCp,
                             const EpdFontFamily::Style style) const {
+  if (readerFontMetricsProvider_ && readerFontMetricsProvider_->handlesFontId(fontId)) {
+    return readerFontMetricsProvider_->getKerning(fontId, leftCp, rightCp, style);
+  }
+
   const auto fontIt = fontMap.find(fontId);
   if (fontIt == fontMap.end()) return 0;
   const int kernFP = fontIt->second.getKerning(leftCp, rightCp, style);  // 4.4 fixed-point
@@ -1565,6 +1588,10 @@ int GfxRenderer::getKerning(const int fontId, const uint32_t leftCp, const uint3
 
 uint32_t GfxRenderer::getVerticalSubstitution(const int fontId, const uint32_t cp,
                                               const EpdFontFamily::Style style) const {
+  if (readerFontMetricsProvider_ && readerFontMetricsProvider_->handlesFontId(fontId)) {
+    return readerFontMetricsProvider_->getVerticalSubstitution(fontId, cp, style);
+  }
+
   const auto fontIt = fontMap.find(fontId);
   if (fontIt == fontMap.end()) return cp;
   const uint32_t fontSubstitution = fontIt->second.applyVerticalSubstitution(cp, style);
@@ -1589,6 +1616,10 @@ uint32_t GfxRenderer::getVerticalSubstitution(const int fontId, const uint32_t c
 }
 
 int GfxRenderer::getTextAdvanceX(const int fontId, const char* text, EpdFontFamily::Style style) const {
+  if (readerFontMetricsProvider_ && readerFontMetricsProvider_->handlesFontId(fontId)) {
+    return readerFontMetricsProvider_->getTextAdvanceX(fontId, text, style);
+  }
+
   const char* originalText = text;
 
   // Advance table fast-path for SD card fonts during layout.
@@ -1654,6 +1685,10 @@ int GfxRenderer::getTextAdvanceX(const int fontId, const char* text, EpdFontFami
 }
 
 bool GfxRenderer::canRenderText(const int fontId, const char* text, const EpdFontFamily::Style style) const {
+  if (readerFontMetricsProvider_ && readerFontMetricsProvider_->handlesFontId(fontId)) {
+    return readerFontMetricsProvider_->canRenderText(fontId, text, style);
+  }
+
   if (text == nullptr) return true;
   const auto fontIt = fontMap.find(fontId);
   if (fontIt == fontMap.end()) return false;
@@ -1669,6 +1704,10 @@ bool GfxRenderer::canRenderText(const int fontId, const char* text, const EpdFon
 }
 
 int GfxRenderer::getFontAscenderSize(const int fontId) const {
+  if (readerFontMetricsProvider_ && readerFontMetricsProvider_->handlesFontId(fontId)) {
+    return readerFontMetricsProvider_->getFontAscenderSize(fontId);
+  }
+
   const auto fontIt = fontMap.find(fontId);
   if (fontIt == fontMap.end()) {
     LOG_ERR("GFX", "Font %d not found", fontId);
@@ -1679,6 +1718,10 @@ int GfxRenderer::getFontAscenderSize(const int fontId) const {
 }
 
 int GfxRenderer::getLineHeight(const int fontId) const {
+  if (readerFontMetricsProvider_ && readerFontMetricsProvider_->handlesFontId(fontId)) {
+    return readerFontMetricsProvider_->getLineHeight(fontId);
+  }
+
   const auto fontIt = fontMap.find(fontId);
   if (fontIt == fontMap.end()) {
     LOG_ERR("GFX", "Font %d not found", fontId);
@@ -1689,6 +1732,10 @@ int GfxRenderer::getLineHeight(const int fontId) const {
 }
 
 int GfxRenderer::getTextHeight(const int fontId) const {
+  if (readerFontMetricsProvider_ && readerFontMetricsProvider_->handlesFontId(fontId)) {
+    return readerFontMetricsProvider_->getFontAscenderSize(fontId);
+  }
+
   const auto fontIt = fontMap.find(fontId);
   if (fontIt == fontMap.end()) {
     LOG_ERR("GFX", "Font %d not found", fontId);

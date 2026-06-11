@@ -2,9 +2,9 @@
 
 Date: 2026-06-09
 
-This document tracks a possible migration from CrossPoint's current `.cpfont`-first font pipeline toward native `.ttf` reader fonts on PSRAM-capable ESP32-S3 devices such as Murphy M4.
+This document tracks migration from CrossPoint's current `.cpfont`-first font pipeline toward native `.ttf` reader fonts on Murphy M4 / ESP32-S3 devices with PSRAM.
 
-The current Japanese branch should remain the source of truth while this work is experimental. Vertical layout, ruby/furigana, dictionary cursor geometry, EPUB writing-mode behavior, CJK fallback semantics, and bounded-memory behavior must not regress. X3/X4 should continue using the current `.cpfont` path unless explicitly changed later.
+This branch moving forward explicitly supports only Murphy M4 / ESP32-S3 + PSRAM-class devices. X3/X4 and other non-PSRAM targets are out of scope for this branch. Vertical layout, ruby/furigana, dictionary cursor geometry, EPUB writing-mode behavior, CJK fallback semantics, and bounded-memory behavior must not regress on M4.
 
 ## Current Model
 
@@ -23,14 +23,14 @@ A raw `.ttf` is more flexible but less direct. Firmware must parse TrueType tabl
 
 The expensive step is not "TTF" by itself, but `outline -> rasterized bitmap + metrics`. A full conversion pays that cost for many glyphs up front. A runtime path pays it lazily as glyphs are encountered.
 
-For Murphy M4, PSRAM makes a native runtime path plausible:
+For Murphy M4 / ESP32-S3 + PSRAM devices, PSRAM makes a native runtime path plausible:
 
-- parse TTF metadata once per selected font/size/style
+- parse TTF metadata once per selected font/size/style, without assuming the full font fits in PSRAM
 - keep compact font state and caches resident while the reader is open
 - rasterize glyphs on demand
 - cache glyph metrics and bitmaps in PSRAM
 - reuse cached glyphs across page layout and page render
-- fall back to `.cpfont` when TTF load or glyph render fails
+- handle TTF load failures, missing glyphs, and unsupported glyph formats explicitly without using `.cpfont` to mask TTF coverage problems
 
 ## Stock Firmware Evidence
 
@@ -51,19 +51,36 @@ Stock also supports separate static or converted font formats such as EPF font p
 
 ## Design Direction
 
-The lowest-risk direction is not a full replacement of `.cpfont`. It is a board-gated reader-only TTF provider that fits behind the existing font abstraction where possible.
+The lowest-risk direction is not an immediate deletion of `.cpfont`. It is an M4-only reader TTF provider that fits behind the existing font abstraction where possible, while allowing the existing `.cpfont` path to coexist during development and comparison.
 
 Initial constraints:
 
-- Murphy M4 / PSRAM-capable boards only
-- reader text only; UI TTF can wait
+- Murphy M4 / ESP32-S3 + PSRAM devices only
+- reader text first
+- system/UI fonts remain cpfont-backed initially, but the migration should leave room for a later TTF-backed system font provider on top of or alongside cpfonts
 - regular style only at first
 - no TTC collection support initially unless trivial through the chosen parser
 - no full CJK font conversion on device
 - no attempt to generate permanent `.cpfont` files on device
-- current `.cpfont` path remains the fallback and the default for X3/X4
+- Japanese TTF files are assumed to be larger than available PSRAM; runtime design must stream or selectively load tables/glyph ranges instead of requiring full-file residency
+- TTF probe firmware must not modify existing CrossPoint SD-card files, caches, settings, books, or font packs
+- current `.cpfont` path may remain available while the native TTF path is built end-to-end, but it should not be treated as the long-term recovery path for reader glyph coverage. Japanese-capable TTFs are expected to have broader coverage than the current `.cpfont` packs.
 
 The first implementation should behave more like stock Murphy: native TTF runtime, resident state, and a PSRAM glyph cache.
+
+## System Font Direction
+
+Reader fonts are the first runtime TTF target because they have the clearest user value and can be isolated behind the reader font selection/cache path. System fonts should still be considered in the architecture, but not as the first integration point.
+
+The likely system-font shape is a layered provider model:
+
+- Keep existing built-in/cpfont UI fonts as the boot-safe baseline.
+- Allow an M4-only TTF-backed system font provider later, using the same parser/cache primitives as reader TTF where possible.
+- Treat TTF system fonts as an overlay on top of cpfonts during development rather than a hard replacement at first. Boot screens, errors, settings recovery, and invalid-font messages need a known-good rendering path until the system TTF provider is proven, but that path does not need to be the final architecture.
+- Keep UI/system font cache identity separate from reader pagination identity. System font changes should invalidate UI glyph caches, but must not invalidate EPUB/TXT pagination unless the selected reader font also changed.
+- Avoid making UI rendering depend on SD availability during boot. If a system TTF lives on SD, it should become active only after storage is mounted and validation succeeds.
+
+The first reader runtime should therefore avoid hard-coding "reader-only" assumptions into lower-level TTF parser, metrics, glyph-cache, and fallback primitives. Higher-level settings and activity integration can remain reader-only until the runtime is proven.
 
 ## On-The-Fly vs Conversion
 
@@ -71,7 +88,7 @@ On-the-fly native TTF:
 
 - better startup latency because it only renders glyphs actually needed
 - easier to make incremental
-- requires robust runtime caching and fallback
+- requires robust runtime caching and TTF-side missing-glyph handling
 - first encounters of uncommon glyphs may be slower
 
 On-device TTF to cpfont conversion:
@@ -85,65 +102,280 @@ The likely practical compromise is lazy runtime caching. Rasterize glyphs on fir
 
 ## Milestones
 
-1. Evidence and feasibility baseline
+- [x] 1. Evidence and feasibility baseline
 
    Confirm the current font abstractions, `.cpfont` lookup paths, and all places where metrics and bitmaps are consumed during indexing and page render.
 
    Exit criteria: a short code map exists for metrics lookup, bitmap lookup, prewarm, section indexing, page render, and cache identity.
 
-2. Runtime parser selection
+   Progress:
 
-   Choose the native TTF engine. `stb_truetype` is likely the first candidate because stock mentions an optional FreeType path as an alternative, while FreeType is larger and more invasive.
+   - Font abstraction: `EpdFontFamily` selects style faces and exposes `getData()`, `getGlyph()`, kerning, ligatures, vertical substitutions, and synthetic-bold decisions. `EpdFont` performs interval lookup and delegates misses through `EpdFontData::glyphMissHandler`.
+   - Glyph/metric data contract: `EpdFontData` carries glyph metrics (`EpdGlyph` advance, left/top, width/height, bitmap offset), font metrics (`advanceY`, ascender, descender), optional compressed groups, kerning classes, ligatures, vertical substitutions, and on-demand glyph loading hooks.
+   - `.cpfont` SD path: `SdCardFont` loads cpfont headers, intervals, style TOC data, advance tables, page/section mini glyph data, overflow glyphs, and section glyph packs. `SdCardFontManager` assigns deterministic font IDs from cpfont content hash + family + point size and registers the loaded family with `GfxRenderer`.
+   - Metrics lookup: `GfxRenderer::getTextAdvanceX()`, `getSpaceAdvance()`, `getKerning()`, `getFontAscenderSize()`, `getLineHeight()`, `canRenderText()`, and vertical text helpers consume `EpdFontFamily`/`EpdFontData`. For SD fonts, `GfxRenderer::ensureSdCardFontReady()` calls `SdCardFont::buildAdvanceTable()` before layout measurement.
+   - Bitmap lookup/render: `GfxRenderer::drawText()`, rotated/vertical text helpers, and `renderChar()` consume `EpdGlyph` metrics and call `GfxRenderer::getGlyphBitmap()`. Compressed built-ins go through `FontDecompressor`; SD overflow glyphs recover their bitmap through `SdCardFont::fromMissCtx()`.
+   - Prewarm: `FontCacheManager::PrewarmScope` performs the scan-then-prewarm render pass. Built-ins prewarm compressed groups through `FontDecompressor`; SD fonts prewarm requested glyphs/styles through `SdCardFont::prewarm()`.
+   - EPUB section indexing: `Section::createSectionFile()` writes section cache headers, scans CJK codepoints for SD-font advance prewarm, optionally builds/loads section glyph packs, then drives `ChapterHtmlSlimParser`. `ParsedText` performs horizontal, hyphenated, horizontal CJK, and tategaki line/column extraction using renderer metrics.
+   - TXT indexing: `TxtReaderActivity` uses `measureTxtLineForIndexing()` and renderer advance metrics, with cache invalidation currently tied to file size, viewport width, lines per page, font ID, margin, and paragraph alignment.
+   - Cache identity: EPUB section cache identity is in `Section::writeSectionFileHeader()` / `loadSectionFile()` and currently includes section format version, font ID, line compression, spacing/alignment, viewport, hyphenation, embedded style, image rendering, focus reading, orientation/layout, and writing mode. TXT index cache identity includes file size, viewport width, lines per page, font ID, screen margin, and paragraph alignment. Native TTF must extend or encode font identity so path/content/size changes cannot reuse stale pagination.
+
+- [x] 2. Runtime parser selection
+
+   Choose the native TTF engine. `stb_truetype` is the first selected engine because stock mentions an optional FreeType path as an alternative, while FreeType is larger and more invasive.
 
    Exit criteria: selected library builds in the Murphy environment and can parse a known `.ttf` header/table set in a standalone test path.
 
-3. TTF font discovery and settings
+   Progress:
 
-   Add a Murphy-gated reader font option that scans a font directory on SD for `.ttf` files. The directory can be CrossPoint-specific, but stock-compatible `/.mofei/fonts/` should be considered if interoperability matters.
+   - Vendored `stb_truetype.h` into `lib/TtfRuntime/include`.
+   - Added `lib/TtfRuntime` scaffolding with `ttf::probeSfnt()`, a small sfnt table-directory probe. This is not the final rasterizer; it verifies TrueType scalar type, rejects TTC collections for the first pass, bounds-checks table records, and confirms required tables (`cmap`, `glyf`, `head`, `hhea`, `hmtx`, `loca`, `maxp`) plus optional `kern`.
+   - Added `ttf::probeStbTruetype()`, a thin `stb_truetype` initialization probe that runs after the sfnt bounds check and extracts baseline vertical metrics plus a known glyph index.
+   - Added a host smoke test at `lib/TtfRuntime/test/TtfRuntimeHostSmoke.cpp`; it parses existing repo TTFs such as `lib/EpdFont/builtinFonts/source/NotoSans/NotoSans-Regular.ttf` and reports table count, ascent, descent, line gap, and glyph index for `A`.
+   - Added an M4-only compile/link smoke hook in `src/TtfMigrationSmoke.cpp`, and verified `uv run pio run -e murphy_m4` compiles `TtfRuntime/TtfProbe.cpp`, `TtfRuntime/TtfStb.cpp`, and the app smoke hook.
+   - Next step: wrap the parser behind a resident `TtfRuntimeFont` object that opens a selected SD `.ttf`, maps codepoints to glyph IDs, and exposes fixed-size metrics without touching renderer layout yet.
 
-   Exit criteria: settings can list installed TTF files and persist the selected file without affecting X3/X4.
+- [x] 3. Minimal M4 TTF probe firmware
 
-4. Minimal TTF runtime object
+   Add a separate PlatformIO target for a minimal Murphy M4 TTF probe firmware. This firmware should boot, initialize only the hardware/services needed for TTF testing, and avoid CrossPoint reader/settings/pagination code. SD access must be read-only by default: the probe may enumerate and read `.ttf` files, but must not create, update, delete, rename, or truncate CrossPoint files.
 
-   Add a runtime object that opens the selected TTF, parses required tables, maps codepoints to glyph IDs, and exposes basic metrics for a fixed pixel size.
+   Exit criteria: `uv run pio run -e murphy_m4_ttf_probe` builds a firmware that can boot on M4, log basic heap/PSRAM/storage/display status, and call into `TtfRuntime` without linking the full reader workflow. A code audit confirms there are no writes to existing CrossPoint SD paths.
 
-   Exit criteria: a test screen or log-only path can query metrics for ASCII, kana, and kanji codepoints from a known Japanese TTF.
+   Progress:
 
-5. Metrics integration
+   - Added `env:murphy_m4_ttf_probe` in `platformio.ini` with M4 board flags, the Murphy partition table, `CROSSPOINT_TTF_PROBE=1`, a narrow app `build_src_filter`, no CrossPoint extra scripts, and only the hardware/logging/TTF dependencies needed by the probe.
+   - Added `src/ttf_probe_main.cpp` as the probe firmware entry point. It initializes serial logging, GPIO, display, and storage; logs heap/PSRAM/display/storage status; calls `TtfRuntime`; and emits periodic heap/PSRAM heartbeat logs.
+   - Verified `uv run pio run -e murphy_m4_ttf_probe` builds successfully. The probe image is about 1.0 MB versus the full M4 app's roughly 6.5 MB image, and the dependency graph excludes the reader, EPUB/TXT, web server, OPDS, image decoder, settings, and activity layers.
+   - Read-only audit: the probe entry point calls `Storage.begin()` only. It does not call `Storage.open()`, `openFileForWrite()`, `writeFile()`, `mkdir()`, `remove()`, `rename()`, `rmdir()`, or any CrossPoint settings/cache/book/font-pack code.
 
-   Integrate TTF metrics into the reader layout path while keeping `.cpfont` as the fallback. This must preserve CJK vertical/horizontal layout semantics.
+- [x] 4. Probe firmware TTF discovery and load
+
+   In the probe firmware, mount SD and scan for `.ttf` files. The current acceptance-test path is `/TTF`; stock-compatible `/.mofei/fonts/`, `/fonts/`, or a CrossPoint-specific path can be added after this path is validated. Open a selected TTF read-only. Because Japanese TTFs are expected to exceed PSRAM, the required path is streaming/table-directory probing; full-buffer `stb_truetype` initialization is optional and size-gated.
+
+   Exit criteria: probe firmware logs discovered `.ttf` files, selected file path, file size, streamed hash, required-table status, and whether full-buffer parser initialization was run or skipped for size. It must do this without writing discovery results or selection state to SD.
+
+   Progress:
+
+   - Probe firmware now scans `/TTF` read-only with `Storage.listFiles()`, logs directory entries, selects the first `.ttf`, and opens it with `Storage.open(path, O_RDONLY)`.
+   - The selected font's sfnt header/table directory is loaded into PSRAM, while the rest of the file is streamed only to compute an FNV-1a content hash. This keeps large Japanese fonts viable for milestone 4 even when they are larger than PSRAM.
+   - The probe logs selected path, file size, directory size, FNV-1a content hash, required-table status, and optional `kern` presence.
+   - Full-buffer `stb_truetype` initialization is now a size-gated smoke path only. It runs for fonts at or below 4 MB with a 512 KB PSRAM safety margin, and logs an explicit skip for larger Japanese fonts.
+   - Repeated heartbeat status now includes SD TTF discovery/load/probe fields so late serial attachment can still confirm the result.
+   - Device acceptance on an 8.7 MB Japanese TTF reported `sd_found=1`, `sd_dir=1`, `sd_full=0`, `sd_sfnt=1`, `sd_tables=23`, `sd_stb_skip=1`, `sd_size=9135128`, and stable heap/PSRAM heartbeats.
+
+- [x] 5. Probe firmware runtime metrics object
+
+   Add a resident TTF runtime object behind `TtfRuntime` that owns a read-only file handle or table cache, maps Unicode codepoints to glyph IDs, and exposes basic metrics for a fixed pixel size. It must not require full-file residency. Keep this isolated from `EpdFontData` and reader layout until the object is stable.
+
+   Exit criteria: probe firmware can query and log metrics for ASCII, kana, kanji, fullwidth punctuation, missing glyphs, and replacement/fallback candidates from a known Japanese TTF.
+
+   Progress:
+
+   - Added `ttf::TtfRuntimeFont`, a cached-table runtime object that consumes only `cmap`, `head`, `hhea`, `hmtx`, `loca`, and `maxp` table views. It parses font metrics, selects a Unicode cmap subtable, maps Unicode codepoints to glyph IDs, and exposes horizontal advance/left-side-bearing metrics at a fixed pixel size.
+   - Implemented cmap format 12 for large Unicode fonts and format 4 for BMP fonts. The object also reads `loca` so the probe can report each glyph's `glyf` offset/length without loading the `glyf` table.
+   - Updated probe firmware to load required metric tables from the selected `/TTF/*.ttf` file with read-only seeks. Large Japanese fonts still do not need full-file residency.
+   - Probe logs metrics for ASCII `U+0041`, kana `U+3042`, kanji `U+65E5`, fullwidth punctuation `U+3001`, replacement `U+FFFD`, and a deliberate missing probe `U+10FFFF`. Heartbeat status now includes `sd_metrics` and `sd_metric_hits`.
+   - Device acceptance on the 8.7 MB Japanese TTF reported `sd_metrics=1`, `sd_metric_hits=4/6`, stable heap/PSRAM heartbeats, and continued large-font behavior with `sd_full=0` and `sd_stb_skip=1`.
+
+- [x] 6. Probe firmware glyph rasterization and bitmap cache
+
+   Rasterize requested glyphs at the active pixel size and cache resulting bitmaps plus metrics in PSRAM inside the probe firmware. Keep the cache simple initially: one selected font, one size, one style. Use the e-paper display only for focused test output, not reader pages. The cache must be RAM/PSRAM-only unless an explicit later experiment enables writes under a dedicated probe-only directory such as `/.crosspoint-ttf-probe/`.
+
+   Exit criteria: probe firmware can draw a small mixed Latin/kana/kanji sample, log first-render versus cached-render timing, cache hit/miss counts, bitmap bytes, free heap/PSRAM before and after, and failure behavior for a deliberately missing glyph. No SD cache files are created during this milestone.
+
+   6A engine spike: complete
+
+   - Keep `stb_truetype` as a size-gated reference renderer for small full-buffer fonts only. This validates glyph bitmap shape, timing logs, scratch-buffer sizing, and probe cache telemetry, but it is not sufficient for large Japanese TTFs because it requires memory-backed random access to the whole font.
+   - For large Japanese TTFs, explicitly log that `stb_truetype` rasterization was skipped because the font was not loaded as a full buffer. This is expected and is evidence that the production raster engine needs streaming/custom IO.
+   - Evaluate a streaming-capable engine next. FreeType with custom stream IO is the practical candidate if flash/RAM cost is acceptable; a custom minimal TrueType rasterizer remains the smaller but higher-risk alternative.
+
+   6A exit criteria: probe firmware can either rasterize sample glyphs through the size-gated `stb_truetype` reference path, or, for larger Japanese fonts, log a clear `stb` full-buffer skip while preserving the milestone 5 table-cache metrics path.
+
+   6A progress:
+
+   - Added `ttf::rasterizeStbGlyph()` as a small full-buffer reference raster API. It initializes `stb_truetype`, maps a codepoint to a glyph, computes bitmap bounds, renders into a caller-provided bitmap buffer, and reports dimensions, offsets, advance, side bearing, and bitmap bytes.
+   - Updated the probe firmware to select the smallest readable `.ttf` in `/TTF`, allocate a 64 KB PSRAM raster scratch buffer, and rasterize sample glyphs only when the selected TTF passed the existing full-buffer size gate. This lets a small English TTF exercise `stb` rasterization while larger Japanese TTFs remain available for table/metrics testing.
+   - For fonts larger than the full-buffer gate, the probe now logs `stb raster reference skipped: selected font was not loaded as full buffer; streaming engine required` and reports the skip in heartbeat status.
+   - Heartbeat status now includes `sd_raster`, `sd_raster_hits`, `sd_raster_skip`, and `sd_raster_bytes` so late serial attachment can confirm the engine-spike outcome.
+   - Device acceptance with a small English TTF reported `sd_full=1`, `sd_stb=1`, `sd_stb_skip=0`, `sd_metrics=1`, `sd_raster=1`, and `sd_raster_hits=1/5`. Lower metric/raster hit counts are expected for an English font because the kana, kanji, and fullwidth punctuation probe glyphs may be absent.
+
+   6B custom TrueType rasterizer: complete
+
+   - Build a streaming-friendly in-tree rasterizer instead of adopting FreeType. The first implementation reads only the requested glyph's `glyf` slice from SD, parses simple TrueType contours, flattens quadratic curves, and fills an 8-bit bitmap in PSRAM.
+   - Compound glyphs are explicitly detected and logged as unsupported in the first spike. This keeps the initial engine small while making the next hard requirement measurable on real Japanese fonts.
+   - The custom raster path must remain independent of the full-buffer `stb_truetype` reference path. A large TTF should be able to run metrics plus custom glyph-slice raster attempts even when `sd_full=0`.
+
+   6B exit criteria: probe firmware logs `raster_custom` results for sample glyphs, including glyph slice length, contour/point counts, bitmap size, timing, unsupported compound counts, and heartbeat status fields for custom hits/bytes. SD access remains read-only.
+
+   6B progress:
+
+   - Added `ttf::rasterizeSimpleGlyf()`, a first-pass simple-glyph rasterizer that parses TrueType flags, coordinate deltas, contour endpoints, implied on-curve points, quadratic curves, and scanline fills.
+   - Updated the probe firmware to select the largest readable `.ttf` in `/TTF` for 6B, read individual glyph slices from that font's `glyf` table with read-only seeks, then rasterize ASCII/kana/kanji/fullwidth-punctuation samples through the custom path. The smallest readable `.ttf` remains the separate 6A `stb_truetype` reference target.
+   - Heartbeat status now includes `sd_custom`, `sd_custom_hits`, `sd_custom_compound`, and `sd_custom_bytes`.
+   - Device acceptance on a Japanese TTF reported successful custom rasterization for ASCII `A`, kana `U+3042`, kanji `U+65E5`, and fullwidth punctuation `U+3001`. The sampled glyphs were all simple glyphs (`compound=0`), took roughly 7.6-10.9 ms each at 24 px, and PSRAM returned to its prior free level after the scratch buffers were released.
+
+- [x] 7. CrossPoint reader TTF discovery and settings model
+
+   Add Murphy-gated reader TTF discovery and settings without forcing TTFs into the existing `.cpfont` family-pack model. Current `.cpfont` settings assume a downloaded/installed family pack with four prebuilt sizes exposed as S/M/L/XL. Native TTFs should instead treat the font file and pixel size as separate settings because one TTF can produce many runtime sizes.
+
+   Keep the first CrossPoint-facing change intentionally simple: users copy `.ttf` files onto SD manually or through existing generic file upload/browser behavior. Do not add a TTF download catalog, web font manager, or special installer flow in this milestone.
+
+   7A discovery:
+
+   - Scan a single M4-only TTF directory first. Use `/TTF` initially because the probe firmware already validates that path.
+   - Recognize `.ttf` files only for the first pass.
+   - Validate candidates enough to list/select them: readable file, sfnt header, required TrueType tables, and basic file identity.
+   - Store TTF identity separately from cpfont identity. The minimum identity is path plus file size; a streamed hash should be added before layout caches depend on it.
+   - Stock-compatible directories such as `/.mofei/fonts/` can be considered later, but should not complicate the first CrossPoint integration.
+
+   7B settings model:
+
+   - Add a reader font mode setting such as `cpfont` versus `ttf`.
+   - Preserve the existing cpfont family and S/M/L/XL size-slot behavior for the cpfont mode.
+   - Add TTF-specific settings for selected TTF path and numeric reader TTF pixel size.
+   - Do not add TTF weight/style settings in the first settings pass. Weight can mean separate face file, variable `wght`, or synthetic bold, and should wait until the renderer/fallback path is stable.
+   - Keep selected TTF path/size independent from system/UI font settings. Reader TTF selection must not imply UI/system TTF rendering.
+
+   7C minimal UI:
+
+   - Add the smallest practical reader settings UI for selecting TTF mode, choosing a discovered `.ttf`, and selecting a numeric size.
+   - Do not reuse S/M/L/XL labels for TTF sizes. Use explicit numeric sizes so the setting matches runtime behavior.
+   - A conservative first size list is acceptable, stored internally as explicit numeric pixel sizes.
+   - If no valid TTF files are found during this development phase, leave the existing cpfont mode active and show a recoverable message rather than changing rendering behavior.
+
+   7D cache identity prep:
+
+   - Define the cache identity fields that milestone 8 will need: font mode, selected TTF path, file size or hash, pixel size, and later style/weight axes if supported.
+   - Do not allow EPUB/TXT pagination to reuse cpfont cache identity after switching to TTF, or after TTF path/size/identity changes.
+   - It is acceptable for milestone 7 to persist these fields without activating them in layout/render until milestone 8.
+
+   Out of scope for milestone 7:
+
+   - TTF download catalogs or installer changes.
+   - Web UI font management beyond existing generic file operations.
+   - On-device TTF-to-cpfont conversion.
+   - System/UI TTF selection.
+   - Variable font axes, weight selection, bold/italic matching, or multi-TTF fallback stacks.
+
+   Exit criteria: CrossPoint can list valid `/TTF/*.ttf` files, persist reader font mode/path/numeric-size settings separately from cpfont S/M/L/XL settings, and preserve existing cpfont behavior without changing reader layout/render yet.
+
+   Progress:
+
+   - Added CrossPoint settings fields for reader font mode, selected TTF path, numeric TTF pixel size, TTF file size, and future TTF hash identity. These are stored separately from existing cpfont family and S/M/L/XL size settings.
+   - Added an M4-only `TtfFontScanner` that scans `/TTF`, opens `.ttf` candidates read-only, validates sfnt required tables through `TtfRuntime`, and returns path/size/table metadata without writing to SD.
+   - Extended the existing reader font picker to append valid `/TTF/*.ttf` entries as `TTF: filename` on M4. Selecting one persists TTF mode/path/file-size identity but does not yet change reader layout or rendering.
+   - Added an M4-only `TTF Font Size` setting with explicit numeric pixel sizes (`24, 30, 36, 42, 48, 56, 64, 72`) stored as `readerTtfSizePx`, independent from the existing cpfont S/M/L/XL settings.
+   - Device acceptance: CrossPoint `murphy_m4` firmware discovered 3 valid `/TTF` candidates, allowed selecting a TTF, and allowed changing the TTF size setting. The reader font not visually changing is expected until milestones 8 and 9 wire TTF metrics/rendering into the reader.
+   - Known polish debt: the temporary size control cycles by tapping and is clumsy. Leave this for reader polish and/or cpfont-removal cleanup after the TTF path is active end-to-end.
+
+- [x] 8. Reader metrics integration
+
+   Integrate TTF metrics into the reader layout path while keeping `.cpfont` available for side-by-side development and comparison. This must preserve CJK vertical/horizontal layout semantics.
 
    Exit criteria: an EPUB section can index using TTF metrics, and cache identity includes TTF path, file size or hash, and pixel size so stale pagination is not reused.
 
-6. Glyph rasterization and bitmap cache
+   Progress:
 
-   Rasterize requested glyphs at the active pixel size and cache resulting bitmaps plus metrics in PSRAM. Keep the cache simple initially: one selected font, one size, one style.
+   - Added an M4-only `TtfReaderMetrics` provider that loads the selected `readerTtfPath` from SD, validates the sfnt directory, loads required metric tables into PSRAM, initializes `TtfRuntimeFont`, and exposes text advance, space advance, ascender, and line-height metrics through `GfxRenderer`.
+   - Added a `ReaderFontMetricsProvider` hook to `GfxRenderer`. Existing cpfont/built-in paths are unchanged unless the active font ID is handled by the TTF provider.
+   - Added a synthetic TTF layout font identity derived from selected path, pixel size, and actual file size. EPUB section cache and TXT page-index cache use this identity in TTF mode, so changing TTF path/size/file size invalidates stale pagination.
+   - Split temporary layout and render font IDs in EPUB/TXT readers. The initial step-8 bridge used TTF metrics for indexing/layout while rendering still used the existing cpfont renderer; milestone 9 now routes render through the same TTF provider in TTF mode.
+   - Device acceptance target: after selecting a TTF and opening EPUB/TXT, logs should include `TTFR reader metrics active`, selected path, pixel size, file size, identity hash, font metrics, and sample `A`/kana/kanji advances. EPUB/TXT indexing should log `Indexing session complete mode=ttf ... duration_ms=...` so TTF metrics performance can be compared against cpfont mode. Reopening without changing the font should reuse cache; changing TTF size or selected path should trigger section/TXT cache rebuild.
+   - Device acceptance on `Hanbun Sekai - Ishikawa Yoshio.epub`, spine 19: TTF metrics loaded for `NotoSerifJP-VariableFont_wght.tt72F`, reported `upem=1000`, `line=26`, `glyphs=17099`, and present ASCII/kana/kanji sample metrics. Indexing rebuilt after TTF identity changed, producing 35 pages in about 3.4 s (`duration_ms=3396`, roughly 97 ms/page). Reopening the same chapter with the same TTF/size logged `Deserialization succeeded: 35 pages` and `Cache found, skipping build`, with no indexing session.
 
-   Exit criteria: page render can draw TTF glyphs for a small Japanese sample without repeated SD reads for already-seen glyphs.
+- [x] 9. Reader glyph rendering and missing-glyph behavior
 
-7. Fallback and missing glyph behavior
+   Define consistent TTF-side missing-glyph behavior. Layout and render must resolve the same glyph source so wrapping does not differ from drawing. During development, cpfont can remain selectable as a separate mode, but it should not hide missing TTF coverage or unsupported glyph behavior.
 
-   Define a consistent fallback chain. Layout and render must resolve the same glyph source so wrapping does not differ from drawing.
+   Exit criteria: missing glyphs, unsupported styles, and bad TTF files fail visibly and recoverably within the TTF path, without silently substituting cpfont metrics/bitmaps that would mask coverage issues. No render/layout mismatch is observed.
 
-   Exit criteria: missing glyphs, unsupported styles, and bad TTF files fall back cleanly to `.cpfont`; no render/layout mismatch is observed.
+   Progress:
 
-8. Performance and memory guardrails
+   - Extended `ReaderFontMetricsProvider` from metrics-only to metrics-plus-render, and routed `GfxRenderer::drawText()` plus width measurement through the provider when the active font ID belongs to the selected TTF.
+   - Added an M4-only `TtfReaderMetrics` glyph cache for TTF render. Glyph outlines are read from the selected SD TTF on demand, rasterized with the custom simple-glyph rasterizer, copied into PSRAM, and reused across subsequent draws while the provider remains loaded.
+   - EPUB and TXT render now use the same selected TTF provider/font ID as layout in TTF mode. The cpfont renderer remains selectable as cpfont mode, but it is no longer used to mask TTF rendering for selected TTF reader fonts.
+   - Expanded the TTF reader size menu to raw em sizes `24, 30, 36, 42, 48, 56, 64, 72 px`. These are not visually equivalent to cpfont S/M/L/XL or cpfont numeric source sizes; they need device calibration against Japanese fonts.
+   - Temporarily disabled the reader grayscale antialiasing pass for TTF mode. The current custom TTF rasterizer emits 1-bit filled glyphs, so the existing cpfont/image grayscale pass can make TTF pages look faded without adding true outline antialiasing.
+   - Current first-pass limitations are explicit: simple TrueType glyphs only, compound glyphs are counted and skipped, no antialiasing, no kerning/GPOS, no vertical substitution from TTF tables, style/weight selection is not implemented, and the TTF cache uses bounded clear-all eviction.
+   - Render telemetry now logs `TTFR render stats` with rendered glyph count, glyph-cache size/bytes, hit/miss counts, raster success/failure counts, compound-glyph skips, and missing-glyph counts. Existing reader telemetry still logs page render timing through `Page render ... total=...`.
+   - Device acceptance: selected Japanese TTFs change EPUB layout and body rendering, `TTFR reader metrics active` and `TTFR render stats` are logged, and EPUB page render timing remains visible through `ERS Page render ... total=...`. Warm page renders have been observed around 0.7-1.1 s after glyph-cache warmup, with no missing glyphs or compound skips on the tested pages.
 
-   Add limited telemetry to measure first-page cost, page-flip cost, glyph cache hit rate, PSRAM use, and fallback counts. Remove or gate noisy logging after validation.
+- [ ] 10. Rasterization quality and cpfont parity
+
+   Improve the visual quality of the custom TTF rasterizer before adding weight controls or synthetic emboldening. The same Japanese TTF at weight 400 can still look lighter than the equivalent cpfont because cpfonts are pre-rasterized bitmaps, may carry 2-bit coverage, and likely come from a mature rasterization/conversion pipeline. The runtime path currently uses unhinted 1-bit pixel-center filling.
+
+   Scope:
+
+   - Add a diagnostic that compares selected glyphs through cpfont and TTF paths: advance, glyph box, offsets, bitmap bytes, black-pixel count, and optional small ASCII previews for glyphs such as `A`, `あ`, `日`, and `、`.
+   - Confirm whether the density difference is caused by missing edge coverage, glyph box/baseline mismatch, size calibration, refresh behavior, or cpfont 2-bit coverage being treated as black in BW render.
+   - Consider supersampled TTF rasterization with downsampled coverage, and decide whether the runtime cache should store 1-bit thresholded glyphs or 2-bit coverage glyphs compatible with the existing cpfont BW/grayscale render model.
+   - Keep synthetic bolding and variable `wght` axis support out of this step unless diagnostics prove weight selection is the actual problem.
+
+   Exit criteria: TTF glyph density and placement can be compared directly against the equivalent cpfont conversion, and the chosen rasterization change makes regular-weight TTF text visually comparable without masking the issue through synthetic bold.
+
+- [ ] 11. Performance and memory guardrails
+
+   Add limited telemetry to measure first-page cost, page-flip cost, glyph cache hit rate, PSRAM use, missing-glyph counts, and unsupported glyph counts. Remove or gate noisy logging after validation.
 
    Exit criteria: TTF render does not starve internal SRAM, page flips remain acceptable after cache warmup, and cache eviction behavior is bounded.
 
-9. Reader polish
+- [ ] 12. Japanese reader-adjacent validation
+
+   Validate Japanese-specific workflows that are close to reader font rendering but not covered by plain page-body rendering.
+
+   Scope:
+
+   - Japanese dictionary app: confirm search results, kanji grid/list entries, selected rows, and detail pages still render legibly while the reader TTF path is enabled. Decide whether the standalone dictionary should stay on the boot-safe UI/system font path or opt into a later system TTF provider.
+   - EPUB cursor/dictionary mode: confirm word hit testing, cursor geometry, selected-word highlighting, dictionary popup text, and popup clipping still match TTF layout metrics. The cursor must use the same advances/page geometry that indexing and render used.
+   - EPUB ruby/furigana: confirm horizontal and tategaki ruby placement, ruby suppression behavior for unsupported glyphs, and the existing ruby X/Y adjustment controls. Current ruby falls back to built-in small/system font for unknown body font IDs; TTF ruby should later derive a scaled ruby font from the selected TTF instead.
+
+   Exit criteria: TTF body text does not regress Japanese dictionary usability, EPUB cursor selection, dictionary popups, or ruby placement. Any remaining cpfont/system-font dependency in these workflows is documented as intentional transitional behavior.
+
+- [ ] 13. Reader polish
 
    Add user-visible controls only after the runtime path is stable: TTF font selection, TTF font size, cache clear, and failure messages.
 
    Exit criteria: a user can copy a `.ttf` to SD, select it, open an EPUB/TXT, and recover if the font is invalid.
 
-10. Optional persistent glyph sidecar
+- [ ] 14. Optional persistent glyph sidecar
 
    If runtime rasterization cost remains noticeable, consider a persistent sidecar cache keyed by TTF identity and pixel size. This should store only glyphs actually encountered, not a full CJK font conversion.
 
    Exit criteria: sidecar improves repeated opens/page flips enough to justify the added complexity and can be safely invalidated.
+
+- [ ] 15. Optional system font TTF layer
+
+   Consider migrating system/UI fonts to a TTF-backed provider on top of the existing cpfont baseline during development. This should reuse the reader TTF parser/cache primitives but have independent settings, lifecycle, and missing-glyph behavior.
+
+   Exit criteria: UI/system text can opt into a validated TTF after boot/storage availability, system invalid-font handling remains recoverable, and UI glyph cache changes do not disturb reader pagination caches.
+
+- [ ] 16. Reader font architecture cleanup
+
+   Once TTF metrics and rendering are working end-to-end, replace cpfont-shaped reader assumptions with generic reader font provider and cache interfaces. The step-8 provider shim intentionally leaves the current indexing workflow intact; this milestone is where the architecture should stop pretending that every reader font is an `EpdFont`/cpfont-like font ID with optional cpfont advance tables.
+
+   Scope:
+
+   - Introduce a first-class reader font identity object instead of encoding cache identity primarily through `fontId`. It should include mode, TTF path, file size/hash, pixel size, and later style/axis state.
+   - Replace cpfont-specific advance-table assumptions with a generic metrics cache API. TTF should be able to batch likely section codepoints, but layout must also work with on-demand metrics without requiring cpfont-style glyph packs.
+   - Move vertical layout needs into provider responsibilities: vertical substitutions, representative CJK advance, punctuation behavior, ruby metrics, ascender/descender/line-height, and missing-glyph reporting.
+   - Remove remaining cpfont-shaped assumptions that survived the initial provider shim. Layout and render should share the same selected provider, but cache identity and prewarm should no longer pretend every reader font is an `EpdFont`/cpfont-like font ID.
+   - Revisit EPUB/TXT cache headers so font identity, layout settings, writing mode, and provider versioning are explicit and extensible.
+   - Keep EPUB/TXT workflow behavior stable while changing the internal interfaces: section indexing, short-section prebuilds, TXT page-index growth, and progress restoration should continue to work.
+
+   Exit criteria: EPUB/TXT layout and render consume a common reader font provider interface, cache identity is provider-owned and explicit, and no reader indexing path depends on cpfont-only advance-table or glyph-pack concepts unless the selected provider is actually cpfont.
+
+- [ ] 17. Remove cpfont reader infrastructure
+
+   After the TTF reader path has end-to-end coverage for discovery, metrics, rendering, cache identity, Japanese EPUB/TXT behavior, vertical layout, ruby/furigana, and failure recovery, remove the reader-facing cpfont infrastructure from this M4-only branch.
+
+   Scope:
+
+   - Remove cpfont reader selection and S/M/L/XL reader-size assumptions.
+   - Remove reader pagination/render dependencies on cpfont font IDs, cpfont glyph packs, and cpfont SD font-family packs.
+   - Keep or separately replace any boot/system/UI font pieces that are still needed until the optional system TTF layer is complete.
+   - Delete unused cpfont download/install UI only after confirming no remaining reader code depends on it.
+
+   Exit criteria: reader text no longer depends on cpfont data structures or cpfont SD packs, TTF is the normal reader font path, and stale cpfont-specific cache identity is gone.
 
 ## Open Questions
 
@@ -153,12 +385,20 @@ The likely practical compromise is lazy runtime caching. Rasterize glyphs on fir
 - How much AA quality is acceptable from the runtime rasterizer compared with the current `.cpfont` AA path?
 - Should persistent glyph sidecars be per-book, per-section, or per-font-size?
 - How aggressively should the TTF runtime use PSRAM versus preserving PSRAM for EPUB images and section caches?
+- What minimum TTF-side missing-glyph and invalid-font behavior is acceptable before removing reader cpfont infrastructure?
+- Should system/UI TTF fonts be user-selectable, theme-defined, or only a developer build option at first?
+- If system TTFs live on SD, what should happen before SD mount, after SD removal, or after a bad font selection?
+- Should reader and system TTF providers share one glyph cache arena, or use separate arenas to keep UI recovery independent?
+- If probe firmware ever needs persistent output, should it use `/.crosspoint-ttf-probe/`, `/tmp/ttf-probe/`, or require an explicit build flag before any SD writes are compiled in?
 
 ## Non-Goals For First Pass
 
+- Supporting X3/X4 or other non-PSRAM boards on this branch
 - Replacing `.cpfont` for all boards
 - Full on-device conversion of arbitrary CJK TTFs into complete `.cpfont` packages
-- UI-wide TTF rendering
+- UI-wide TTF rendering in the first reader-font pass
+- Requiring TTF system fonts for boot, crash, recovery, or invalid-font messages
+- Any default probe-firmware behavior that mutates existing CrossPoint SD files, settings, caches, books, or font packs
 - Complex script shaping
 - TTC/OTF/CFF support unless it falls out naturally from the chosen library
 - Perfect stock firmware parity

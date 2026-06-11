@@ -106,6 +106,33 @@ inline SettingInfo buildUiThemeSetting() {
 #endif
 }
 
+#ifdef CROSSPOINT_BOARD_MURPHY_M4
+inline SettingInfo buildTtfFontSizeSetting() {
+  static constexpr uint8_t sizes[] = {24, 30, 36, 42, 48, 56, 64, 72};
+
+  SettingInfo s;
+  s.nameId = StrId::STR_TTF_FONT_SIZE;
+  s.type = SettingType::ENUM;
+  s.category = StrId::STR_CAT_READER;
+  s.enumStringValues.reserve(std::size(sizes));
+  for (const uint8_t size : sizes) {
+    s.enumStringValues.push_back(std::to_string(size) + " px");
+  }
+  s.valueGetter = []() -> uint8_t {
+    for (uint8_t i = 0; i < static_cast<uint8_t>(std::size(sizes)); ++i) {
+      if (SETTINGS.readerTtfSizePx == sizes[i]) return i;
+    }
+    return 3;
+  };
+  s.valueSetter = [](const uint8_t index) {
+    if (index < static_cast<uint8_t>(std::size(sizes))) {
+      SETTINGS.readerTtfSizePx = sizes[index];
+    }
+  };
+  return s;
+}
+#endif
+
 // Shared settings list used by both the device settings UI and the web settings API.
 // Each entry has a key (for JSON API) and category (for grouping).
 // ACTION-type entries and entries without a key are device-only.
@@ -155,6 +182,9 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
         SettingInfo::Enum(StrId::STR_JAPANESE_FONT_SIZE, &CrossPointSettings::japaneseFontSize,
                           {StrId::STR_SMALL, StrId::STR_MEDIUM, StrId::STR_LARGE, StrId::STR_X_LARGE},
                           "japaneseFontSize", StrId::STR_CAT_READER),
+#ifdef CROSSPOINT_BOARD_MURPHY_M4
+        buildTtfFontSizeSetting(),
+#endif
         SettingInfo::Enum(StrId::STR_LINE_SPACING, &CrossPointSettings::lineSpacing,
                           {StrId::STR_TIGHT, StrId::STR_NORMAL, StrId::STR_WIDE}, "lineSpacing", StrId::STR_CAT_READER),
         SettingInfo::Value(StrId::STR_SCREEN_MARGIN, &CrossPointSettings::screenMargin, {5, 40, 5}, "screenMargin",

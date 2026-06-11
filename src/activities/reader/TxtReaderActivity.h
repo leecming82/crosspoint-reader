@@ -24,6 +24,7 @@ class TxtReaderActivity final : public Activity {
 
   // Cached settings for cache validation (different fonts/margins require re-indexing)
   int cachedFontId = 0;
+  int cachedRenderFontId = 0;
   uint8_t cachedScreenMargin = 0;
   uint8_t cachedParagraphAlignment = CrossPointSettings::LEFT_ALIGN;
   int cachedOrientedMarginTop = 0;
@@ -40,6 +41,8 @@ class TxtReaderActivity final : public Activity {
   void updateEstimatedTotalPages();
   bool loadPageIndexCache();
   void savePageIndexCache() const;
+  int effectiveLayoutFontId() const;
+  int effectiveRenderFontId() const;
   void saveProgress() const;
   void loadProgress();
   void turnPage(bool forward);

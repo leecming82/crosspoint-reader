@@ -1,0 +1,11 @@
+{
+  "name": "TtfRuntime",
+  "version": "0.1.0",
+  "description": "CrossPoint native TTF runtime scaffolding",
+  "frameworks": "*",
+  "platforms": "*",
+  "build": {
+    "srcDir": "src",
+    "includeDir": "include"
+  }
+}

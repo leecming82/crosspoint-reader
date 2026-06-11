@@ -14,6 +14,9 @@
 #include "ReaderUtils.h"
 #include "RecentBooksStore.h"
 #include "SdCardFontSystem.h"
+#ifdef CROSSPOINT_BOARD_MURPHY_M4
+#include "TtfReaderMetrics.h"
+#endif
 #include "components/UITheme.h"
 #include "fontIds.h"
 
@@ -162,7 +165,8 @@ void TxtReaderActivity::initializeReader() {
   }
 
   // Store current settings for cache validation
-  cachedFontId = SETTINGS.getReaderFontId();
+  cachedFontId = effectiveLayoutFontId();
+  cachedRenderFontId = effectiveRenderFontId();
   cachedScreenMargin = SETTINGS.screenMargin;
   cachedParagraphAlignment = SETTINGS.paragraphAlignment;
 
@@ -206,6 +210,32 @@ void TxtReaderActivity::initializeReader() {
   initialized = true;
 }
 
+int TxtReaderActivity::effectiveRenderFontId() const {
+#ifdef CROSSPOINT_BOARD_MURPHY_M4
+  if (SETTINGS.readerFontMode == CrossPointSettings::READER_FONT_TTF) {
+    if (TTF_READER_METRICS.ensureLoadedFromSettings()) {
+      renderer.setReaderFontMetricsProvider(&TTF_READER_METRICS);
+      return TTF_READER_METRICS.fontId();
+    }
+    LOG_ERR("TRS", "TTF reader render unavailable; using cpfont render for this pass");
+  }
+#endif
+  return SETTINGS.getReaderFontId();
+}
+
+int TxtReaderActivity::effectiveLayoutFontId() const {
+#ifdef CROSSPOINT_BOARD_MURPHY_M4
+  if (SETTINGS.readerFontMode == CrossPointSettings::READER_FONT_TTF) {
+    if (TTF_READER_METRICS.ensureLoadedFromSettings()) {
+      renderer.setReaderFontMetricsProvider(&TTF_READER_METRICS);
+      return TTF_READER_METRICS.fontId();
+    }
+    LOG_ERR("TRS", "TTF reader metrics unavailable; using cpfont layout for this pass");
+  }
+#endif
+  return effectiveRenderFontId();
+}
+
 bool TxtReaderActivity::ensurePageCacheAhead(const int pagesAhead, const bool showProgress) {
   if (endOfFileKnown) {
     updateEstimatedTotalPages();
@@ -225,6 +255,7 @@ bool TxtReaderActivity::ensurePageCacheAhead(const int pagesAhead, const bool sh
   const size_t targetKnownPages = static_cast<size_t>(std::max(0, currentPage) + pagesAhead + 1);
   const size_t startKnownPages = pageOffsets.size();
   const size_t pagesToGenerate = targetKnownPages > startKnownPages ? targetKnownPages - startKnownPages : 0;
+  const unsigned long indexStartMs = millis();
 
   Rect popupRect{};
   int lastProgress = -1;
@@ -264,8 +295,12 @@ bool TxtReaderActivity::ensurePageCacheAhead(const int pagesAhead, const bool sh
   }
 
   updateEstimatedTotalPages();
-  LOG_DBG("TRS", "Page index known=%u total=%d eof=%d", static_cast<unsigned>(pageOffsets.size()), totalPages,
-          endOfFileKnown ? 1 : 0);
+  const size_t generatedPages = pageOffsets.size() > startKnownPages ? pageOffsets.size() - startKnownPages : 0;
+  LOG_INF("TRS",
+          "Indexing session complete mode=%s font_id=%d generated=%u known=%u total=%d eof=%d duration_ms=%lu",
+          SETTINGS.readerFontMode == CrossPointSettings::READER_FONT_TTF ? "ttf" : "cpfont", cachedFontId,
+          static_cast<unsigned>(generatedPages), static_cast<unsigned>(pageOffsets.size()), totalPages,
+          endOfFileKnown ? 1 : 0, millis() - indexStartMs);
   if (showProgress && pagesToGenerate > 0) {
     GUI.fillPopupProgress(renderer, popupRect, 100);
   }
@@ -477,13 +512,13 @@ void TxtReaderActivity::renderPage() {
   const int lineHeight = renderer.getLineHeight(cachedFontId);
   const int contentWidth = viewportWidth;
 
-  if (renderer.isSdCardFont(cachedFontId)) {
+  if (renderer.isSdCardFont(cachedRenderFontId)) {
     std::string pageText;
     for (const auto& line : currentPageLines) {
       pageText += line;
       pageText += '\n';
     }
-    renderer.ensureSdCardFontReady(cachedFontId, pageText.c_str(), 0x01);
+    renderer.ensureSdCardFontReady(cachedRenderFontId, pageText.c_str(), 0x01);
   }
 
   // Render text lines with alignment
@@ -520,7 +555,7 @@ void TxtReaderActivity::renderPage() {
             break;
         }
 
-        renderer.drawText(cachedFontId, x, y, line.c_str());
+        renderer.drawText(cachedRenderFontId, x, y, line.c_str());
       }
       y += lineHeight;
     }
@@ -538,7 +573,14 @@ void TxtReaderActivity::renderPage() {
 
   ReaderUtils::displayWithRefreshCycle(renderer, pagesUntilFullRefresh);
 
-  if (SETTINGS.textAntiAliasing) {
+  bool renderTextAntiAliasing = SETTINGS.textAntiAliasing;
+#ifdef CROSSPOINT_BOARD_MURPHY_M4
+  if (SETTINGS.readerFontMode == CrossPointSettings::READER_FONT_TTF) {
+    renderTextAntiAliasing = false;
+  }
+#endif
+
+  if (renderTextAntiAliasing) {
     ReaderUtils::renderAntiAliased(renderer, [&renderLines]() { renderLines(); });
   }
   // scope destructor clears font cache via FontCacheManager

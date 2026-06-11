@@ -41,6 +41,9 @@
 #include "ReaderUtils.h"
 #include "RecentBooksStore.h"
 #include "SdCardFontSystem.h"
+#ifdef CROSSPOINT_BOARD_MURPHY_M4
+#include "TtfReaderMetrics.h"
+#endif
 #include "components/UITheme.h"
 #include "fontIds.h"
 #include "util/BookmarkUtil.h"
@@ -1339,8 +1342,9 @@ void EpubReaderActivity::render(RenderLock&& lock) {
     LOG_DBG("ERS", "Loading file: %s, index: %d", filepath.c_str(), currentSpineIndex);
     section = std::unique_ptr<Section>(new Section(epub, currentSpineIndex, renderer));
 
+    const int layoutFontId = effectiveReaderLayoutFontId();
     const bool sectionCacheHit = section->loadSectionFile(
-        effectiveReaderFontId(), SETTINGS.getReaderLineCompression(), SETTINGS.extraParagraphSpacing,
+        layoutFontId, SETTINGS.getReaderLineCompression(), SETTINGS.extraParagraphSpacing,
         SETTINGS.paragraphAlignment, viewportWidth, viewportHeight, SETTINGS.hyphenationEnabled, SETTINGS.embeddedStyle,
         SETTINGS.imageRendering, SETTINGS.focusReadingEnabled, SETTINGS.orientation,
         static_cast<uint8_t>(effectiveWritingMode));
@@ -1349,16 +1353,21 @@ void EpubReaderActivity::render(RenderLock&& lock) {
 
       GUI.drawPopup(renderer, tr(STR_INDEXING));
 
-      if (!section->createSectionFile(effectiveReaderFontId(), SETTINGS.getReaderLineCompression(),
-                                      SETTINGS.extraParagraphSpacing, SETTINGS.paragraphAlignment, viewportWidth,
-                                      viewportHeight, SETTINGS.hyphenationEnabled, SETTINGS.embeddedStyle,
-                                      SETTINGS.imageRendering, SETTINGS.focusReadingEnabled, SETTINGS.orientation,
+      const unsigned long indexStartMs = millis();
+      if (!section->createSectionFile(layoutFontId, SETTINGS.getReaderLineCompression(), SETTINGS.extraParagraphSpacing,
+                                      SETTINGS.paragraphAlignment, viewportWidth, viewportHeight,
+                                      SETTINGS.hyphenationEnabled, SETTINGS.embeddedStyle, SETTINGS.imageRendering,
+                                      SETTINGS.focusReadingEnabled, SETTINGS.orientation,
                                       static_cast<uint8_t>(effectiveWritingMode))) {
         LOG_ERR("ERS", "Failed to persist page data to SD");
         section.reset();
         showPendingSyncSaveError();
         return;
       }
+      LOG_INF("ERS",
+              "Indexing session complete mode=%s font_id=%d spine=%d pages=%u viewport=%ux%u duration_ms=%lu",
+              SETTINGS.readerFontMode == CrossPointSettings::READER_FONT_TTF ? "ttf" : "cpfont", layoutFontId,
+              currentSpineIndex, section->pageCount, viewportWidth, viewportHeight, millis() - indexStartMs);
       prebuildAdjacentShortSections(viewportWidth, viewportHeight);
       if (auto* fcm = renderer.getFontCacheManager()) {
         fcm->clearPersistentCache();
@@ -1506,7 +1515,8 @@ void EpubReaderActivity::prebuildAdjacentShortSections(const uint16_t viewportWi
     totalBytes += estimatedBytes;
 
     Section candidate(epub, spineIndex, renderer);
-    if (candidate.loadSectionFile(effectiveReaderFontId(), SETTINGS.getReaderLineCompression(),
+    const int layoutFontId = effectiveReaderLayoutFontId();
+    if (candidate.loadSectionFile(layoutFontId, SETTINGS.getReaderLineCompression(),
                                   SETTINGS.extraParagraphSpacing, SETTINGS.paragraphAlignment, viewportWidth,
                                   viewportHeight, SETTINGS.hyphenationEnabled, SETTINGS.embeddedStyle,
                                   SETTINGS.imageRendering, SETTINGS.focusReadingEnabled, SETTINGS.orientation,
@@ -1514,7 +1524,7 @@ void EpubReaderActivity::prebuildAdjacentShortSections(const uint16_t viewportWi
       continue;
     }
 
-    if (!candidate.createSectionFile(effectiveReaderFontId(), SETTINGS.getReaderLineCompression(),
+    if (!candidate.createSectionFile(layoutFontId, SETTINGS.getReaderLineCompression(),
                                      SETTINGS.extraParagraphSpacing, SETTINGS.paragraphAlignment, viewportWidth,
                                      viewportHeight, SETTINGS.hyphenationEnabled, SETTINGS.embeddedStyle,
                                      SETTINGS.imageRendering, SETTINGS.focusReadingEnabled, SETTINGS.orientation,
@@ -1616,7 +1626,33 @@ uint8_t EpubReaderActivity::effectiveReaderFontSize() const {
   return size < CrossPointSettings::FONT_SIZE_COUNT ? size : CrossPointSettings::MEDIUM;
 }
 
-int EpubReaderActivity::effectiveReaderFontId() const { return SETTINGS.getReaderFontId(effectiveReaderFontSize()); }
+int EpubReaderActivity::effectiveReaderRenderFontId() const {
+#ifdef CROSSPOINT_BOARD_MURPHY_M4
+  if (SETTINGS.readerFontMode == CrossPointSettings::READER_FONT_TTF) {
+    if (TTF_READER_METRICS.ensureLoadedFromSettings()) {
+      renderer.setReaderFontMetricsProvider(&TTF_READER_METRICS);
+      return TTF_READER_METRICS.fontId();
+    }
+    LOG_ERR("ERS", "TTF reader render unavailable; using cpfont render for this pass");
+  }
+#endif
+  return SETTINGS.getReaderFontId(effectiveReaderFontSize());
+}
+
+int EpubReaderActivity::effectiveReaderFontId() const { return effectiveReaderRenderFontId(); }
+
+int EpubReaderActivity::effectiveReaderLayoutFontId() const {
+#ifdef CROSSPOINT_BOARD_MURPHY_M4
+  if (SETTINGS.readerFontMode == CrossPointSettings::READER_FONT_TTF) {
+    if (TTF_READER_METRICS.ensureLoadedFromSettings()) {
+      renderer.setReaderFontMetricsProvider(&TTF_READER_METRICS);
+      return TTF_READER_METRICS.fontId();
+    }
+    LOG_ERR("ERS", "TTF reader metrics unavailable; using cpfont layout for this pass");
+  }
+#endif
+  return effectiveReaderRenderFontId();
+}
 
 void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int orientedMarginTop,
                                         const int orientedMarginRight, const int orientedMarginBottom,
@@ -1633,17 +1669,25 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
     // Font prewarm: scan pass accumulates text, then prewarm, then real render.
     auto* fcm = renderer.getFontCacheManager();
     prewarmScope.emplace(fcm->createPrewarmScope());
-    page->render(renderer, effectiveReaderFontId(), orientedMarginLeft, orientedMarginTop, rubyOffsetX, rubyOffsetY,
+    page->render(renderer, effectiveReaderRenderFontId(), orientedMarginLeft, orientedMarginTop, rubyOffsetX,
+                 rubyOffsetY,
                  contentBottom);  // scan pass
     prewarmScope->endScanAndPrewarm();
     tPrewarm = millis();
   }
 
+  bool renderTextAntiAliasing = SETTINGS.textAntiAliasing;
+#ifdef CROSSPOINT_BOARD_MURPHY_M4
+  if (SETTINGS.readerFontMode == CrossPointSettings::READER_FONT_TTF) {
+    renderTextAntiAliasing = false;
+  }
+#endif
+
   // Force special handling for pages with images when anti-aliasing is on
   const bool pageHasImages = page->hasImages();
-  bool imagePageWithAA = pageHasImages && SETTINGS.textAntiAliasing;
+  bool imagePageWithAA = pageHasImages && renderTextAntiAliasing;
 
-  page->render(renderer, effectiveReaderFontId(), orientedMarginLeft, orientedMarginTop, rubyOffsetX, rubyOffsetY,
+  page->render(renderer, effectiveReaderRenderFontId(), orientedMarginLeft, orientedMarginTop, rubyOffsetX, rubyOffsetY,
                contentBottom);
   renderStatusBar();
   renderRubyAdjustOverlay();
@@ -1692,7 +1736,7 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
   // per plane, but renderCharImpl culls out-of-band glyphs before decode so the
   // cost stays close to one render. Both text (drawPixel) and images
   // (DirectPixelWriter) honor the active strip target.
-  if (SETTINGS.textAntiAliasing && renderer.supportsStripGrayscale()) {
+  if (renderTextAntiAliasing && renderer.supportsStripGrayscale()) {
     constexpr int STRIP_ROWS = 80;
     const int gh = renderer.getDisplayHeight();
     const int gwBytes = renderer.getDisplayWidthBytes();
@@ -1751,7 +1795,7 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
 
   // Fallback path for a controller without strip support. grayscale rendering
   // TODO: Only do this if font supports it
-  if (SETTINGS.textAntiAliasing) {
+  if (renderTextAntiAliasing) {
     // Save the BW frame before the grayscale passes overwrite it, restore
     // after. Only needed when grayscale actually renders.
     const bool bwBufferStored = renderer.storeBwBuffer();

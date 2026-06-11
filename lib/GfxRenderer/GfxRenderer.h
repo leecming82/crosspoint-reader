@@ -12,7 +12,24 @@ enum class BidiBaseDir : signed char { AUTO = -1, LTR = 0, RTL = 1 };
 }  // namespace BidiUtils
 
 class FontCacheManager;
+class GfxRenderer;
 class SdCardFont;
+
+class ReaderFontMetricsProvider {
+ public:
+  virtual ~ReaderFontMetricsProvider() = default;
+  virtual bool handlesFontId(int fontId) const = 0;
+  virtual int getSpaceWidth(int fontId, EpdFontFamily::Style style) const = 0;
+  virtual int getSpaceAdvance(int fontId, uint32_t leftCp, uint32_t rightCp, EpdFontFamily::Style style) const = 0;
+  virtual int getKerning(int fontId, uint32_t leftCp, uint32_t rightCp, EpdFontFamily::Style style) const = 0;
+  virtual int getTextAdvanceX(int fontId, const char* text, EpdFontFamily::Style style) const = 0;
+  virtual bool canRenderText(int fontId, const char* text, EpdFontFamily::Style style) const = 0;
+  virtual uint32_t getVerticalSubstitution(int fontId, uint32_t cp, EpdFontFamily::Style style) const = 0;
+  virtual int getFontAscenderSize(int fontId) const = 0;
+  virtual int getLineHeight(int fontId) const = 0;
+  virtual void drawText(const GfxRenderer& renderer, int fontId, int x, int y, const char* text, bool black,
+                        EpdFontFamily::Style style) const = 0;
+};
 
 #include <cstring>
 #include <map>
@@ -58,6 +75,7 @@ class GfxRenderer {
   // allocation inside the SdCardFont objects. Same pragmatic compromise as
   // fontCacheManager_ below.
   mutable std::map<int, SdCardFont*> sdCardFonts_;
+  mutable ReaderFontMetricsProvider* readerFontMetricsProvider_ = nullptr;
 
   // Mutable because drawText() is const but needs to delegate scan-mode
   // recording to the (non-const) FontCacheManager. Same pragmatic compromise
@@ -112,6 +130,7 @@ class GfxRenderer {
   }
   void setFontCacheManager(FontCacheManager* m) { fontCacheManager_ = m; }
   FontCacheManager* getFontCacheManager() const { return fontCacheManager_; }
+  void setReaderFontMetricsProvider(ReaderFontMetricsProvider* provider) const { readerFontMetricsProvider_ = provider; }
   bool isFontCacheScanning() const;
   const std::map<int, EpdFontFamily>& getFontMap() const { return fontMap; }
   void registerSdCardFont(int fontId, SdCardFont* font) { sdCardFonts_[fontId] = font; }

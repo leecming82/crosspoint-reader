@@ -145,6 +145,11 @@ bool JsonSettingsIO::saveSettings(const CrossPointSettings& s, const char* path)
   doc["frontButtonRight"] = s.frontButtonRight;
   // Font family — uses dynamic getter/setter in SettingsList so the generic loop skips it.
   doc["fontFamily"] = s.fontFamily;
+  doc["readerFontMode"] = s.readerFontMode;
+  doc["readerTtfPath"] = s.readerTtfPath;
+  doc["readerTtfSizePx"] = s.readerTtfSizePx;
+  doc["readerTtfFileSize"] = s.readerTtfFileSize;
+  doc["readerTtfHash"] = s.readerTtfHash;
   // Reader-menu-only ruby paint offsets. Stored manually so they do not appear in Settings UI.
   doc["yokogakiRubyOffsetX"] = s.yokogakiRubyOffsetX;
   doc["yokogakiRubyOffsetY"] = s.yokogakiRubyOffsetY;
@@ -298,6 +303,19 @@ bool JsonSettingsIO::loadSettings(CrossPointSettings& s, const char* json, bool*
   // Font family — uses dynamic getter/setter in SettingsList so the generic loop skips it.
   const uint8_t storedFontFamily = doc["fontFamily"] | (uint8_t)0;
   s.fontFamily = clamp(storedFontFamily, CrossPointSettings::BUILTIN_FONT_COUNT, 0);
+  s.readerFontMode = clamp(doc["readerFontMode"] | (uint8_t)CrossPointSettings::READER_FONT_CPFONT,
+                           CrossPointSettings::READER_FONT_MODE_COUNT, CrossPointSettings::READER_FONT_CPFONT);
+  const char* readerTtfPath = doc["readerTtfPath"] | "";
+  strncpy(s.readerTtfPath, readerTtfPath, sizeof(s.readerTtfPath) - 1);
+  s.readerTtfPath[sizeof(s.readerTtfPath) - 1] = '\0';
+  s.readerTtfSizePx = doc["readerTtfSizePx"] | (uint8_t)36;
+  if (s.readerTtfSizePx < 12) {
+    s.readerTtfSizePx = 12;
+  } else if (s.readerTtfSizePx > 72) {
+    s.readerTtfSizePx = 72;
+  }
+  s.readerTtfFileSize = doc["readerTtfFileSize"] | static_cast<uint32_t>(0);
+  s.readerTtfHash = doc["readerTtfHash"] | static_cast<uint32_t>(0);
   const bool rubyOffsetsUseCurrentBias = (doc["rubyOffsetBias"] | (uint8_t)8) == 16;
   const auto normalizeRubyOffset = [rubyOffsetsUseCurrentBias](const uint8_t value) -> uint8_t {
     return rubyOffsetsUseCurrentBias ? std::min<uint8_t>(value, 32)

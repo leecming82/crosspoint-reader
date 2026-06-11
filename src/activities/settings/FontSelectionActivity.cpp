@@ -4,6 +4,8 @@
 #include <I18n.h>
 
 #include <algorithm>
+#include <cstring>
+#include <climits>
 
 #include "CrossPointSettings.h"
 #include "MappedInputManager.h"
@@ -12,6 +14,15 @@
 #include "util/TouchList.h"
 #include "util/TouchNavigator.h"
 #include "util/TouchUi.h"
+
+namespace {
+
+std::string basenameFromPath(const std::string& path) {
+  const size_t slash = path.find_last_of('/');
+  return slash == std::string::npos ? path : path.substr(slash + 1);
+}
+
+}  // namespace
 
 FontSelectionActivity::FontSelectionActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,
                                              const SdCardFontRegistry* registry)
@@ -22,16 +33,40 @@ void FontSelectionActivity::onEnter() {
 
   // Build combined font list: built-in + SD card fonts
   fonts_.clear();
-  fonts_.reserve(CrossPointSettings::BUILTIN_FONT_COUNT + (registry_ ? registry_->getFamilyCount() : 0));
+  fonts_.reserve(CrossPointSettings::BUILTIN_FONT_COUNT + (registry_ ? registry_->getFamilyCount() : 0) + 8);
 
-  fonts_.push_back({I18N.get(StrId::STR_NOTO_SERIF), true, CrossPointSettings::NOTOSERIF});
+  fonts_.push_back({I18N.get(StrId::STR_NOTO_SERIF), FontEntry::Kind::Builtin, CrossPointSettings::NOTOSERIF});
 
   if (registry_) {
     const auto& families = registry_->getFamilies();
     for (int i = 0; i < static_cast<int>(families.size()); i++) {
-      fonts_.push_back({families[i].name, false, static_cast<uint8_t>(CrossPointSettings::BUILTIN_FONT_COUNT + i)});
+      fonts_.push_back({families[i].name, FontEntry::Kind::SdCpfont,
+                        static_cast<uint8_t>(CrossPointSettings::BUILTIN_FONT_COUNT + i)});
     }
   }
+
+#ifdef CROSSPOINT_BOARD_MURPHY_M4
+  ttfFonts_ = TtfFontScanner::scan();
+  for (int i = 0; i < static_cast<int>(ttfFonts_.size()); ++i) {
+    FontEntry entry;
+    entry.name = "TTF: " + basenameFromPath(ttfFonts_[i].path);
+    entry.kind = FontEntry::Kind::Ttf;
+    entry.settingIndex = static_cast<uint8_t>(i);
+    entry.path = ttfFonts_[i].path;
+    entry.fileSize = static_cast<uint32_t>(std::min<uint64_t>(ttfFonts_[i].fileSize, UINT32_MAX));
+    fonts_.push_back(std::move(entry));
+  }
+
+  if (SETTINGS.readerFontMode == CrossPointSettings::READER_FONT_TTF && SETTINGS.readerTtfPath[0] != '\0') {
+    for (int i = 0; i < static_cast<int>(fonts_.size()); ++i) {
+      if (fonts_[i].kind == FontEntry::Kind::Ttf && fonts_[i].path == SETTINGS.readerTtfPath) {
+        selectedIndex_ = i;
+        requestUpdate();
+        return;
+      }
+    }
+  }
+#endif
 
   // Find current selection
   selectedIndex_ = 0;
@@ -93,16 +128,26 @@ void FontSelectionActivity::loop() {
 
 void FontSelectionActivity::handleSelection() {
   const auto& font = fonts_[selectedIndex_];
-  if (font.settingIndex < CrossPointSettings::BUILTIN_FONT_COUNT) {
+  if (font.kind == FontEntry::Kind::Builtin) {
+    SETTINGS.readerFontMode = CrossPointSettings::READER_FONT_CPFONT;
     SETTINGS.fontFamily = font.settingIndex;
     SETTINGS.sdFontFamilyName[0] = '\0';
-  } else if (registry_) {
+  } else if (font.kind == FontEntry::Kind::SdCpfont && registry_) {
+    SETTINGS.readerFontMode = CrossPointSettings::READER_FONT_CPFONT;
     int sdIdx = font.settingIndex - CrossPointSettings::BUILTIN_FONT_COUNT;
     const auto& families = registry_->getFamilies();
     if (sdIdx < static_cast<int>(families.size())) {
       strncpy(SETTINGS.sdFontFamilyName, families[sdIdx].name.c_str(), sizeof(SETTINGS.sdFontFamilyName) - 1);
       SETTINGS.sdFontFamilyName[sizeof(SETTINGS.sdFontFamilyName) - 1] = '\0';
     }
+#ifdef CROSSPOINT_BOARD_MURPHY_M4
+  } else if (font.kind == FontEntry::Kind::Ttf) {
+    SETTINGS.readerFontMode = CrossPointSettings::READER_FONT_TTF;
+    strncpy(SETTINGS.readerTtfPath, font.path.c_str(), sizeof(SETTINGS.readerTtfPath) - 1);
+    SETTINGS.readerTtfPath[sizeof(SETTINGS.readerTtfPath) - 1] = '\0';
+    SETTINGS.readerTtfFileSize = font.fileSize;
+    SETTINGS.readerTtfHash = 0;
+#endif
   }
   finish();
 }
@@ -172,16 +217,30 @@ void FontSelectionActivity::render(RenderLock&&) {
 
   // Determine which font index is currently active (to mark as "Selected")
   int currentFontIndex = 0;
-  if (SETTINGS.sdFontFamilyName[0] != '\0' && registry_) {
-    const auto& families = registry_->getFamilies();
-    for (int i = 0; i < static_cast<int>(families.size()); i++) {
-      if (families[i].name == SETTINGS.sdFontFamilyName) {
-        currentFontIndex = CrossPointSettings::BUILTIN_FONT_COUNT + i;
+  bool currentResolved = false;
+#ifdef CROSSPOINT_BOARD_MURPHY_M4
+  if (SETTINGS.readerFontMode == CrossPointSettings::READER_FONT_TTF && SETTINGS.readerTtfPath[0] != '\0') {
+    for (int i = 0; i < static_cast<int>(fonts_.size()); ++i) {
+      if (fonts_[i].kind == FontEntry::Kind::Ttf && fonts_[i].path == SETTINGS.readerTtfPath) {
+        currentFontIndex = i;
+        currentResolved = true;
         break;
       }
     }
-  } else {
-    currentFontIndex = SETTINGS.fontFamily < CrossPointSettings::BUILTIN_FONT_COUNT ? SETTINGS.fontFamily : 0;
+  }
+#endif
+  if (!currentResolved) {
+    if (SETTINGS.sdFontFamilyName[0] != '\0' && registry_) {
+      const auto& families = registry_->getFamilies();
+      for (int i = 0; i < static_cast<int>(families.size()); i++) {
+        if (families[i].name == SETTINGS.sdFontFamilyName) {
+          currentFontIndex = CrossPointSettings::BUILTIN_FONT_COUNT + i;
+          break;
+        }
+      }
+    } else {
+      currentFontIndex = SETTINGS.fontFamily < CrossPointSettings::BUILTIN_FONT_COUNT ? SETTINGS.fontFamily : 0;
+    }
   }
 
 #ifdef CROSSPOINT_BOARD_MURPHY_M4

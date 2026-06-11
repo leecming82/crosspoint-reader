@@ -146,6 +146,8 @@ class EpubReaderActivity final : public Activity {
   bool shouldUseJapaneseFontSize() const;
   uint8_t effectiveReaderFontSize() const;
   int effectiveReaderFontId() const;
+  int effectiveReaderLayoutFontId() const;
+  int effectiveReaderRenderFontId() const;
   // Jump to a percentage of the book (0-100), mapping it to spine and page.
   void jumpToPercent(int percent);
   void openReaderMenu();

@@ -111,6 +111,7 @@ class CrossPointSettings {
   static constexpr uint8_t BUILTIN_FONT_COUNT = FONT_FAMILY_COUNT;
   // Font size options
   enum FONT_SIZE { SMALL = 0, MEDIUM = 1, LARGE = 2, EXTRA_LARGE = 3, FONT_SIZE_COUNT };
+  enum READER_FONT_MODE { READER_FONT_CPFONT = 0, READER_FONT_TTF = 1, READER_FONT_MODE_COUNT };
   enum LINE_COMPRESSION { TIGHT = 0, NORMAL = 1, WIDE = 2, LINE_COMPRESSION_COUNT };
   enum PARAGRAPH_ALIGNMENT {
     JUSTIFIED = 0,
@@ -225,6 +226,11 @@ class CrossPointSettings {
   uint8_t fontFamily = NOTOSERIF;
   uint8_t fontSize = MEDIUM;
   uint8_t japaneseFontSize = MEDIUM;
+  uint8_t readerFontMode = READER_FONT_CPFONT;
+  char readerTtfPath[128] = "";
+  uint8_t readerTtfSizePx = 36;
+  uint32_t readerTtfFileSize = 0;
+  uint32_t readerTtfHash = 0;
   uint8_t lineSpacing = NORMAL;
   uint8_t paragraphAlignment = JUSTIFIED;
   // Auto-sleep timeout setting (default 10 minutes). Legacy sleepTimeout enum values are migration-only.
