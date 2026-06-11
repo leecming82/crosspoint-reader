@@ -258,6 +258,7 @@ uint32_t standardVerticalPresentationForm(const uint32_t cp) {
       return 0xFE32;
     case 0x2014:
     case 0x2015:
+    case 0x30FC:
       return 0xFE31;
     case 0x2025:
       return 0xFE30;
