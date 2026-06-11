@@ -677,7 +677,7 @@ void loop() {
     screenshotComboActive = false;
   }
 
-  const unsigned long sleepTimeoutMs = gpio.deviceIsMurphyM4() ? 0 : SETTINGS.getSleepTimeoutMs();
+  const unsigned long sleepTimeoutMs = SETTINGS.getSleepTimeoutMs();
   if (sleepTimeoutMs > 0 && millis() - lastActivityTime >= sleepTimeoutMs) {
     LOG_DBG("SLP", "Auto-sleep triggered after %lu ms of inactivity", sleepTimeoutMs);
     enterDeepSleep(true);
