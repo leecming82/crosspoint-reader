@@ -15,15 +15,21 @@
 #include <string>
 #include <vector>
 
-class TtfReaderMetrics final : public ReaderFontMetricsProvider {
+#include "ReaderFontProvider.h"
+
+class TtfReaderMetrics final : public ReaderFontProvider {
  public:
   static constexpr int INVALID_FONT_ID = 0;
 
   bool ensureLoadedFromSettings();
+  bool ensureLoaded(const ReaderFontConfig& config) override;
   bool ensureLoaded(const char* path, uint8_t pixelSize, uint32_t expectedFileSize = 0);
-  void unload();
+  const ReaderFontConfig& activeConfig() const override { return activeConfig_; }
+  int fontId() const override { return loaded_ ? fontId_ : INVALID_FONT_ID; }
+  bool flushPersistentCache() const override;
+  ReaderFontCacheStats cacheStats() const override;
+  void unload() override;
   bool isLoaded() const { return loaded_; }
-  int fontId() const { return loaded_ ? fontId_ : INVALID_FONT_ID; }
   const char* path() const { return path_.c_str(); }
   uint8_t pixelSize() const { return pixelSize_; }
   uint32_t fileSize() const { return fileSize_; }
@@ -119,6 +125,7 @@ class TtfReaderMetrics final : public ReaderFontMetricsProvider {
 
   TableCache tables_;
   ttf::TtfRuntimeFont font_;
+  ReaderFontConfig activeConfig_;
   std::string path_;
   uint8_t pixelSize_ = 0;
   uint32_t fileSize_ = 0;

@@ -6,6 +6,7 @@
 #include <string>
 
 #include "Epub.h"
+#include "Epub/ReaderFontIdentity.h"
 
 class Page;
 class GfxRenderer;
@@ -17,10 +18,11 @@ class Section {
   std::string filePath;
   HalFile file;
 
-  void writeSectionFileHeader(int fontId, float lineCompression, bool extraParagraphSpacing, uint8_t paragraphAlignment,
-                              uint16_t viewportWidth, uint16_t viewportHeight, bool hyphenationEnabled,
-                              bool embeddedStyle, uint8_t imageRendering, bool focusReadingEnabled,
-                              uint8_t readingLayout, uint8_t writingMode);
+  void writeSectionFileHeader(int fontId, const ReaderFontIdentity& fontIdentity, float lineCompression,
+                              bool extraParagraphSpacing, uint8_t paragraphAlignment, uint16_t viewportWidth,
+                              uint16_t viewportHeight, bool hyphenationEnabled, bool embeddedStyle,
+                              uint8_t imageRendering, bool focusReadingEnabled, uint8_t readingLayout,
+                              uint8_t writingMode);
   uint32_t onPageComplete(std::unique_ptr<Page> page);
 
  public:
@@ -33,13 +35,15 @@ class Section {
         renderer(renderer),
         filePath(epub->getCachePath() + "/sections/" + std::to_string(spineIndex) + ".bin") {}
   ~Section() = default;
-  bool loadSectionFile(int fontId, float lineCompression, bool extraParagraphSpacing, uint8_t paragraphAlignment,
-                       uint16_t viewportWidth, uint16_t viewportHeight, bool hyphenationEnabled, bool embeddedStyle,
-                       uint8_t imageRendering, bool focusReadingEnabled, uint8_t readingLayout, uint8_t writingMode);
+  bool loadSectionFile(int fontId, const ReaderFontIdentity& fontIdentity, float lineCompression,
+                       bool extraParagraphSpacing, uint8_t paragraphAlignment, uint16_t viewportWidth,
+                       uint16_t viewportHeight, bool hyphenationEnabled, bool embeddedStyle, uint8_t imageRendering,
+                       bool focusReadingEnabled, uint8_t readingLayout, uint8_t writingMode);
   bool clearCache() const;
-  bool createSectionFile(int fontId, float lineCompression, bool extraParagraphSpacing, uint8_t paragraphAlignment,
-                         uint16_t viewportWidth, uint16_t viewportHeight, bool hyphenationEnabled, bool embeddedStyle,
-                         uint8_t imageRendering, bool focusReadingEnabled, uint8_t readingLayout, uint8_t writingMode,
+  bool createSectionFile(int fontId, const ReaderFontIdentity& fontIdentity, float lineCompression,
+                         bool extraParagraphSpacing, uint8_t paragraphAlignment, uint16_t viewportWidth,
+                         uint16_t viewportHeight, bool hyphenationEnabled, bool embeddedStyle, uint8_t imageRendering,
+                         bool focusReadingEnabled, uint8_t readingLayout, uint8_t writingMode,
                          const std::function<void(size_t, size_t)>& progressFn = nullptr);
   std::unique_ptr<Page> loadPageFromSectionFile();
   std::unique_ptr<Page> loadPageFromSectionFile(uint16_t pageNumber);

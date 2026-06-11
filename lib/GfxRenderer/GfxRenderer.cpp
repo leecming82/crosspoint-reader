@@ -149,7 +149,7 @@ void GfxRenderer::ensureSdCardFontReady(int fontId, const char* utf8Text, uint8_
   if (it != sdCardFonts_.end()) {
     int missed = it->second->buildAdvanceTable(utf8Text, styleMask);
     if (missed > 0) {
-      LOG_DBG("GFX", "ensureSdCardFontReady: %d glyph(s) not found", missed);
+      LOG_DBG("GFX", "ensureReaderFontReady: %d glyph(s) not found", missed);
     }
   }
 }
@@ -163,7 +163,7 @@ void GfxRenderer::ensureSdCardFontReady(int fontId, const std::vector<std::strin
     // repeated indexing of the same SD font amortizes glyph-metric SD reads.
     int missed = it->second->buildAdvanceTable(words, includeHyphen, styleMask);
     if (missed > 0) {
-      LOG_DBG("GFX", "ensureSdCardFontReady: %d glyph(s) not found", missed);
+      LOG_DBG("GFX", "ensureReaderFontReady: %d glyph(s) not found", missed);
     }
   }
 }

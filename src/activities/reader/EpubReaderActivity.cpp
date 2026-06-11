@@ -39,6 +39,7 @@
 #include "MappedInputManager.h"
 #include "ProgressMapper.h"
 #include "QrDisplayActivity.h"
+#include "ReaderFontProvider.h"
 #include "ReaderUtils.h"
 #include "RecentBooksStore.h"
 #include "SdCardFontSystem.h"
@@ -1422,8 +1423,9 @@ void EpubReaderActivity::render(RenderLock&& lock) {
     section = std::unique_ptr<Section>(new Section(epub, currentSpineIndex, renderer));
 
     const int layoutFontId = effectiveReaderLayoutFontId();
+    const ReaderFontIdentity layoutFontIdentity = readerFontConfig.identity;
     const bool sectionCacheHit = section->loadSectionFile(
-        layoutFontId, SETTINGS.getReaderLineCompression(), SETTINGS.extraParagraphSpacing,
+        layoutFontId, layoutFontIdentity, SETTINGS.getReaderLineCompression(), SETTINGS.extraParagraphSpacing,
         SETTINGS.paragraphAlignment, viewportWidth, viewportHeight, SETTINGS.hyphenationEnabled, SETTINGS.embeddedStyle,
         SETTINGS.imageRendering, SETTINGS.focusReadingEnabled, SETTINGS.orientation,
         static_cast<uint8_t>(effectiveWritingMode));
@@ -1433,10 +1435,10 @@ void EpubReaderActivity::render(RenderLock&& lock) {
       GUI.drawPopup(renderer, tr(STR_INDEXING));
 
       const unsigned long indexStartMs = millis();
-      if (!section->createSectionFile(layoutFontId, SETTINGS.getReaderLineCompression(), SETTINGS.extraParagraphSpacing,
-                                      SETTINGS.paragraphAlignment, viewportWidth, viewportHeight,
-                                      SETTINGS.hyphenationEnabled, SETTINGS.embeddedStyle, SETTINGS.imageRendering,
-                                      SETTINGS.focusReadingEnabled, SETTINGS.orientation,
+      if (!section->createSectionFile(layoutFontId, layoutFontIdentity, SETTINGS.getReaderLineCompression(),
+                                      SETTINGS.extraParagraphSpacing, SETTINGS.paragraphAlignment, viewportWidth,
+                                      viewportHeight, SETTINGS.hyphenationEnabled, SETTINGS.embeddedStyle,
+                                      SETTINGS.imageRendering, SETTINGS.focusReadingEnabled, SETTINGS.orientation,
                                       static_cast<uint8_t>(effectiveWritingMode))) {
         LOG_ERR("ERS", "Failed to persist page data to SD");
         section.reset();
@@ -1504,7 +1506,7 @@ void EpubReaderActivity::render(RenderLock&& lock) {
     }
   }
 
-  prepareSectionGlyphPack();
+  prepareSectionGlyphCache();
 
   renderer.clearScreen();
 
@@ -1595,7 +1597,8 @@ void EpubReaderActivity::prebuildAdjacentShortSections(const uint16_t viewportWi
 
     Section candidate(epub, spineIndex, renderer);
     const int layoutFontId = effectiveReaderLayoutFontId();
-    if (candidate.loadSectionFile(layoutFontId, SETTINGS.getReaderLineCompression(),
+    const ReaderFontIdentity layoutFontIdentity = readerFontConfig.identity;
+    if (candidate.loadSectionFile(layoutFontId, layoutFontIdentity, SETTINGS.getReaderLineCompression(),
                                   SETTINGS.extraParagraphSpacing, SETTINGS.paragraphAlignment, viewportWidth,
                                   viewportHeight, SETTINGS.hyphenationEnabled, SETTINGS.embeddedStyle,
                                   SETTINGS.imageRendering, SETTINGS.focusReadingEnabled, SETTINGS.orientation,
@@ -1603,7 +1606,7 @@ void EpubReaderActivity::prebuildAdjacentShortSections(const uint16_t viewportWi
       continue;
     }
 
-    if (!candidate.createSectionFile(layoutFontId, SETTINGS.getReaderLineCompression(),
+    if (!candidate.createSectionFile(layoutFontId, layoutFontIdentity, SETTINGS.getReaderLineCompression(),
                                      SETTINGS.extraParagraphSpacing, SETTINGS.paragraphAlignment, viewportWidth,
                                      viewportHeight, SETTINGS.hyphenationEnabled, SETTINGS.embeddedStyle,
                                      SETTINGS.imageRendering, SETTINGS.focusReadingEnabled, SETTINGS.orientation,
@@ -1614,25 +1617,25 @@ void EpubReaderActivity::prebuildAdjacentShortSections(const uint16_t viewportWi
   }
 }
 
-void EpubReaderActivity::prepareSectionGlyphPack() {
+void EpubReaderActivity::prepareSectionGlyphCache() {
   if (!section) {
-    activeGlyphPackSpineIndex = -1;
-    activeGlyphPackFontId = -1;
-    activeGlyphPackReady = false;
+    activeSectionGlyphCacheSpineIndex = -1;
+    activeSectionGlyphCacheFontId = -1;
+    activeSectionGlyphCacheReady = false;
     return;
   }
 
   const int fontId = effectiveReaderFontId();
   auto fontIt = renderer.getSdCardFonts().find(fontId);
   if (fontIt == renderer.getSdCardFonts().end() || !fontIt->second) {
-    activeGlyphPackSpineIndex = currentSpineIndex;
-    activeGlyphPackFontId = fontId;
-    activeGlyphPackReady = false;
+    activeSectionGlyphCacheSpineIndex = currentSpineIndex;
+    activeSectionGlyphCacheFontId = fontId;
+    activeSectionGlyphCacheReady = false;
     return;
   }
 
-  if (activeGlyphPackFontId == fontId && activeGlyphPackReady && fontIt->second->hasSectionGlyphPack()) {
-    activeGlyphPackSpineIndex = currentSpineIndex;
+  if (activeSectionGlyphCacheFontId == fontId && activeSectionGlyphCacheReady && fontIt->second->hasSectionGlyphPack()) {
+    activeSectionGlyphCacheSpineIndex = currentSpineIndex;
     return;
   }
 
@@ -1642,20 +1645,20 @@ void EpubReaderActivity::prepareSectionGlyphPack() {
     }
   }
 
-  activeGlyphPackSpineIndex = currentSpineIndex;
-  activeGlyphPackFontId = fontId;
-  activeGlyphPackReady = fontIt->second->hasSectionGlyphPack();
-  if (!activeGlyphPackReady && isJapaneseLanguageBook()) {
-    activeGlyphPackReady = fontIt->second->ensureGenericCjkGlyphPack(0x0F);
+  activeSectionGlyphCacheSpineIndex = currentSpineIndex;
+  activeSectionGlyphCacheFontId = fontId;
+  activeSectionGlyphCacheReady = fontIt->second->hasSectionGlyphPack();
+  if (!activeSectionGlyphCacheReady && isJapaneseLanguageBook()) {
+    activeSectionGlyphCacheReady = fontIt->second->ensureGenericCjkGlyphPack(0x0F);
   }
 }
 
-bool EpubReaderActivity::hasActiveSectionGlyphPack() const {
-  if (!activeGlyphPackReady || activeGlyphPackSpineIndex != currentSpineIndex ||
-      activeGlyphPackFontId != effectiveReaderFontId()) {
+bool EpubReaderActivity::hasActiveSectionGlyphCache() const {
+  if (!activeSectionGlyphCacheReady || activeSectionGlyphCacheSpineIndex != currentSpineIndex ||
+      activeSectionGlyphCacheFontId != effectiveReaderFontId()) {
     return false;
   }
-  auto fontIt = renderer.getSdCardFonts().find(activeGlyphPackFontId);
+  auto fontIt = renderer.getSdCardFonts().find(activeSectionGlyphCacheFontId);
   return fontIt != renderer.getSdCardFonts().end() && fontIt->second && fontIt->second->hasSectionGlyphPack();
 }
 
@@ -1666,6 +1669,7 @@ bool EpubReaderActivity::saveProgress(int spineIndex, int currentPage, int pageC
 #ifdef CROSSPOINT_BOARD_MURPHY_M4
 void EpubReaderActivity::reloadEpubFontOverride() {
   epubFontOverride = EpubReaderUtils::EpubFontOverride{};
+  readerFontConfig = ReaderFontResolver::resolveForEpub(epub.get());
   if (!epub) return;
   EpubReaderUtils::EpubFontOverride stored;
   if (!EpubReaderUtils::loadFontOverride(*epub, stored)) return;
@@ -1677,6 +1681,7 @@ void EpubReaderActivity::reloadEpubFontOverride() {
     stored.fileSize = fileSizeForPath(stored.path);
   }
   epubFontOverride = std::move(stored);
+  readerFontConfig = ReaderFontResolver::resolveForEpub(epub.get());
   LOG_INF("ERS", "EPUB font override active path=%s size=%u file=%lu", epubFontOverride.path.c_str(),
           epubFontOverride.sizePx, static_cast<unsigned long>(epubFontOverride.fileSize));
 }
@@ -1691,9 +1696,9 @@ void EpubReaderActivity::invalidateEpubFontLayout() {
 
   clearKanjiCursorState(/*saveResumePosition=*/false, /*requestRedraw=*/false);
   section.reset();
-  activeGlyphPackSpineIndex = -1;
-  activeGlyphPackFontId = -1;
-  activeGlyphPackReady = false;
+  activeSectionGlyphCacheSpineIndex = -1;
+  activeSectionGlyphCacheFontId = -1;
+  activeSectionGlyphCacheReady = false;
   EpubReaderUtils::clearSectionCache(*epub);
   saveProgress(backupSpine, backupPage, backupPageCount);
   cachedSpineIndex = backupSpine;
@@ -1711,6 +1716,7 @@ void EpubReaderActivity::applyEpubFontOverride(const EpubReaderUtils::EpubFontOv
       epubFontOverride.fileSize = fileSizeForPath(epubFontOverride.path);
     }
     EpubReaderUtils::saveFontOverride(*epub, epubFontOverride);
+    readerFontConfig = ReaderFontResolver::resolveForEpub(epub.get());
     invalidateEpubFontLayout();
   }
   requestUpdate();
@@ -1723,6 +1729,7 @@ void EpubReaderActivity::resetEpubFontOverride() {
     if (!epubFontOverride.enabled && !Storage.exists(EpubReaderUtils::fontOverridePath(*epub).c_str())) return;
     epubFontOverride = EpubReaderUtils::EpubFontOverride{};
     EpubReaderUtils::clearFontOverride(*epub);
+    readerFontConfig = ReaderFontResolver::resolveForEpub(epub.get());
     invalidateEpubFontLayout();
   }
   requestUpdate();
@@ -1778,7 +1785,7 @@ uint8_t EpubReaderActivity::effectiveReaderFontSize() const {
 
 bool EpubReaderActivity::useTtfReaderFont() const {
 #ifdef CROSSPOINT_BOARD_MURPHY_M4
-  return SETTINGS.readerFontMode == CrossPointSettings::READER_FONT_TTF || epubFontOverride.enabled;
+  return readerFontConfig.isTtf();
 #else
   return false;
 #endif
@@ -1786,13 +1793,8 @@ bool EpubReaderActivity::useTtfReaderFont() const {
 
 bool EpubReaderActivity::ensureEffectiveTtfLoaded() const {
 #ifdef CROSSPOINT_BOARD_MURPHY_M4
-  if (epubFontOverride.enabled && !epubFontOverride.path.empty()) {
-    return TTF_READER_METRICS.ensureLoaded(epubFontOverride.path.c_str(), epubFontOverride.sizePx,
-                                           epubFontOverride.fileSize);
-  }
-  if (SETTINGS.readerFontMode == CrossPointSettings::READER_FONT_TTF) {
-    return TTF_READER_METRICS.ensureLoadedFromSettings();
-  }
+  ReaderFontProvider* provider = ReaderFontProviders::providerForConfig(readerFontConfig);
+  return provider && provider->ensureLoaded(readerFontConfig);
 #endif
   return false;
 }
@@ -1801,8 +1803,9 @@ int EpubReaderActivity::effectiveReaderRenderFontId() const {
 #ifdef CROSSPOINT_BOARD_MURPHY_M4
   if (useTtfReaderFont()) {
     if (ensureEffectiveTtfLoaded()) {
-      renderer.setReaderFontMetricsProvider(&TTF_READER_METRICS);
-      return TTF_READER_METRICS.fontId();
+      ReaderFontProvider* provider = ReaderFontProviders::providerForConfig(readerFontConfig);
+      renderer.setReaderFontMetricsProvider(provider);
+      return provider ? provider->fontId() : SETTINGS.getReaderFontId(effectiveReaderFontSize());
     }
     LOG_ERR("ERS", "TTF reader render unavailable; using cpfont render for this pass");
   }
@@ -1816,8 +1819,9 @@ int EpubReaderActivity::effectiveReaderLayoutFontId() const {
 #ifdef CROSSPOINT_BOARD_MURPHY_M4
   if (useTtfReaderFont()) {
     if (ensureEffectiveTtfLoaded()) {
-      renderer.setReaderFontMetricsProvider(&TTF_READER_METRICS);
-      return TTF_READER_METRICS.fontId();
+      ReaderFontProvider* provider = ReaderFontProviders::providerForConfig(readerFontConfig);
+      renderer.setReaderFontMetricsProvider(provider);
+      return provider ? provider->fontId() : effectiveReaderRenderFontId();
     }
     LOG_ERR("ERS", "TTF reader metrics unavailable; using cpfont layout for this pass");
   }
@@ -1838,9 +1842,9 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
   const int contentBottom = renderer.getScreenHeight() - orientedMarginBottom;
 
   auto tPrewarm = t0;
-  const bool usingSectionGlyphPack = hasActiveSectionGlyphPack();
+  const bool usingSectionGlyphCache = hasActiveSectionGlyphCache();
   std::optional<FontCacheManager::PrewarmScope> prewarmScope;
-  if (!usingSectionGlyphPack) {
+  if (!usingSectionGlyphCache) {
     // Font prewarm: scan pass accumulates text, then prewarm, then real render.
     auto* fcm = renderer.getFontCacheManager();
     prewarmScope.emplace(fcm->createPrewarmScope());

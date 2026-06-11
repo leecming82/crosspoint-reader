@@ -109,8 +109,8 @@ The likely practical compromise is lazy runtime caching. Rasterize glyphs on fir
    - Bitmap lookup/render: `GfxRenderer::drawText()`, rotated/vertical text helpers, and `renderChar()` consume `EpdGlyph` metrics and call `GfxRenderer::getGlyphBitmap()`. Compressed built-ins go through `FontDecompressor`; SD overflow glyphs recover their bitmap through `SdCardFont::fromMissCtx()`.
    - Prewarm: `FontCacheManager::PrewarmScope` performs the scan-then-prewarm render pass. Built-ins prewarm compressed groups through `FontDecompressor`; SD fonts prewarm requested glyphs/styles through `SdCardFont::prewarm()`.
    - EPUB section indexing: `Section::createSectionFile()` writes section cache headers, scans CJK codepoints for SD-font advance prewarm, optionally builds/loads section glyph packs, then drives `ChapterHtmlSlimParser`. `ParsedText` performs horizontal, hyphenated, horizontal CJK, and tategaki line/column extraction using renderer metrics.
-   - TXT indexing: `TxtReaderActivity` uses `measureTxtLineForIndexing()` and renderer advance metrics, with cache invalidation currently tied to file size, viewport width, lines per page, font ID, margin, and paragraph alignment.
-   - Cache identity: EPUB section cache identity is in `Section::writeSectionFileHeader()` / `loadSectionFile()` and currently includes section format version, font ID, line compression, spacing/alignment, viewport, hyphenation, embedded style, image rendering, focus reading, orientation/layout, and writing mode. TXT index cache identity includes file size, viewport width, lines per page, font ID, screen margin, and paragraph alignment. Native TTF must extend or encode font identity so path/content/size changes cannot reuse stale pagination.
+   - TXT indexing: `TxtReaderActivity` uses `measureTxtLineForIndexing()` and renderer advance metrics, with cache invalidation tied to file size, viewport width, lines per page, reader font identity, margin, and paragraph alignment.
+   - Cache identity: EPUB section cache identity is in `Section::writeSectionFileHeader()` / `loadSectionFile()` and includes section format version, legacy font ID, explicit reader font identity, line compression, spacing/alignment, viewport, hyphenation, embedded style, image rendering, focus reading, orientation/layout, and writing mode. TXT index cache identity similarly stores explicit reader font identity so TTF path/content/size/provider changes cannot reuse stale pagination.
 
 - [x] 2. Runtime parser selection
 
@@ -364,20 +364,9 @@ The likely practical compromise is lazy runtime caching. Rasterize glyphs on fir
    - A per-font-size persistent glyph sidecar under `/.crosspoint/ttf_cache/` snapshots the packed RAM glyph cache and reloads it for the same TTF identity/size.
    - Device logs show warm-page prewarm can fall to near-zero misses for revisited pages, with render time dominated by display refresh rather than cold rasterization.
 
-- [ ] 15. Per-EPUB reader font settings
+- [x] 15. Per-EPUB reader font settings
 
    Add optional EPUB-specific reader font overrides on top of the global TTF reader settings. This milestone is EPUB-only; TXT continues to use the global reader font settings.
-
-   Scope:
-
-   - Keep global `Settings -> Reader` font and size as the default.
-   - Allow an EPUB to opt into its own TTF path and size, or explicitly use the global reader default.
-   - Store EPUB overrides in EPUB progress/book metadata or a dedicated CrossPoint book-settings store keyed by normalized EPUB identity.
-   - Resolve an effective font config when opening an EPUB: per-EPUB override if present, otherwise the global reader settings.
-   - Make EPUB section cache identity use that effective font config, including TTF path/content identity and pixel size.
-   - Treat the glyph cache as per effective font config, not per EPUB. Multiple EPUBs using the same TTF identity and size should share the same RAM cache and persistent sidecar under `/.crosspoint/ttf_cache/`.
-   - On EPUB open, keep the current glyph cache if it already matches the effective font config; otherwise save/flush any dirty sidecar, clear or replace the RAM cache, and load the sidecar for the new effective font config.
-   - Handle missing/deleted override fonts by warning clearly and falling back to global settings without corrupting EPUB section caches or TTF glyph sidecars.
 
    Exit criteria: a user can set a font/size for one EPUB without changing other EPUBs, reopen the EPUB with the same override and matching glyph cache, reset it to global defaults, and get correct section-cache invalidation when either the override or relevant global default changes.
 
@@ -387,20 +376,24 @@ The likely practical compromise is lazy runtime caching. Rasterize glyphs on fir
    - Reader menu controls can set an EPUB-specific TTF, set an EPUB-specific size, or reset the EPUB back to the global reader default.
    - Changing or resetting an EPUB override clears only section pagination caches and preserves reading progress.
 
-- [ ] 16. Reader font architecture cleanup
+- [x] 16. Reader font architecture cleanup
 
-   Once TTF metrics and rendering are working end-to-end, replace cpfont-shaped reader assumptions with generic reader font provider and cache interfaces. The step-8 provider shim intentionally leaves the current indexing workflow intact; this milestone is where the architecture should stop pretending that every reader font is an `EpdFont`/cpfont-like font ID with optional cpfont advance tables.
+   Tighten the working TTF reader bridge into an explicit reader-font configuration/provider path before removing reader-facing cpfont infrastructure.
 
    Scope:
 
-   - Introduce a first-class reader font identity object instead of encoding cache identity primarily through `fontId`. It should include mode, TTF path, file size/hash, pixel size, and later style/axis state.
-   - Replace cpfont-specific advance-table assumptions with a generic metrics cache API. TTF should be able to batch likely section codepoints, but layout must also work with on-demand metrics without requiring cpfont-style glyph packs.
-   - Move vertical layout needs into provider responsibilities: vertical substitutions, representative CJK advance, punctuation behavior, ruby metrics, ascender/descender/line-height, and missing-glyph reporting.
-   - Remove remaining cpfont-shaped assumptions that survived the initial provider shim. Layout and render should share the same selected provider, but cache identity and prewarm should no longer pretend every reader font is an `EpdFont`/cpfont-like font ID.
-   - Revisit EPUB/TXT cache headers so font identity, layout settings, writing mode, and provider versioning are explicit and extensible.
-   - Keep EPUB/TXT workflow behavior stable while changing the internal interfaces: section indexing, short-section prebuilds, TXT page-index growth, and progress restoration should continue to work.
+   - [x] Add `ReaderFontConfig` / `ReaderFontIdentity` for global defaults and EPUB overrides.
+   - [x] Centralize effective-font resolution outside `EpubReaderActivity`; TXT remains global-font only.
+   - [x] Store explicit reader font identity in EPUB section cache headers and TXT page-index cache headers.
+   - [x] Add a generic reader font provider interface for metrics, render, prewarm, persistent-cache flush, and cache stats.
+   - [x] Replace reader-path cpfont terminology where it now refers to generic reader-font behavior.
 
-   Exit criteria: EPUB/TXT layout and render consume a common reader font provider interface, cache identity is provider-owned and explicit, and no reader indexing path depends on cpfont-only advance-table or glyph-pack concepts unless the selected provider is actually cpfont.
+   Exit criteria: EPUB/TXT layout and render consume explicit reader font config/provider state, TTF cache identity is provider-owned and readable, and cache invalidation covers TTF path/content/size/provider changes.
+
+   Progress:
+   - Implemented `ReaderFontConfig` / `ReaderFontIdentity`, `ReaderFontProvider`, EPUB/global resolution, provider-backed TTF loading, and generic reader-font preparation wrappers.
+   - EPUB section cache headers are version 44 and TXT page-index caches are version 6, both with explicit reader font identity validation.
+   - Legacy `fontId` fields remain during the transition so existing layout/render code can move incrementally toward provider-owned identity.
 
 - [ ] 17. Remove cpfont reader infrastructure
 

@@ -357,7 +357,7 @@ void enterDeepSleep(bool fromTimeout = false) {
 
 #ifdef CROSSPOINT_BOARD_MURPHY_M4
   appendMurphyBatteryLog("sleep");
-  TTF_READER_METRICS.flushGlyphSidecarCache();
+  TTF_READER_METRICS.flushPersistentCache();
 #endif
 
   // Commit to sleeping before goToSleep() runs the outgoing activity's onExit():

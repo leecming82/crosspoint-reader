@@ -11,6 +11,8 @@
 #include "CrossPointSettings.h"
 #include "CrossPointState.h"
 #include "MappedInputManager.h"
+#include "ReaderFontConfig.h"
+#include "ReaderFontProvider.h"
 #include "ReaderUtils.h"
 #include "RecentBooksStore.h"
 #include "SdCardFontSystem.h"
@@ -25,7 +27,33 @@ constexpr size_t CHUNK_SIZE = 8 * 1024;  // 8KB chunk for reading
 constexpr int TXT_PAGE_CACHE_BATCH = 50;
 // Cache file magic and version
 constexpr uint32_t CACHE_MAGIC = 0x54585449;  // "TXTI"
-constexpr uint8_t CACHE_VERSION = 5;          // Increment when cache format changes
+constexpr uint8_t CACHE_VERSION = 6;          // Increment when cache format changes
+
+void writeReaderFontIdentity(HalFile& file, const ReaderFontIdentity& identity) {
+  serialization::writePod(file, identity.version);
+  serialization::writePod(file, identity.mode);
+  serialization::writePod(file, identity.provider);
+  serialization::writePod(file, identity.pixelSize);
+  serialization::writePod(file, identity.reserved);
+  serialization::writePod(file, identity.fileSize);
+  serialization::writePod(file, identity.fileHash);
+  serialization::writePod(file, identity.providerVersion);
+  serialization::writePod(file, identity.legacyFontId);
+}
+
+ReaderFontIdentity readReaderFontIdentity(HalFile& file) {
+  ReaderFontIdentity identity;
+  serialization::readPod(file, identity.version);
+  serialization::readPod(file, identity.mode);
+  serialization::readPod(file, identity.provider);
+  serialization::readPod(file, identity.pixelSize);
+  serialization::readPod(file, identity.reserved);
+  serialization::readPod(file, identity.fileSize);
+  serialization::readPod(file, identity.fileHash);
+  serialization::readPod(file, identity.providerVersion);
+  serialization::readPod(file, identity.legacyFontId);
+  return identity;
+}
 
 int clampPercent(const int percent) {
   if (percent < 0) return 0;
@@ -165,6 +193,7 @@ void TxtReaderActivity::initializeReader() {
   }
 
   // Store current settings for cache validation
+  readerFontConfig = ReaderFontResolver::resolveGlobal();
   cachedFontId = effectiveLayoutFontId();
   cachedRenderFontId = effectiveRenderFontId();
   cachedScreenMargin = SETTINGS.screenMargin;
@@ -212,10 +241,11 @@ void TxtReaderActivity::initializeReader() {
 
 int TxtReaderActivity::effectiveRenderFontId() const {
 #ifdef CROSSPOINT_BOARD_MURPHY_M4
-  if (SETTINGS.readerFontMode == CrossPointSettings::READER_FONT_TTF) {
-    if (TTF_READER_METRICS.ensureLoadedFromSettings()) {
-      renderer.setReaderFontMetricsProvider(&TTF_READER_METRICS);
-      return TTF_READER_METRICS.fontId();
+  if (readerFontConfig.isTtf()) {
+    ReaderFontProvider* provider = ReaderFontProviders::providerForConfig(readerFontConfig);
+    if (provider && provider->ensureLoaded(readerFontConfig)) {
+      renderer.setReaderFontMetricsProvider(provider);
+      return provider->fontId();
     }
     LOG_ERR("TRS", "TTF reader render unavailable; using cpfont render for this pass");
   }
@@ -225,10 +255,11 @@ int TxtReaderActivity::effectiveRenderFontId() const {
 
 int TxtReaderActivity::effectiveLayoutFontId() const {
 #ifdef CROSSPOINT_BOARD_MURPHY_M4
-  if (SETTINGS.readerFontMode == CrossPointSettings::READER_FONT_TTF) {
-    if (TTF_READER_METRICS.ensureLoadedFromSettings()) {
-      renderer.setReaderFontMetricsProvider(&TTF_READER_METRICS);
-      return TTF_READER_METRICS.fontId();
+  if (readerFontConfig.isTtf()) {
+    ReaderFontProvider* provider = ReaderFontProviders::providerForConfig(readerFontConfig);
+    if (provider && provider->ensureLoaded(readerFontConfig)) {
+      renderer.setReaderFontMetricsProvider(provider);
+      return provider->fontId();
     }
     LOG_ERR("TRS", "TTF reader metrics unavailable; using cpfont layout for this pass");
   }
@@ -347,7 +378,7 @@ bool TxtReaderActivity::loadPageAtOffset(size_t offset, std::vector<std::string>
   }
   buffer[chunkSize] = '\0';
 
-  // Prime the SD card font's advance table with this chunk's codepoints.
+  // Prime reader font advance data with this chunk's codepoints.
   // Without this, every getTextAdvanceX() call in the wrap loop below triggers
   // on-demand glyph loads through the 8-slot overflow ring buffer, which
   // thrashes for any text with more than 8 unique chars (i.e. all English),
@@ -355,7 +386,7 @@ bool TxtReaderActivity::loadPageAtOffset(size_t offset, std::vector<std::string>
   // corrupts FreeRTOS state. The advance table persists across calls per
   // font, so the cost amortizes to ~ASCII-size after the first chunk.
   if (renderer.isSdCardFont(cachedFontId)) {
-    renderer.ensureSdCardFontReady(cachedFontId, reinterpret_cast<const char*>(buffer), /*styleMask=*/0x01);
+    renderer.ensureReaderFontReady(cachedFontId, reinterpret_cast<const char*>(buffer), /*styleMask=*/0x01);
   }
 
   // Parse lines from buffer
@@ -386,7 +417,7 @@ bool TxtReaderActivity::loadPageAtOffset(size_t offset, std::vector<std::string>
     // Extract line content for display (without CR/LF)
     std::string line(reinterpret_cast<char*>(buffer + pos), displayLen);
     if (renderer.isSdCardFont(cachedFontId) && !line.empty()) {
-      renderer.ensureSdCardFontReady(cachedFontId, line.c_str(), 0x01);
+      renderer.ensureReaderFontReady(cachedFontId, line.c_str(), 0x01);
     }
 
     // Track position within this source line (in bytes from pos)
@@ -518,7 +549,7 @@ void TxtReaderActivity::renderPage() {
       pageText += line;
       pageText += '\n';
     }
-    renderer.ensureSdCardFontReady(cachedRenderFontId, pageText.c_str(), 0x01);
+    renderer.ensureReaderFontReady(cachedRenderFontId, pageText.c_str(), 0x01);
   }
 
   // Render text lines with alignment
@@ -632,6 +663,7 @@ bool TxtReaderActivity::loadPageIndexCache() {
   // - int32_t: viewport width
   // - int32_t: lines per page
   // - int32_t: font ID (to invalidate cache on font change)
+  // - ReaderFontIdentity fields (explicit provider/font identity)
   // - int32_t: screen margin (to invalidate cache on margin change)
   // - uint8_t: paragraph alignment (to invalidate cache on alignment change)
   // - uint8_t: whether EOF has been reached by the growing cache
@@ -688,6 +720,12 @@ bool TxtReaderActivity::loadPageIndexCache() {
     return false;
   }
 
+  const ReaderFontIdentity fontIdentity = readReaderFontIdentity(f);
+  if (fontIdentity != readerFontConfig.identity) {
+    LOG_DBG("TRS", "Cache reader font identity mismatch, rebuilding");
+    return false;
+  }
+
   int32_t margin;
   serialization::readPod(f, margin);
   if (margin != cachedScreenMargin) {
@@ -740,6 +778,7 @@ void TxtReaderActivity::savePageIndexCache() const {
   serialization::writePod(f, static_cast<int32_t>(viewportWidth));
   serialization::writePod(f, static_cast<int32_t>(linesPerPage));
   serialization::writePod(f, static_cast<int32_t>(cachedFontId));
+  writeReaderFontIdentity(f, readerFontConfig.identity);
   serialization::writePod(f, static_cast<int32_t>(cachedScreenMargin));
   serialization::writePod(f, cachedParagraphAlignment);
   serialization::writePod(f, static_cast<uint8_t>(endOfFileKnown ? 1 : 0));

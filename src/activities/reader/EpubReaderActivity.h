@@ -14,6 +14,7 @@
 #include "EpubReaderMenuActivity.h"
 #include "EpubReaderUtils.h"
 #include "ProgressMapper.h"
+#include "ReaderFontConfig.h"
 #include "activities/Activity.h"
 
 class EpubReaderActivity final : public Activity {
@@ -38,9 +39,9 @@ class EpubReaderActivity final : public Activity {
   bool pendingScreenshot = false;
   bool pendingSyncSaveError = false;
   bool automaticPageTurnActive = false;
-  int activeGlyphPackSpineIndex = -1;
-  int activeGlyphPackFontId = -1;
-  bool activeGlyphPackReady = false;
+  int activeSectionGlyphCacheSpineIndex = -1;
+  int activeSectionGlyphCacheFontId = -1;
+  bool activeSectionGlyphCacheReady = false;
   mutable int cachedStatusTitleSpineIndex = -1;
   mutable uint8_t cachedStatusTitleMode = CrossPointSettings::STATUS_BAR_TITLE_COUNT;
   mutable std::string cachedStatusTitle;
@@ -51,6 +52,7 @@ class EpubReaderActivity final : public Activity {
   enum class RubyAdjustAxis : uint8_t { X, Y };
   bool rubyAdjustActive = false;
   bool rubyAdjustIgnoreOpeningRelease = false;
+  ReaderFontConfig readerFontConfig;
   EpubReaderUtils::EpubFontOverride epubFontOverride;
 
   // Kanji cursor overlay (tategaki dictionary lookup, Phase 1)
@@ -135,8 +137,8 @@ class EpubReaderActivity final : public Activity {
   void renderContents(std::unique_ptr<Page> page, int orientedMarginTop, int orientedMarginRight,
                       int orientedMarginBottom, int orientedMarginLeft);
   void prebuildAdjacentShortSections(uint16_t viewportWidth, uint16_t viewportHeight);
-  void prepareSectionGlyphPack();
-  bool hasActiveSectionGlyphPack() const;
+  void prepareSectionGlyphCache();
+  bool hasActiveSectionGlyphCache() const;
   void renderStatusBar() const;
   std::string statusBarTitleForCurrentSpine() const;
   void renderRubyAdjustOverlay() const;

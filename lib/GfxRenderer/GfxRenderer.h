@@ -74,7 +74,7 @@ class GfxRenderer {
   uint8_t* compressedBwBuffer = nullptr;
   uint32_t compressedBwBufferSize = 0;
   std::map<int, EpdFontFamily> fontMap;
-  // Mutable because ensureSdCardFontReady() is const (called from layout code
+  // Mutable because reader font preparation is const (called from layout code
   // that holds a const GfxRenderer&) but triggers SD card reads and heap
   // allocation inside the SdCardFont objects. Same pragmatic compromise as
   // fontCacheManager_ below.
@@ -148,9 +148,17 @@ class GfxRenderer {
   void clearSdCardFonts() { sdCardFonts_.clear(); }
   const std::map<int, SdCardFont*>& getSdCardFonts() const { return sdCardFonts_; }
   bool isSdCardFont(int fontId) const { return sdCardFonts_.count(fontId) > 0; }
-  // Ensure SD card font glyph data is loaded for the given text. Called from layout code
-  // (which holds a const GfxRenderer&) before measuring word widths. Safe to call on non-SD fonts (no-op).
+  // Ensure reader font metrics/glyph data is ready before layout or render measurement.
   // styleMask: bitmask of styles to prepare (bit 0=regular, 1=bold, 2=italic, 3=bold-italic).
+  void ensureReaderFontReady(int fontId, const char* utf8Text, uint8_t styleMask = 0x0F) const {
+    ensureSdCardFontReady(fontId, utf8Text, styleMask);
+  }
+  void ensureReaderFontReady(int fontId, const std::vector<std::string>& words, bool includeHyphen,
+                             uint8_t styleMask = 0x0F) const {
+    ensureSdCardFontReady(fontId, words, includeHyphen, styleMask);
+  }
+
+  // Transitional cpfont/SD implementation used by ensureReaderFontReady().
   void ensureSdCardFontReady(int fontId, const char* utf8Text, uint8_t styleMask = 0x0F) const;
   void ensureSdCardFontReady(int fontId, const std::vector<std::string>& words, bool includeHyphen,
                              uint8_t styleMask = 0x0F) const;

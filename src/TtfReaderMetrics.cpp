@@ -17,8 +17,6 @@
 #include <cstring>
 #include <list>
 
-#include "CrossPointSettings.h"
-
 namespace {
 
 constexpr size_t TTF_HEADER_SIZE = 12;
@@ -32,8 +30,6 @@ constexpr uint32_t TTF_GLYPH_SIDECAR_SAVE_INTERVAL_MS = 60000;
 constexpr uint32_t TTF_GLYPH_SIDECAR_SAVE_DIRTY_GLYPHS = 128;
 constexpr size_t TTF_GLYPH_SIDECAR_SAVE_DIRTY_BYTES = 64 * 1024;
 constexpr uint8_t TTF_RASTER_SUPERSAMPLE = 2;
-constexpr uint32_t FNV_OFFSET = 2166136261u;
-constexpr uint32_t FNV_PRIME = 16777619u;
 
 EpdFontFamily::Style firstStyleFromMask(const uint8_t styleMask) {
   for (uint8_t i = 0; i < 4; ++i) {
@@ -203,8 +199,6 @@ bool loadTableReadOnly(const char* path, const uint8_t* directoryData, const siz
   out.length = record.length;
   return true;
 }
-
-uint32_t fnvStep(uint32_t hash, const uint8_t byte) { return (hash ^ byte) * FNV_PRIME; }
 
 bool usesTuckedHorizontalAdvance(const uint32_t cp) {
   switch (cp) {
@@ -463,13 +457,19 @@ ttf::RuntimeTableSet TtfReaderMetrics::TableCache::views() const {
 }
 
 bool TtfReaderMetrics::ensureLoadedFromSettings() {
-  if (SETTINGS.readerFontMode != CrossPointSettings::READER_FONT_TTF || SETTINGS.readerTtfPath[0] == '\0') {
+  const ReaderFontConfig config = ReaderFontResolver::resolveGlobal();
+  return ensureLoaded(config);
+}
+
+bool TtfReaderMetrics::ensureLoaded(const ReaderFontConfig& config) {
+  if (!config.isTtf() || config.ttfPath.empty()) {
     unload();
     return false;
   }
 
-  const uint8_t size = std::max<uint8_t>(12, std::min<uint8_t>(SETTINGS.readerTtfSizePx, 72));
-  return ensureLoaded(SETTINGS.readerTtfPath, size, SETTINGS.readerTtfFileSize);
+  const bool loaded = ensureLoaded(config.ttfPath.c_str(), config.identity.pixelSize, config.identity.fileSize);
+  if (loaded) activeConfig_ = config;
+  return loaded;
 }
 
 bool TtfReaderMetrics::ensureLoaded(const char* path, const uint8_t pixelSize, const uint32_t expectedFileSize) {
@@ -486,7 +486,24 @@ bool TtfReaderMetrics::ensureLoaded(const char* path, const uint8_t pixelSize, c
   return loadFromPath(path, size, expectedFileSize);
 }
 
-bool TtfReaderMetrics::flushGlyphSidecarCache() const { return saveGlyphSidecarCache(); }
+bool TtfReaderMetrics::flushGlyphSidecarCache() const { return flushPersistentCache(); }
+
+bool TtfReaderMetrics::flushPersistentCache() const { return saveGlyphSidecarCache(); }
+
+ReaderFontCacheStats TtfReaderMetrics::cacheStats() const {
+  ReaderFontCacheStats stats;
+  stats.glyphCount = glyphCache_.size();
+  stats.bytes = glyphCacheBytes_;
+  stats.byteLimit = TTF_GLYPH_CACHE_MAX_BYTES;
+  stats.hits = cacheHits_;
+  stats.misses = cacheMisses_;
+  stats.rasterOk = rasterOk_;
+  stats.rasterFailed = rasterFailed_;
+  stats.missingGlyphs = missingGlyphs_;
+  stats.evictions = cacheEvictions_;
+  stats.persistentDirty = glyphSidecarDirty_;
+  return stats;
+}
 
 void TtfReaderMetrics::unload() {
   saveGlyphSidecarCache();
@@ -500,6 +517,7 @@ void TtfReaderMetrics::unload() {
 #endif
   tables_.reset();
   font_ = ttf::TtfRuntimeFont();
+  activeConfig_ = ReaderFontConfig{};
   path_.clear();
   pixelSize_ = 0;
   fileSize_ = 0;
@@ -1392,17 +1410,7 @@ int TtfReaderMetrics::getFontAscenderSize(const int fontId) const { return handl
 int TtfReaderMetrics::getLineHeight(const int fontId) const { return handlesFontId(fontId) ? lineHeightPx() : 0; }
 
 uint32_t TtfReaderMetrics::computeIdentityHash(const char* path, const uint8_t pixelSize, const uint32_t fileSize) {
-  uint32_t hash = FNV_OFFSET;
-  if (path) {
-    for (const char* p = path; *p; ++p) {
-      hash = fnvStep(hash, static_cast<uint8_t>(*p));
-    }
-  }
-  hash = fnvStep(hash, pixelSize);
-  for (int shift = 0; shift < 32; shift += 8) {
-    hash = fnvStep(hash, static_cast<uint8_t>((fileSize >> shift) & 0xFF));
-  }
-  return hash == 0 ? 1 : hash;
+  return ReaderFontResolver::computeTtfIdentityHash(path, pixelSize, fileSize);
 }
 
 #endif

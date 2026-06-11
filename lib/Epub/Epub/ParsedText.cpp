@@ -687,11 +687,11 @@ void ParsedText::layoutAndExtractLines(const GfxRenderer& renderer, const int fo
 
   // Ensure SD card font glyph metrics are loaded before measuring word widths.
   // For flash-based fonts isSdCardFont() returns false and this block is skipped
-  // entirely — no heap allocation. For SD card fonts this reads glyph metadata
+  // entirely — no heap allocation. For reader fonts that need preparation, this reads glyph metadata
   // (advanceX only, no bitmaps) for all unique codepoints in this paragraph so
   // that calculateWordWidths() can measure text without on-demand SD I/O.
   if (renderer.isSdCardFont(fontId)) {
-    // Style mask: only ask the SD font to load advances for styles actually
+    // Style mask: only ask the reader font to load advances for styles actually
     // used in this paragraph. Style index is the low two bits (regular/bold/
     // italic/bold-italic); the underline bit is irrelevant to advance metrics.
     uint8_t styleMask = 0;
@@ -700,9 +700,9 @@ void ParsedText::layoutAndExtractLines(const GfxRenderer& renderer, const int fo
     }
     if (styleMask == 0) styleMask = 0x01;  // defensive: regular only
     if (!sdAdvancePrewarmed) {
-      renderer.ensureSdCardFontReady(fontId, words, hyphenationEnabled, styleMask);
+      renderer.ensureReaderFontReady(fontId, words, hyphenationEnabled, styleMask);
       if (useHorizontalCjkWrapper) {
-        renderer.ensureSdCardFontReady(fontId, "\xe6\x97\xa5\xe3\x81\x82", styleMask);  // 日あ
+        renderer.ensureReaderFontReady(fontId, "\xe6\x97\xa5\xe3\x81\x82", styleMask);  // 日あ
       }
     }
   }
@@ -764,7 +764,7 @@ void ParsedText::layoutAndExtractVerticalColumns(const GfxRenderer& renderer, co
     }
     if (styleMask == 0) styleMask = 0x01;
     if (!sdAdvancePrewarmed) {
-      renderer.ensureSdCardFontReady(fontId, words, /*includeHyphenGlyph=*/false, styleMask);
+      renderer.ensureReaderFontReady(fontId, words, /*includeHyphenGlyph=*/false, styleMask);
     }
   }
 

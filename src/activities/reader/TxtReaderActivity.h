@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "CrossPointSettings.h"
+#include "ReaderFontConfig.h"
 #include "activities/Activity.h"
 
 class TxtReaderActivity final : public Activity {
@@ -23,6 +24,7 @@ class TxtReaderActivity final : public Activity {
   bool initialized = false;
 
   // Cached settings for cache validation (different fonts/margins require re-indexing)
+  ReaderFontConfig readerFontConfig;
   int cachedFontId = 0;
   int cachedRenderFontId = 0;
   uint8_t cachedScreenMargin = 0;
