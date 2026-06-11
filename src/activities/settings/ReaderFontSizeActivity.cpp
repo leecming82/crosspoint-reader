@@ -168,7 +168,7 @@ void ReaderFontSizeActivity::render(RenderLock&&) {
                                                        previewFileSize_);
   } else {
     SETTINGS.readerTtfSizePx = static_cast<uint8_t>(value_);
-    hasTtf = SETTINGS.readerTtfPath[0] != '\0' && SETTINGS.readerFontMode == CrossPointSettings::READER_FONT_TTF;
+    hasTtf = SETTINGS.readerTtfPath[0] != '\0';
     loaded = hasTtf && TTF_READER_METRICS.ensureLoadedFromSettings();
   }
   if (loaded) {

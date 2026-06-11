@@ -11,7 +11,6 @@
 
 #include "MappedInputManager.h"
 #include "NetworkModeSelectionActivity.h"
-#include "SdCardFontSystem.h"
 #include "SilentRestart.h"
 #include "WifiSelectionActivity.h"
 #include "activities/network/CalibreConnectActivity.h"
@@ -91,7 +90,7 @@ void CrossPointWebServerActivity::onEnter() {
                          });
 }
 
-void CrossPointWebServerActivity::releaseMemoryForNetwork() { sdFontSystem.unloadLoadedFonts(renderer); }
+void CrossPointWebServerActivity::releaseMemoryForNetwork() {}
 
 void CrossPointWebServerActivity::onExit() {
   Activity::onExit();

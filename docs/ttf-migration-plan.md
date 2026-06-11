@@ -395,18 +395,19 @@ The likely practical compromise is lazy runtime caching. Rasterize glyphs on fir
    - EPUB section cache headers are version 44 and TXT page-index caches are version 6, both with explicit reader font identity validation.
    - Legacy `fontId` fields remain during the transition so existing layout/render code can move incrementally toward provider-owned identity.
 
-- [ ] 17. Remove cpfont reader infrastructure
+- [x] 17. Remove cpfont reader infrastructure
 
-   After the TTF reader path has end-to-end coverage for discovery, metrics, rendering, cache identity, Japanese EPUB/TXT behavior, vertical layout, ruby/furigana, and failure recovery, remove the reader-facing cpfont infrastructure from this M4-only branch.
+   The M4 reader path is now TTF-first and no longer exposes or loads SD `.cpfont` reader packs.
 
-   Scope:
+   Completed:
 
-   - Remove cpfont reader selection and S/M/L/XL reader-size assumptions.
-   - Remove reader pagination/render dependencies on cpfont font IDs, cpfont glyph packs, and cpfont SD font-family packs.
-   - Keep any boot/system/UI font pieces that are still needed by non-reader screens.
-   - Delete unused cpfont download/install UI only after confirming no remaining reader code depends on it.
+   - [x] Remove cpfont reader selection and S/M/L/XL reader-size assumptions from the M4 settings path.
+   - [x] Stop loading SD cpfont families during M4 reader startup and reader settings changes.
+   - [x] Stop using cpfont font IDs as the M4 reader render/layout fallback; invalid TTFs now fall back only to the built-in system bitmap font for recovery.
+   - [x] Keep `EpdFont` built-in/system font pieces because non-reader UI still uses generated bitmap font headers built from TTF/OTF sources.
+   - [x] Remove the unused cpfont download/install activity and SD font-family system wrapper from the app source.
 
-   Exit criteria: reader text no longer depends on cpfont data structures or cpfont SD packs, TTF is the normal reader font path, and stale cpfont-specific cache identity is gone.
+   Note: lower-level `EpdFont` data structures and generated built-in bitmap fonts remain because system/UI text still uses them. Old cpfont identity constants remain only so stale cache records deserialize and compare as non-current.
 
 ## Open Questions
 

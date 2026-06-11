@@ -1,15 +1,14 @@
 #pragma once
 
-#include <SdCardFontRegistry.h>
-#ifdef CROSSPOINT_BOARD_MURPHY_M4
 #include "TtfFontScanner.h"
-#endif
 
 #include <string>
 #include <vector>
 
 #include "activities/Activity.h"
 #include "util/ButtonNavigator.h"
+
+class SdCardFontRegistry;
 
 class FontSelectionActivity final : public Activity {
  public:
@@ -29,26 +28,21 @@ class FontSelectionActivity final : public Activity {
 
   struct FontEntry {
     enum class Kind : uint8_t {
-      Builtin,
-      SdCpfont,
       Ttf,
       Unavailable,
     };
 
     std::string name;
-    Kind kind = Kind::Builtin;
+    Kind kind = Kind::Ttf;
     uint8_t settingIndex = 0;
     std::string path;
     uint32_t fileSize = 0;
   };
 
-  const SdCardFontRegistry* registry_;
   bool returnSelectionOnly_ = false;
   std::string currentPath_;
   ButtonNavigator buttonNavigator_;
   std::vector<FontEntry> fonts_;
-#ifdef CROSSPOINT_BOARD_MURPHY_M4
   std::vector<TtfFontCandidate> ttfFonts_;
-#endif
   int selectedIndex_ = 0;
 };

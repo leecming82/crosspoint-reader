@@ -4,8 +4,8 @@
 #include <I18n.h>
 
 #include <algorithm>
-#include <cstring>
 #include <climits>
+#include <cstring>
 
 #include "CrossPointSettings.h"
 #include "MappedInputManager.h"
@@ -25,14 +25,13 @@ std::string basenameFromPath(const std::string& path) {
 }  // namespace
 
 FontSelectionActivity::FontSelectionActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,
-                                             const SdCardFontRegistry* registry)
-    : Activity("FontSelect", renderer, mappedInput), registry_(registry) {}
+                                             const SdCardFontRegistry*)
+    : Activity("FontSelect", renderer, mappedInput) {}
 
 FontSelectionActivity::FontSelectionActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,
-                                             const SdCardFontRegistry* registry, const bool returnSelectionOnly,
+                                             const SdCardFontRegistry*, const bool returnSelectionOnly,
                                              std::string currentPath)
     : Activity("FontSelect", renderer, mappedInput),
-      registry_(registry),
       returnSelectionOnly_(returnSelectionOnly),
       currentPath_(std::move(currentPath)) {}
 
@@ -40,7 +39,6 @@ void FontSelectionActivity::onEnter() {
   Activity::onEnter();
 
   fonts_.clear();
-#ifdef CROSSPOINT_BOARD_MURPHY_M4
   ttfFonts_ = TtfFontScanner::scan();
   fonts_.reserve(ttfFonts_.size());
 
@@ -68,34 +66,6 @@ void FontSelectionActivity::onEnter() {
       }
     }
   }
-#else
-  // Build combined font list: built-in + SD card fonts
-  fonts_.reserve(CrossPointSettings::BUILTIN_FONT_COUNT + (registry_ ? registry_->getFamilyCount() : 0) + 8);
-
-  fonts_.push_back({I18N.get(StrId::STR_NOTO_SERIF), FontEntry::Kind::Builtin, CrossPointSettings::NOTOSERIF});
-
-  if (registry_) {
-    const auto& families = registry_->getFamilies();
-    for (int i = 0; i < static_cast<int>(families.size()); i++) {
-      fonts_.push_back({families[i].name, FontEntry::Kind::SdCpfont,
-                        static_cast<uint8_t>(CrossPointSettings::BUILTIN_FONT_COUNT + i)});
-    }
-  }
-
-  // Find current selection
-  selectedIndex_ = 0;
-  if (SETTINGS.sdFontFamilyName[0] != '\0' && registry_) {
-    const auto& families = registry_->getFamilies();
-    for (int i = 0; i < static_cast<int>(families.size()); i++) {
-      if (families[i].name == SETTINGS.sdFontFamilyName) {
-        selectedIndex_ = CrossPointSettings::BUILTIN_FONT_COUNT + i;
-        break;
-      }
-    }
-  } else {
-    selectedIndex_ = SETTINGS.fontFamily < CrossPointSettings::BUILTIN_FONT_COUNT ? SETTINGS.fontFamily : 0;
-  }
-#endif
 
   requestUpdate();
 }
@@ -143,34 +113,19 @@ void FontSelectionActivity::loop() {
 
 void FontSelectionActivity::handleSelection() {
   const auto& font = fonts_[selectedIndex_];
-#ifdef CROSSPOINT_BOARD_MURPHY_M4
   if (returnSelectionOnly_) {
     if (font.kind != FontEntry::Kind::Ttf) return;
     setResult(FilePathResult{font.path});
     finish();
     return;
   }
-#endif
-  if (font.kind == FontEntry::Kind::Builtin) {
-    SETTINGS.readerFontMode = CrossPointSettings::READER_FONT_CPFONT;
-    SETTINGS.fontFamily = font.settingIndex;
-    SETTINGS.sdFontFamilyName[0] = '\0';
-  } else if (font.kind == FontEntry::Kind::SdCpfont && registry_) {
-    SETTINGS.readerFontMode = CrossPointSettings::READER_FONT_CPFONT;
-    int sdIdx = font.settingIndex - CrossPointSettings::BUILTIN_FONT_COUNT;
-    const auto& families = registry_->getFamilies();
-    if (sdIdx < static_cast<int>(families.size())) {
-      strncpy(SETTINGS.sdFontFamilyName, families[sdIdx].name.c_str(), sizeof(SETTINGS.sdFontFamilyName) - 1);
-      SETTINGS.sdFontFamilyName[sizeof(SETTINGS.sdFontFamilyName) - 1] = '\0';
-    }
-#ifdef CROSSPOINT_BOARD_MURPHY_M4
-  } else if (font.kind == FontEntry::Kind::Ttf) {
+  if (font.kind == FontEntry::Kind::Ttf) {
     SETTINGS.readerFontMode = CrossPointSettings::READER_FONT_TTF;
+    SETTINGS.sdFontFamilyName[0] = '\0';
     strncpy(SETTINGS.readerTtfPath, font.path.c_str(), sizeof(SETTINGS.readerTtfPath) - 1);
     SETTINGS.readerTtfPath[sizeof(SETTINGS.readerTtfPath) - 1] = '\0';
     SETTINGS.readerTtfFileSize = font.fileSize;
     SETTINGS.readerTtfHash = 0;
-#endif
   } else if (font.kind == FontEntry::Kind::Unavailable) {
     return;
   }
@@ -178,9 +133,6 @@ void FontSelectionActivity::handleSelection() {
 }
 
 bool FontSelectionActivity::handleTouch() {
-#ifndef CROSSPOINT_BOARD_MURPHY_M4
-  return false;
-#else
   if (TouchNavigator::wasTappedIn(mappedInput, TouchUi::headerBackTapRect(renderer))) {
     finish();
     return true;
@@ -215,7 +167,6 @@ bool FontSelectionActivity::handleTouch() {
     handleSelection();
   }
   return true;
-#endif
 }
 
 void FontSelectionActivity::render(RenderLock&&) {
@@ -225,22 +176,12 @@ void FontSelectionActivity::render(RenderLock&&) {
   const auto pageHeight = renderer.getScreenHeight();
   const auto& metrics = UITheme::getInstance().getMetrics();
 
-#ifdef CROSSPOINT_BOARD_MURPHY_M4
   const Rect screen = UITheme::getInstance().getScreenSafeArea(renderer, false, false);
   TouchUi::drawHeaderWithBack(renderer, screen, tr(STR_FONT_FAMILY));
-#else
-  GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, tr(STR_FONT_FAMILY));
-#endif
 
   const int contentTop = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
-  const int contentHeight =
-#ifdef CROSSPOINT_BOARD_MURPHY_M4
-      pageHeight - contentTop;
-#else
-      pageHeight - contentTop - metrics.buttonHintsHeight - metrics.verticalSpacing;
-#endif
+  const int contentHeight = pageHeight - contentTop;
 
-#ifdef CROSSPOINT_BOARD_MURPHY_M4
   int currentFontIndex = -1;
   const std::string selectedPath = returnSelectionOnly_ ? currentPath_ : std::string(SETTINGS.readerTtfPath);
   if (!selectedPath.empty()) {
@@ -251,23 +192,7 @@ void FontSelectionActivity::render(RenderLock&&) {
       }
     }
   }
-#else
-  int currentFontIndex = 0;
-  // Determine which font index is currently active (to mark as "Selected")
-    if (SETTINGS.sdFontFamilyName[0] != '\0' && registry_) {
-      const auto& families = registry_->getFamilies();
-      for (int i = 0; i < static_cast<int>(families.size()); i++) {
-        if (families[i].name == SETTINGS.sdFontFamilyName) {
-          currentFontIndex = CrossPointSettings::BUILTIN_FONT_COUNT + i;
-          break;
-        }
-      }
-    } else {
-      currentFontIndex = SETTINGS.fontFamily < CrossPointSettings::BUILTIN_FONT_COUNT ? SETTINGS.fontFamily : 0;
-    }
-#endif
 
-#ifdef CROSSPOINT_BOARD_MURPHY_M4
   const int listSize = static_cast<int>(fonts_.size());
   const int listRows = std::max(1, contentHeight / metrics.listRowHeight);
   const auto layout = TouchList::calculatePageLayout(selectedIndex_, listSize, listRows);
@@ -290,15 +215,6 @@ void FontSelectionActivity::render(RenderLock&&) {
   if (layout.next) {
     TouchUi::drawCenteredPagerRow(renderer, listBounds, TouchList::visibleRowCount(layout) - 1, tr(STR_NEXT_PAGE));
   }
-#else
-  GUI.drawList(
-      renderer, Rect{0, contentTop, pageWidth, contentHeight}, static_cast<int>(fonts_.size()), selectedIndex_,
-      [this](int index) { return fonts_[index].name; }, nullptr, nullptr,
-      [this, currentFontIndex](int index) -> std::string { return index == currentFontIndex ? tr(STR_SELECTED) : ""; },
-      true);
-  const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_SELECT), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
-  GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
-#endif
 
   renderer.displayBuffer();
 }

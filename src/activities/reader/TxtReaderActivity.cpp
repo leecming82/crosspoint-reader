@@ -15,7 +15,6 @@
 #include "ReaderFontProvider.h"
 #include "ReaderUtils.h"
 #include "RecentBooksStore.h"
-#include "SdCardFontSystem.h"
 #ifdef CROSSPOINT_BOARD_MURPHY_M4
 #include "TtfReaderMetrics.h"
 #endif
@@ -83,7 +82,6 @@ void TxtReaderActivity::onEnter() {
   }
 
   ReaderUtils::applyOrientation(renderer, SETTINGS.orientation);
-  sdFontSystem.ensureLoaded(renderer);
 
   txt->setupCacheDir();
 
@@ -247,10 +245,10 @@ int TxtReaderActivity::effectiveRenderFontId() const {
       renderer.setReaderFontMetricsProvider(provider);
       return provider->fontId();
     }
-    LOG_ERR("TRS", "TTF reader render unavailable; using cpfont render for this pass");
+    LOG_ERR("TRS", "TTF reader render unavailable; using built-in font for this pass");
   }
 #endif
-  return SETTINGS.getReaderFontId();
+  return UI_12_FONT_ID;
 }
 
 int TxtReaderActivity::effectiveLayoutFontId() const {
@@ -261,7 +259,7 @@ int TxtReaderActivity::effectiveLayoutFontId() const {
       renderer.setReaderFontMetricsProvider(provider);
       return provider->fontId();
     }
-    LOG_ERR("TRS", "TTF reader metrics unavailable; using cpfont layout for this pass");
+    LOG_ERR("TRS", "TTF reader metrics unavailable; using built-in font layout for this pass");
   }
 #endif
   return effectiveRenderFontId();
@@ -329,9 +327,8 @@ bool TxtReaderActivity::ensurePageCacheAhead(const int pagesAhead, const bool sh
   const size_t generatedPages = pageOffsets.size() > startKnownPages ? pageOffsets.size() - startKnownPages : 0;
   LOG_INF("TRS",
           "Indexing session complete mode=%s font_id=%d generated=%u known=%u total=%d eof=%d duration_ms=%lu",
-          SETTINGS.readerFontMode == CrossPointSettings::READER_FONT_TTF ? "ttf" : "cpfont", cachedFontId,
-          static_cast<unsigned>(generatedPages), static_cast<unsigned>(pageOffsets.size()), totalPages,
-          endOfFileKnown ? 1 : 0, millis() - indexStartMs);
+          readerFontConfig.isTtf() ? "ttf" : "builtin", cachedFontId, static_cast<unsigned>(generatedPages),
+          static_cast<unsigned>(pageOffsets.size()), totalPages, endOfFileKnown ? 1 : 0, millis() - indexStartMs);
   if (showProgress && pagesToGenerate > 0) {
     GUI.fillPopupProgress(renderer, popupRect, 100);
   }
@@ -605,12 +602,6 @@ void TxtReaderActivity::renderPage() {
   ReaderUtils::displayWithRefreshCycle(renderer, pagesUntilFullRefresh);
 
   bool renderTextAntiAliasing = SETTINGS.textAntiAliasing;
-#ifdef CROSSPOINT_BOARD_MURPHY_M4
-  if (SETTINGS.readerFontMode == CrossPointSettings::READER_FONT_TTF) {
-    renderTextAntiAliasing = false;
-  }
-#endif
-
   if (renderTextAntiAliasing) {
     ReaderUtils::renderAntiAliased(renderer, [&renderLines]() { renderLines(); });
   }

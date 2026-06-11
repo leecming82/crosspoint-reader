@@ -12,10 +12,6 @@
 
 namespace {
 constexpr int SMALL_FONT_ID = 674098198;
-constexpr int NOTOSERIF_12_FONT_ID = 85340443;
-constexpr int NOTOSERIF_14_FONT_ID = -1367885987;
-constexpr int NOTOSERIF_16_FONT_ID = 1428909134;
-constexpr int NOTOSERIF_18_FONT_ID = -501438527;
 constexpr int NOTOSANS_12_FONT_ID = 2057568286;
 constexpr int NOTOSANS_14_FONT_ID = -1589315735;
 constexpr int NOTOSANS_16_FONT_ID = 1669013660;
@@ -46,19 +42,12 @@ bool isAsciiDigitString(const std::string& text) {
 
 int rubyFontIdForBodyFont(const int fontId) {
   switch (fontId) {
-    case NOTOSERIF_18_FONT_ID:
-      return NOTOSERIF_16_FONT_ID;
-    case NOTOSERIF_16_FONT_ID:
-      return NOTOSERIF_14_FONT_ID;
-    case NOTOSERIF_14_FONT_ID:
-      return NOTOSERIF_12_FONT_ID;
     case NOTOSANS_18_FONT_ID:
       return NOTOSANS_16_FONT_ID;
     case NOTOSANS_16_FONT_ID:
       return NOTOSANS_14_FONT_ID;
     case NOTOSANS_14_FONT_ID:
       return NOTOSANS_12_FONT_ID;
-    case NOTOSERIF_12_FONT_ID:
     case NOTOSANS_12_FONT_ID:
       return SMALL_FONT_ID;
     default:

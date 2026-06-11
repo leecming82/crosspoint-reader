@@ -30,14 +30,6 @@ uint32_t fileSizeForPath(const std::string& path) {
   return size > UINT32_MAX ? 0 : static_cast<uint32_t>(size);
 }
 
-ReaderFontConfig makeCpfontConfig() {
-  ReaderFontConfig config;
-  config.identity.mode = ReaderFontIdentity::MODE_CPFONT;
-  config.identity.provider = ReaderFontIdentity::PROVIDER_CPFONT;
-  config.identity.legacyFontId = SETTINGS.getReaderFontId(SETTINGS.fontSize);
-  return config;
-}
-
 ReaderFontConfig makeTtfConfig(const char* path, const uint8_t pixelSize, const uint32_t fileSize,
                                const ReaderFontConfig::Source source) {
   ReaderFontConfig config;
@@ -71,12 +63,18 @@ uint32_t computeTtfIdentityHash(const char* path, const uint8_t pixelSize, const
 }
 
 ReaderFontConfig resolveGlobal() {
-  if (SETTINGS.readerFontMode == CrossPointSettings::READER_FONT_TTF && SETTINGS.readerTtfPath[0] != '\0') {
+  if (SETTINGS.readerTtfPath[0] != '\0') {
     const uint32_t fileSize =
         SETTINGS.readerTtfFileSize != 0 ? SETTINGS.readerTtfFileSize : fileSizeForPath(SETTINGS.readerTtfPath);
     return makeTtfConfig(SETTINGS.readerTtfPath, SETTINGS.readerTtfSizePx, fileSize, ReaderFontConfig::Source::Global);
   }
-  return makeCpfontConfig();
+  ReaderFontConfig config;
+  config.source = ReaderFontConfig::Source::Global;
+  config.identity.mode = ReaderFontIdentity::MODE_TTF;
+  config.identity.provider = ReaderFontIdentity::PROVIDER_TTF_OPENFONTRENDER;
+  config.identity.pixelSize = std::max<uint8_t>(12, std::min<uint8_t>(SETTINGS.readerTtfSizePx, 72));
+  config.identity.providerVersion = TTF_PROVIDER_VERSION;
+  return config;
 }
 
 ReaderFontConfig resolveForEpub(const Epub* epub) {

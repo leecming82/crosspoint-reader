@@ -104,7 +104,7 @@ class CrossPointSettings {
   // Default: Up = Previous, Down = Next
   enum SIDE_BUTTON_LAYOUT { PREV_NEXT = 0, NEXT_PREV = 1, SIDE_BUTTONS_DISABLED = 2, SIDE_BUTTON_LAYOUT_COUNT };
 
-  // Font family options (built-in fonts only; SD card fonts use sdFontFamilyName)
+  // Built-in bitmap font family used by system/UI fallback text.
   enum FONT_FAMILY { NOTOSERIF = 0, FONT_FAMILY_COUNT };
   static constexpr uint8_t LEGACY_NOTOSANS = 1;
   static constexpr uint8_t LEGACY_OPENDYSLEXIC = 2;
@@ -226,7 +226,7 @@ class CrossPointSettings {
   uint8_t fontFamily = NOTOSERIF;
   uint8_t fontSize = MEDIUM;
   uint8_t japaneseFontSize = MEDIUM;
-  uint8_t readerFontMode = READER_FONT_CPFONT;
+  uint8_t readerFontMode = READER_FONT_TTF;
   char readerTtfPath[128] = "";
   uint8_t readerTtfSizePx = 36;
   uint32_t readerTtfFileSize = 0;
@@ -259,7 +259,7 @@ class CrossPointSettings {
   uint8_t embeddedStyle = 1;
   // Focus Reading - emphasizes the first part of words with bold
   uint8_t focusReadingEnabled = 0;
-  // SD card font family name (empty = use built-in fontFamily)
+  // Legacy setting retained for settings-file layout compatibility. Reader fonts are TTF-only.
   char sdFontFamilyName[32] = "";
   // Show hidden files/directories (starting with '.') in the file browser (0 = hidden, 1 = show)
   uint8_t showHiddenFiles = 0;
@@ -288,8 +288,7 @@ class CrossPointSettings {
   static constexpr uint8_t SLEEP_TIMEOUT_NEVER_MINUTES = 31;
   static constexpr uint8_t MAX_SLEEP_TIMEOUT_MINUTES = SLEEP_TIMEOUT_NEVER_MINUTES;
 
-  // Callback to resolve SD card font IDs. Set by SdCardFontSystem::begin().
-  // Returns font ID or 0 if not found.
+  // Legacy resolver fields retained for settings/runtime ABI stability. No M4 reader path sets them.
   using SdFontIdResolver = int (*)(void* ctx, const char* familyName, uint8_t fontSize);
   SdFontIdResolver sdFontIdResolver = nullptr;
   void* sdFontResolverCtx = nullptr;

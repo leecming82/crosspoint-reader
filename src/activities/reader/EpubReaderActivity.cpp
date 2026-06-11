@@ -42,7 +42,6 @@
 #include "ReaderFontProvider.h"
 #include "ReaderUtils.h"
 #include "RecentBooksStore.h"
-#include "SdCardFontSystem.h"
 #ifdef CROSSPOINT_BOARD_MURPHY_M4
 #include "TtfReaderMetrics.h"
 #include "activities/settings/FontSelectionActivity.h"
@@ -379,7 +378,6 @@ void EpubReaderActivity::onEnter() {
   resolveReadingProfile();
   epub->setupCacheDir();
   reloadEpubFontOverride();
-  sdFontSystem.ensureLoaded(renderer, effectiveReaderFontSize());
   // Configure screen orientation based on the explicit reader orientation setting.
   // NOTE: This affects layout math and must be applied before any render calls.
   ReaderUtils::applyOrientation(renderer, SETTINGS.orientation);
@@ -1161,7 +1159,6 @@ void EpubReaderActivity::applyWritingModePreference(const uint8_t writingModePre
 
     SETTINGS.writingModePreference = writingModePreference;
     resolveReadingProfile();
-    sdFontSystem.ensureLoaded(renderer, effectiveReaderFontSize());
     SETTINGS.saveToFile();
 
     section.reset();
@@ -1805,12 +1802,12 @@ int EpubReaderActivity::effectiveReaderRenderFontId() const {
     if (ensureEffectiveTtfLoaded()) {
       ReaderFontProvider* provider = ReaderFontProviders::providerForConfig(readerFontConfig);
       renderer.setReaderFontMetricsProvider(provider);
-      return provider ? provider->fontId() : SETTINGS.getReaderFontId(effectiveReaderFontSize());
+      return provider ? provider->fontId() : UI_12_FONT_ID;
     }
-    LOG_ERR("ERS", "TTF reader render unavailable; using cpfont render for this pass");
+    LOG_ERR("ERS", "TTF reader render unavailable; using built-in font for this pass");
   }
 #endif
-  return SETTINGS.getReaderFontId(effectiveReaderFontSize());
+  return UI_12_FONT_ID;
 }
 
 int EpubReaderActivity::effectiveReaderFontId() const { return effectiveReaderRenderFontId(); }
@@ -1823,7 +1820,7 @@ int EpubReaderActivity::effectiveReaderLayoutFontId() const {
       renderer.setReaderFontMetricsProvider(provider);
       return provider ? provider->fontId() : effectiveReaderRenderFontId();
     }
-    LOG_ERR("ERS", "TTF reader metrics unavailable; using cpfont layout for this pass");
+    LOG_ERR("ERS", "TTF reader metrics unavailable; using built-in font layout for this pass");
   }
 #endif
   return effectiveReaderRenderFontId();

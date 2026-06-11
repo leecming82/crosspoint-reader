@@ -10,8 +10,8 @@ struct ReaderFontIdentity {
   static constexpr uint8_t PROVIDER_TTF_OPENFONTRENDER = 1;
 
   uint16_t version = CURRENT_VERSION;
-  uint8_t mode = MODE_CPFONT;
-  uint8_t provider = PROVIDER_CPFONT;
+  uint8_t mode = MODE_TTF;
+  uint8_t provider = PROVIDER_TTF_OPENFONTRENDER;
   uint8_t pixelSize = 0;
   uint8_t reserved = 0;
   uint32_t fileSize = 0;
