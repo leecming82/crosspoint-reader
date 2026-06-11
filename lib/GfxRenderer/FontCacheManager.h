@@ -9,11 +9,19 @@
 class FontDecompressor;
 class SdCardFont;
 
+class ReaderFontPrewarmProvider {
+ public:
+  virtual ~ReaderFontPrewarmProvider() = default;
+  virtual bool handlesFontId(int fontId) const = 0;
+  virtual void prewarmText(int fontId, const char* utf8Text, uint8_t styleMask) const = 0;
+};
+
 class FontCacheManager {
  public:
   FontCacheManager(const std::map<int, EpdFontFamily>& fontMap, const std::map<int, SdCardFont*>& sdCardFonts);
 
   void setFontDecompressor(FontDecompressor* d);
+  void setReaderFontPrewarmProvider(ReaderFontPrewarmProvider* provider);
 
   void clearCache();
   void clearPersistentCache();
@@ -49,6 +57,7 @@ class FontCacheManager {
   const std::map<int, EpdFontFamily>& fontMap_;
   const std::map<int, SdCardFont*>& sdCardFonts_;
   FontDecompressor* fontDecompressor_ = nullptr;
+  ReaderFontPrewarmProvider* readerFontPrewarmProvider_ = nullptr;
 
   enum class ScanMode : uint8_t { None, Scanning };
   struct ScanFontRecord {

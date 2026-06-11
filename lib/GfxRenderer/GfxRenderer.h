@@ -3,6 +3,8 @@
 #include <EpdFontFamily.h>
 #include <HalDisplay.h>
 
+#include "FontCacheManager.h"
+
 namespace BidiUtils {
 // Paragraph base direction for the Unicode BiDi algorithm (UAX#9).
 // AUTO: scan text for first strong directional character (P2/P3 rules)
@@ -11,14 +13,14 @@ namespace BidiUtils {
 enum class BidiBaseDir : signed char { AUTO = -1, LTR = 0, RTL = 1 };
 }  // namespace BidiUtils
 
-class FontCacheManager;
 class GfxRenderer;
 class SdCardFont;
 
-class ReaderFontMetricsProvider {
+class ReaderFontMetricsProvider : public ReaderFontPrewarmProvider {
  public:
   virtual ~ReaderFontMetricsProvider() = default;
   virtual bool handlesFontId(int fontId) const = 0;
+  virtual void prewarmText(int fontId, const char* utf8Text, uint8_t styleMask) const = 0;
   virtual int getSpaceWidth(int fontId, EpdFontFamily::Style style) const = 0;
   virtual int getSpaceAdvance(int fontId, uint32_t leftCp, uint32_t rightCp, EpdFontFamily::Style style) const = 0;
   virtual int getKerning(int fontId, uint32_t leftCp, uint32_t rightCp, EpdFontFamily::Style style) const = 0;
@@ -130,9 +132,15 @@ class GfxRenderer {
     fontMap.erase(fontId);
     sdCardFonts_.erase(fontId);
   }
-  void setFontCacheManager(FontCacheManager* m) { fontCacheManager_ = m; }
+  void setFontCacheManager(FontCacheManager* m) {
+    fontCacheManager_ = m;
+    if (fontCacheManager_) fontCacheManager_->setReaderFontPrewarmProvider(readerFontMetricsProvider_);
+  }
   FontCacheManager* getFontCacheManager() const { return fontCacheManager_; }
-  void setReaderFontMetricsProvider(ReaderFontMetricsProvider* provider) const { readerFontMetricsProvider_ = provider; }
+  void setReaderFontMetricsProvider(ReaderFontMetricsProvider* provider) const {
+    readerFontMetricsProvider_ = provider;
+    if (fontCacheManager_) fontCacheManager_->setReaderFontPrewarmProvider(provider);
+  }
   bool isFontCacheScanning() const;
   const std::map<int, EpdFontFamily>& getFontMap() const { return fontMap; }
   void registerSdCardFont(int fontId, SdCardFont* font) { sdCardFonts_[fontId] = font; }

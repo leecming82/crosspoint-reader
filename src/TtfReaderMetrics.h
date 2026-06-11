@@ -35,6 +35,7 @@ class TtfReaderMetrics final : public ReaderFontMetricsProvider {
 #endif
 
   bool handlesFontId(int fontId) const override;
+  void prewarmText(int fontId, const char* utf8Text, uint8_t styleMask) const override;
   int getSpaceWidth(int fontId, EpdFontFamily::Style style) const override;
   int getSpaceAdvance(int fontId, uint32_t leftCp, uint32_t rightCp, EpdFontFamily::Style style) const override;
   int getKerning(int fontId, uint32_t leftCp, uint32_t rightCp, EpdFontFamily::Style style) const override;

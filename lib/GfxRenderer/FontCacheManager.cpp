@@ -10,6 +10,10 @@ FontCacheManager::FontCacheManager(const std::map<int, EpdFontFamily>& fontMap,
 
 void FontCacheManager::setFontDecompressor(FontDecompressor* d) { fontDecompressor_ = d; }
 
+void FontCacheManager::setReaderFontPrewarmProvider(ReaderFontPrewarmProvider* provider) {
+  readerFontPrewarmProvider_ = provider;
+}
+
 void FontCacheManager::clearCache() {
   if (fontDecompressor_) fontDecompressor_->clearCache();
   for (auto& [id, font] : sdCardFonts_) {
@@ -25,6 +29,11 @@ void FontCacheManager::clearPersistentCache() {
 }
 
 void FontCacheManager::prewarmCache(int fontId, const char* utf8Text, uint8_t styleMask) {
+  if (readerFontPrewarmProvider_ && readerFontPrewarmProvider_->handlesFontId(fontId)) {
+    readerFontPrewarmProvider_->prewarmText(fontId, utf8Text, styleMask);
+    return;
+  }
+
   // SD card font prewarm path: prewarm all requested styles in one call
   auto it = sdCardFonts_.find(fontId);
   if (it != sdCardFonts_.end()) {

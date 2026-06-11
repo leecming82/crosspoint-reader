@@ -40,6 +40,7 @@ constexpr size_t TABLE_CACHE_SAFETY_MARGIN = 512 * 1024;
 constexpr uint16_t METRICS_PIXEL_SIZE = 24;
 constexpr size_t RASTER_SCRATCH_BYTES = 64 * 1024;
 constexpr size_t GLYF_SLICE_SAFETY_MARGIN = 512 * 1024;
+constexpr uint32_t OFR_TIMING_DELAY_MS = 20000;
 
 struct ProbeStatus {
   bool displayInitialized = false;
@@ -134,30 +135,38 @@ struct TtfSelection {
 };
 
 #ifdef CROSSPOINT_TTF_PROBE_OPENFONTRENDER
+TtfSelection deferredOpenFontRenderSelection;
+bool deferredOpenFontRenderProbePending = false;
+bool deferredOpenFontRenderProbeDone = false;
+#endif
+
+#ifdef CROSSPOINT_TTF_PROBE_OPENFONTRENDER
 struct OpenFontRenderFileHandle {
   HalFile file;
 };
 
 std::list<OpenFontRenderFileHandle> ofrFiles;
 
-struct OpenFontRenderProbeCanvas {
-  uint8_t* pixels = nullptr;
-  int width = 0;
-  int height = 0;
-  int minX = INT_MAX;
-  int minY = INT_MAX;
-  int maxX = INT_MIN;
-  int maxY = INT_MIN;
+struct CoverageBuckets {
+  uint32_t white = 0;
+  uint32_t light = 0;
+  uint32_t dark = 0;
+  uint32_t black = 0;
 
-  void putPixel(const int x, const int y, const uint8_t coverage) {
-    if (!pixels || x < 0 || y < 0 || x >= width || y >= height || coverage == 0) return;
-    uint8_t& pixel = pixels[static_cast<size_t>(y) * width + x];
-    if (coverage > pixel) pixel = coverage;
-    minX = std::min(minX, x);
-    minY = std::min(minY, y);
-    maxX = std::max(maxX, x);
-    maxY = std::max(maxY, y);
+  void addQuantized(const uint8_t coverage) {
+    if (coverage == 0) {
+      ++white;
+    } else if (coverage == 85) {
+      ++light;
+    } else if (coverage == 170) {
+      ++dark;
+    } else {
+      ++black;
+    }
   }
+
+  uint32_t nonWhite() const { return light + dark + black; }
+  uint32_t gray() const { return light + dark; }
 };
 #endif
 
@@ -178,19 +187,11 @@ uint32_t fnv1aUpdate(uint32_t hash, const uint8_t* data, const size_t len) {
 }
 
 #ifdef CROSSPOINT_TTF_PROBE_OPENFONTRENDER
-uint8_t rgb565ToCoverage(const uint16_t color) {
-  const uint16_t r5 = (color >> 11) & 0x1F;
-  const uint16_t g6 = (color >> 5) & 0x3F;
-  const uint16_t b5 = color & 0x1F;
-  const uint16_t r = (r5 * 255 + 15) / 31;
-  const uint16_t g = (g6 * 255 + 31) / 63;
-  const uint16_t b = (b5 * 255 + 15) / 31;
-  const uint16_t luma = static_cast<uint16_t>((r * 77 + g * 150 + b * 29) >> 8);
-  return static_cast<uint8_t>(255 - std::min<uint16_t>(255, luma));
-}
-
 uint8_t quantizeCoverage(const uint8_t coverage) {
-  return static_cast<uint8_t>(std::min<uint8_t>(3, (coverage + 42) / 85) * 85);
+  if (coverage < 64) return 0;
+  if (coverage < 128) return 85;
+  if (coverage < 192) return 170;
+  return 255;
 }
 #endif
 
@@ -622,58 +623,79 @@ void runStbReferenceForSmallestTtf(const TtfSelection& selection) {
 }
 
 #ifdef CROSSPOINT_TTF_PROBE_OPENFONTRENDER
-void logOpenFontRenderGlyph(OpenFontRender& ofr, const uint32_t cp, const char* label) {
+void logOpenFontRenderPrimitiveGlyph(OpenFontRender& ofr, const uint32_t cp, const char* label, const char* passLabel) {
   ++probeStatus.sdTtfOpenFontRenderQueries;
-  constexpr int CANVAS_WIDTH = 192;
-  constexpr int CANVAS_HEIGHT = 192;
-  uint8_t* canvasRaw =
-      static_cast<uint8_t*>(heap_caps_calloc(CANVAS_WIDTH * CANVAS_HEIGHT, 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-  if (!canvasRaw) {
-    LOG_ERR("TTFP", "raster_ofr %s allocation failed", label);
-    return;
-  }
-  std::unique_ptr<uint8_t, PsramFreeDeleter> canvasHolder(canvasRaw);
-  OpenFontRenderProbeCanvas canvas{canvasRaw, CANVAS_WIDTH, CANVAS_HEIGHT};
-
-  ofr.set_drawPixel([&canvas](int32_t x, int32_t y, uint16_t color) {
-    canvas.putPixel(x, y, quantizeCoverage(rgb565ToCoverage(color)));
-  });
-  ofr.set_drawFastHLine([&canvas](int32_t x, int32_t y, int32_t w, uint16_t color) {
-    const uint8_t coverage = quantizeCoverage(rgb565ToCoverage(color));
-    for (int32_t i = 0; i < w; ++i) canvas.putPixel(x + i, y, coverage);
-  });
-  ofr.set_startWrite([]() {});
-  ofr.set_endWrite([]() {});
-
-  std::string text;
-  utf8AppendCodepoint(cp, text);
-  const uint32_t startUs = micros();
-  const uint16_t chars = ofr.drawString(text.c_str(), 48, 0, 0x0000, 0xFFFF, Layout::Horizontal);
-  const uint32_t elapsedUs = micros() - startUs;
-
-  if (chars == 0 || canvas.minX > canvas.maxX || canvas.minY > canvas.maxY) {
-    LOG_INF("TTFP", "raster_ofr %s cp=U+%04lX ok=0 chars=%u us=%lu", label, static_cast<unsigned long>(cp),
-            chars, static_cast<unsigned long>(elapsedUs));
+  const uint32_t totalStartUs = micros();
+  OpenFontRender::GlyphBitmap glyph;
+  const uint32_t renderStartUs = micros();
+  const FT_Error error = ofr.renderGlyphBitmap(cp, glyph);
+  const uint32_t renderUs = micros() - renderStartUs;
+  if (error || !glyph.buffer || glyph.width <= 0 || glyph.rows <= 0) {
+    const uint32_t totalUs = micros() - totalStartUs;
+    LOG_INF("TTFP",
+            "raster_ofr_primitive pass=%s %s cp=U+%04lX ok=0 error=%d glyph=%lu render_us=%lu scan_us=0 "
+            "copy_us=0 total_us=%lu",
+            passLabel, label, static_cast<unsigned long>(cp), static_cast<int>(error),
+            static_cast<unsigned long>(glyph.glyph_index), static_cast<unsigned long>(renderUs),
+            static_cast<unsigned long>(totalUs));
     return;
   }
 
-  const int width = canvas.maxX - canvas.minX + 1;
-  const int height = canvas.maxY - canvas.minY + 1;
+  const int pitch = std::abs(glyph.pitch);
   uint32_t ink = 0;
   uint32_t weak = 0;
-  for (int y = canvas.minY; y <= canvas.maxY; ++y) {
-    for (int x = canvas.minX; x <= canvas.maxX; ++x) {
-      const uint8_t coverage = canvas.pixels[static_cast<size_t>(y) * canvas.width + x];
+  CoverageBuckets buckets;
+  const uint32_t scanStartUs = micros();
+  for (int y = 0; y < glyph.rows; ++y) {
+    const uint8_t* row = glyph.buffer + static_cast<size_t>(y) * pitch;
+    for (int x = 0; x < glyph.width; ++x) {
+      const uint8_t coverage = row[x];
       if (coverage != 0) ++ink;
       if (coverage > 0 && coverage < 255) ++weak;
+      buckets.addQuantized(quantizeCoverage(coverage));
     }
   }
+  const uint32_t scanUs = micros() - scanStartUs;
+
+  const size_t bitmapBytes = static_cast<size_t>(glyph.width) * glyph.rows;
+  const uint32_t copyStartUs = micros();
+  uint8_t* bitmapRaw = static_cast<uint8_t*>(heap_caps_malloc(bitmapBytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+  std::unique_ptr<uint8_t, PsramFreeDeleter> bitmapHolder(bitmapRaw);
+  if (bitmapRaw) {
+    for (int y = 0; y < glyph.rows; ++y) {
+      const uint8_t* row = glyph.buffer + static_cast<size_t>(y) * pitch;
+      uint8_t* dest = bitmapRaw + static_cast<size_t>(y) * glyph.width;
+      for (int x = 0; x < glyph.width; ++x) {
+        dest[x] = quantizeCoverage(row[x]);
+      }
+    }
+  }
+  const uint32_t copyUs = micros() - copyStartUs;
+
   ++probeStatus.sdTtfOpenFontRenderHits;
-  probeStatus.sdTtfOpenFontRenderBytes += static_cast<uint32_t>(width * height);
+  probeStatus.sdTtfOpenFontRenderBytes += static_cast<uint32_t>(bitmapBytes);
   probeStatus.sdTtfOpenFontRenderOk = true;
-  LOG_INF("TTFP", "raster_ofr %s cp=U+%04lX ok=1 chars=%u %dx%d bytes=%lu ink=%lu weak=%lu us=%lu", label,
-          static_cast<unsigned long>(cp), chars, width, height, static_cast<unsigned long>(width * height),
-          static_cast<unsigned long>(ink), static_cast<unsigned long>(weak), static_cast<unsigned long>(elapsedUs));
+  const uint32_t totalUs = micros() - totalStartUs;
+  LOG_INF("TTFP",
+          "raster_ofr_primitive pass=%s %s cp=U+%04lX ok=1 glyph=%lu %dx%d pitch=%d mode=%d bytes=%lu "
+          "left=%d top=%d adv=%d ink=%lu weak=%lu q_white=%lu q_light=%lu q_dark=%lu q_black=%lu "
+          "bw_pixels=%lu gray_pixels=%lu render_us=%lu scan_us=%lu copy_us=%lu total_us=%lu copy_ok=%d",
+          passLabel, label, static_cast<unsigned long>(cp), static_cast<unsigned long>(glyph.glyph_index), glyph.width,
+          glyph.rows, glyph.pitch, glyph.pixel_mode, static_cast<unsigned long>(bitmapBytes), glyph.left, glyph.top,
+          glyph.advance_x, static_cast<unsigned long>(ink), static_cast<unsigned long>(weak),
+          static_cast<unsigned long>(buckets.white), static_cast<unsigned long>(buckets.light),
+          static_cast<unsigned long>(buckets.dark), static_cast<unsigned long>(buckets.black),
+          static_cast<unsigned long>(buckets.nonWhite()), static_cast<unsigned long>(buckets.gray()),
+          static_cast<unsigned long>(renderUs), static_cast<unsigned long>(scanUs), static_cast<unsigned long>(copyUs),
+          static_cast<unsigned long>(totalUs), bitmapRaw ? 1 : 0);
+}
+
+void runOpenFontRenderPrimitiveGlyphSet(OpenFontRender& ofr, const char* passLabel) {
+  logOpenFontRenderPrimitiveGlyph(ofr, 0x0041, "ascii_A", passLabel);
+  logOpenFontRenderPrimitiveGlyph(ofr, 0x3042, "kana_a", passLabel);
+  logOpenFontRenderPrimitiveGlyph(ofr, 0x65E5, "kanji_day", passLabel);
+  logOpenFontRenderPrimitiveGlyph(ofr, 0x3001, "fullwidth_punct", passLabel);
+  logOpenFontRenderPrimitiveGlyph(ofr, 0x10FFFF, "missing_probe", passLabel);
 }
 
 void runOpenFontRenderProbe(const TtfSelection& selection) {
@@ -701,12 +723,10 @@ void runOpenFontRenderProbe(const TtfSelection& selection) {
     logMemory("after OpenFontRender probe load failure");
     return;
   }
-  LOG_INF("TTFP", "OpenFontRender ready px=%u load_us=%lu", METRICS_PIXEL_SIZE, static_cast<unsigned long>(loadUs));
-  logOpenFontRenderGlyph(ofr, 0x0041, "ascii_A");
-  logOpenFontRenderGlyph(ofr, 0x3042, "kana_a");
-  logOpenFontRenderGlyph(ofr, 0x65E5, "kanji_day");
-  logOpenFontRenderGlyph(ofr, 0x3001, "fullwidth_punct");
-  logOpenFontRenderGlyph(ofr, 0x10FFFF, "missing_probe");
+  LOG_INF("TTFP", "OpenFontRender ready mode=primitive px=%u load_us=%lu", METRICS_PIXEL_SIZE,
+          static_cast<unsigned long>(loadUs));
+  runOpenFontRenderPrimitiveGlyphSet(ofr, "cold");
+  runOpenFontRenderPrimitiveGlyphSet(ofr, "repeat");
   ofr.unloadFont();
   ofrFiles.clear();
   logMemory("after OpenFontRender probe");
@@ -773,7 +793,12 @@ void scanAndProbeSdTtfReadOnly() {
             static_cast<unsigned long long>(smallest.size));
   }
 #ifdef CROSSPOINT_TTF_PROBE_OPENFONTRENDER
-  runOpenFontRenderProbe(largestStatic.path.empty() ? largest : largestStatic);
+  deferredOpenFontRenderSelection = largestStatic.path.empty() ? largest : largestStatic;
+  deferredOpenFontRenderProbePending = !deferredOpenFontRenderSelection.path.empty();
+  deferredOpenFontRenderProbeDone = false;
+  LOG_INF("TTFP", "OpenFontRender timing probe deferred delay_ms=%lu path=%s size=%llu",
+          static_cast<unsigned long>(OFR_TIMING_DELAY_MS), deferredOpenFontRenderSelection.path.c_str(),
+          static_cast<unsigned long long>(deferredOpenFontRenderSelection.size));
 #endif
 
   std::unique_ptr<uint8_t, PsramFreeDeleter> directoryData;
@@ -968,6 +993,16 @@ void loop() {
   static uint32_t lastLog = 0;
   static uint32_t lastStatus = 0;
   const uint32_t now = millis();
+#ifdef CROSSPOINT_TTF_PROBE_OPENFONTRENDER
+  if (deferredOpenFontRenderProbePending && !deferredOpenFontRenderProbeDone && now >= OFR_TIMING_DELAY_MS) {
+    deferredOpenFontRenderProbeDone = true;
+    deferredOpenFontRenderProbePending = false;
+    LOG_INF("TTFP", "OpenFontRender timing probe starting after delay_ms=%lu",
+            static_cast<unsigned long>(OFR_TIMING_DELAY_MS));
+    runOpenFontRenderProbe(deferredOpenFontRenderSelection);
+    logProbeStatus("after ofr timing");
+  }
+#endif
   if (lastLog == 0 || now - lastLog >= LOG_INTERVAL_MS) {
     lastLog = now;
     logMemory("heartbeat");

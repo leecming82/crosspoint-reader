@@ -322,6 +322,17 @@ The likely practical compromise is lazy runtime caching. Rasterize glyphs on fir
 
    Exit criteria: TTF render does not starve internal SRAM, page flips remain acceptable after cache warmup, and cache eviction behavior is bounded.
 
+   Progress:
+
+   - Page render logs now include render-stage timing plus heap, min-heap, max-allocation, and PSRAM before/after values.
+   - TTF render stats now report glyph-cache size/bytes, hit/miss counts, raster success/failure counts, missing glyphs, cache resets, and average raster time.
+   - Adapted the existing scan/prewarm pass so selected TTF reader fonts can pre-rasterize page glyphs through `TtfReaderMetrics::prewarmText()` before the visible draw. This keeps the TTF glyph cache warm across page flips instead of clearing it like the cpfont decompressor cache.
+   - Added `TTFR prewarm` telemetry with scanned/unique glyph counts, cache growth, hit/miss deltas, raster deltas, raster time, and elapsed time.
+   - Added probe-firmware OpenFontRender timing breakdown for cold and repeated glyph rasterization. `raster_ofr` now reports allocation/clear time, callback setup time, `drawString` time, scan time, copy/cache-simulation time, and total time.
+   - Added an experimental OpenFontRender patch/probe path for `renderGlyphBitmap()`, a lower-level glyph primitive that bypasses UTF-8 string layout, draw callbacks, scratch canvas, and crop scanning. Probe logs use `raster_ofr_primitive` and compare cold/repeat timing against `drawString()`.
+   - Promoted the OpenFontRender `renderGlyphBitmap()` primitive into the full M4 reader TTF raster path. The reader still uses `TtfRuntimeFont` for layout and font identity, but glyph raster now bypasses `drawString()`, draw callbacks, scratch canvas allocation, and crop scanning.
+   - Next validation: flash `murphy_m4`, flip through a Japanese section, and compare `TTFR prewarm ... raster_delta=...` against the following `Page render ... bw_render=...` time. If visible render remains slow after cache warmup, move on to adjacent-page prewarm and/or a persistent glyph sidecar.
+
 - [ ] 12. Japanese reader-adjacent validation
 
    Validate Japanese-specific workflows that are close to reader font rendering but not covered by plain page-body rendering.

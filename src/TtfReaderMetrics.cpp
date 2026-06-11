@@ -30,32 +30,19 @@ constexpr uint8_t TTF_RASTER_SUPERSAMPLE = 2;
 constexpr uint32_t FNV_OFFSET = 2166136261u;
 constexpr uint32_t FNV_PRIME = 16777619u;
 
+EpdFontFamily::Style firstStyleFromMask(const uint8_t styleMask) {
+  for (uint8_t i = 0; i < 4; ++i) {
+    if (styleMask & (1 << i)) return static_cast<EpdFontFamily::Style>(i);
+  }
+  return EpdFontFamily::REGULAR;
+}
+
 #ifdef CROSSPOINT_TTF_USE_OPENFONTRENDER
 struct OpenFontRenderFileHandle {
   HalFile file;
 };
 
 std::list<OpenFontRenderFileHandle> ofrFiles;
-
-struct OpenFontRenderCanvas {
-  uint8_t* pixels = nullptr;
-  int width = 0;
-  int height = 0;
-  int minX = INT_MAX;
-  int minY = INT_MAX;
-  int maxX = INT_MIN;
-  int maxY = INT_MIN;
-
-  void putPixel(const int x, const int y, const uint8_t coverage) {
-    if (!pixels || x < 0 || y < 0 || x >= width || y >= height || coverage == 0) return;
-    uint8_t& pixel = pixels[static_cast<size_t>(y) * width + x];
-    if (coverage > pixel) pixel = coverage;
-    minX = std::min(minX, x);
-    minY = std::min(minY, y);
-    maxX = std::max(maxX, x);
-    maxY = std::max(maxY, y);
-  }
-};
 #endif
 
 uint16_t readU16BE(const uint8_t* p) { return (static_cast<uint16_t>(p[0]) << 8) | p[1]; }
@@ -297,26 +284,21 @@ uint8_t coverageToPackedGrayValue(const uint8_t coverage) {
 
 bool shouldDrawCoveragePixel(const GfxRenderer::RenderMode renderMode, const uint8_t coverage) {
   const uint8_t val = coverageToPackedGrayValue(coverage);
-  if (renderMode == GfxRenderer::BW) return val < 3;
+  if (renderMode == GfxRenderer::BW) {
+    return val < 3;
+  }
   if (renderMode == GfxRenderer::GRAYSCALE_MSB) return val == 1 || val == 2;
   if (renderMode == GfxRenderer::GRAYSCALE_LSB) return val == 1;
   return false;
 }
 
 #ifdef CROSSPOINT_TTF_USE_OPENFONTRENDER
-uint8_t rgb565ToCoverage(const uint16_t color) {
-  const uint16_t r5 = (color >> 11) & 0x1F;
-  const uint16_t g6 = (color >> 5) & 0x3F;
-  const uint16_t b5 = color & 0x1F;
-  const uint16_t r = (r5 * 255 + 15) / 31;
-  const uint16_t g = (g6 * 255 + 31) / 63;
-  const uint16_t b = (b5 * 255 + 15) / 31;
-  const uint16_t luma = static_cast<uint16_t>((r * 77 + g * 150 + b * 29) >> 8);
-  return static_cast<uint8_t>(255 - std::min<uint16_t>(255, luma));
-}
-
 uint8_t quantizeCoverage(const uint8_t coverage) {
-  return static_cast<uint8_t>(std::min<uint8_t>(3, (coverage + 42) / 85) * 85);
+  // Match cpfont conversion buckets: white, light gray, dark gray, black.
+  if (coverage < 64) return 0;
+  if (coverage < 128) return 85;
+  if (coverage < 192) return 170;
+  return 255;
 }
 #endif
 
@@ -606,6 +588,55 @@ void TtfReaderMetrics::probeRasterText(const char* text) const {
 }
 #endif
 
+void TtfReaderMetrics::prewarmText(const int fontId, const char* utf8Text, const uint8_t styleMask) const {
+  if (!handlesFontId(fontId) || !utf8Text || *utf8Text == '\0') return;
+
+  const EpdFontFamily::Style style = firstStyleFromMask(styleMask);
+  std::vector<uint32_t> uniqueCodepoints;
+  uniqueCodepoints.reserve(128);
+  uint32_t scannedGlyphs = 0;
+  const char* cursor = utf8Text;
+  while (uint32_t cp = utf8NextCodepoint(reinterpret_cast<const uint8_t**>(&cursor))) {
+    if (utf8IsCombiningMark(cp)) continue;
+    ++scannedGlyphs;
+    if (std::find(uniqueCodepoints.begin(), uniqueCodepoints.end(), cp) == uniqueCodepoints.end()) {
+      uniqueCodepoints.push_back(cp);
+    }
+  }
+  if (uniqueCodepoints.empty()) return;
+
+  const uint32_t startMs = millis();
+  const size_t cacheStart = glyphCache_.size();
+  const size_t cacheBytesStart = glyphCacheBytes_;
+  const uint32_t hitsStart = cacheHits_;
+  const uint32_t missesStart = cacheMisses_;
+  const uint32_t rasterOkStart = rasterOk_;
+  const uint32_t rasterFailedStart = rasterFailed_;
+  const uint32_t missingStart = missingGlyphs_;
+  const uint64_t rasterUsStart = rasterTimeUs_;
+
+  for (const uint32_t cp : uniqueCodepoints) {
+    glyphForCodepoint(cp, style);
+  }
+
+  const uint32_t rasterDelta = positiveDelta(rasterOk_, rasterOkStart);
+  const uint64_t rasterUsDelta = positiveDelta(rasterTimeUs_, rasterUsStart);
+  const uint32_t avgRasterUs = rasterDelta > 0 ? static_cast<uint32_t>(rasterUsDelta / rasterDelta) : 0;
+  LOG_INF("TTFR",
+          "prewarm font_id=%d scanned=%lu unique=%u cache=%u->%u bytes=%u->%u hits_delta=%lu "
+          "misses_delta=%lu raster_delta=%lu raster_fail_delta=%lu missing_delta=%lu raster_us=%llu "
+          "avg_raster_us=%lu elapsed_ms=%lu",
+          fontId_, static_cast<unsigned long>(scannedGlyphs), static_cast<unsigned>(uniqueCodepoints.size()),
+          static_cast<unsigned>(cacheStart), static_cast<unsigned>(glyphCache_.size()),
+          static_cast<unsigned>(cacheBytesStart), static_cast<unsigned>(glyphCacheBytes_),
+          static_cast<unsigned long>(positiveDelta(cacheHits_, hitsStart)),
+          static_cast<unsigned long>(positiveDelta(cacheMisses_, missesStart)), static_cast<unsigned long>(rasterDelta),
+          static_cast<unsigned long>(positiveDelta(rasterFailed_, rasterFailedStart)),
+          static_cast<unsigned long>(positiveDelta(missingGlyphs_, missingStart)),
+          static_cast<unsigned long long>(rasterUsDelta), static_cast<unsigned long>(avgRasterUs),
+          static_cast<unsigned long>(millis() - startMs));
+}
+
 int TtfReaderMetrics::advanceForCodepoint(const uint32_t cp, const EpdFontFamily::Style style) const {
   if (!loaded_ || utf8IsCombiningMark(cp)) return 0;
   const auto metrics = font_.metricsForCodepoint(cp);
@@ -707,57 +738,27 @@ const TtfReaderMetrics::CachedGlyph* TtfReaderMetrics::rasterizeAndCacheGlyphWit
     return &glyphCache_.back();
   }
 
-  const int canvasWidth = std::max<int>(pixelSize_ * 4, cached.advancePx + pixelSize_ * 3);
-  const int canvasHeight = std::max<int>(lineHeightPx() + pixelSize_ * 2, pixelSize_ * 4);
-  const size_t canvasBytes = static_cast<size_t>(canvasWidth) * canvasHeight;
-  uint8_t* canvasRaw = static_cast<uint8_t*>(heap_caps_calloc(canvasBytes, 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-  if (!canvasRaw) {
-    ++rasterFailed_;
-    LOG_ERR("TTFR", "Failed to allocate OpenFontRender canvas cp=U+%04lX bytes=%u", static_cast<unsigned long>(cp),
-            static_cast<unsigned>(canvasBytes));
-    return nullptr;
-  }
-  PsramBuffer canvasHolder(canvasRaw);
-  OpenFontRenderCanvas canvas{canvasRaw, canvasWidth, canvasHeight};
-
-  const int originX = pixelSize_;
-  std::string text;
-  utf8AppendCodepoint(cp, text);
-
-  openFontRender_.setFontSize(pixelSize_);
-  openFontRender_.setBackgroundFillMethod(BgFillMethod::None);
-  openFontRender_.setAlignment(Align::TopLeft);
-  openFontRender_.setLayout(Layout::Horizontal);
-  openFontRender_.set_drawPixel([&canvas](int32_t x, int32_t y, uint16_t color) {
-    canvas.putPixel(x, y, quantizeCoverage(rgb565ToCoverage(color)));
-  });
-  openFontRender_.set_drawFastHLine([&canvas](int32_t x, int32_t y, int32_t w, uint16_t color) {
-    const uint8_t coverage = quantizeCoverage(rgb565ToCoverage(color));
-    for (int32_t i = 0; i < w; ++i) canvas.putPixel(x + i, y, coverage);
-  });
-  openFontRender_.set_startWrite([]() {});
-  openFontRender_.set_endWrite([]() {});
-
+  OpenFontRender::GlyphBitmap glyph;
   const uint32_t rasterStartUs = micros();
-  const uint16_t chars = openFontRender_.drawString(text.c_str(), originX, 0, 0x0000, 0xFFFF, Layout::Horizontal);
+  const FT_Error error = openFontRender_.renderGlyphBitmap(cp, glyph);
   rasterTimeUs_ += micros() - rasterStartUs;
-  if (chars == 0 || canvas.minX > canvas.maxX || canvas.minY > canvas.maxY) {
+  if (error || !glyph.buffer || glyph.width <= 0 || glyph.rows <= 0) {
     ++rasterFailed_;
-    LOG_DBG("TTFR", "OpenFontRender empty glyph cp=U+%04lX glyph=%u chars=%u", static_cast<unsigned long>(cp),
-            metrics.glyphId, chars);
+    LOG_DBG("TTFR", "OpenFontRender primitive failed cp=U+%04lX glyph=%u error=%d", static_cast<unsigned long>(cp),
+            metrics.glyphId, static_cast<int>(error));
     return nullptr;
   }
 
-  cached.width = canvas.maxX - canvas.minX + 1;
-  cached.height = canvas.maxY - canvas.minY + 1;
-  const int ofrXOffset = canvas.minX - originX;
-  cached.xOffset = std::max(ofrXOffset, static_cast<int>(metrics.leftSideBearingPx));
+  cached.glyphId = static_cast<uint16_t>(glyph.glyph_index);
+  cached.width = glyph.width;
+  cached.height = glyph.rows;
+  cached.xOffset = std::max(glyph.left, static_cast<int>(metrics.leftSideBearingPx));
   if (usesTuckedHorizontalAdvance(cp)) {
     cached.xOffset = 0;
   } else if (isVerticalColonPresentationForm(cp)) {
     cached.xOffset = std::max(0, (cached.advancePx - cached.width) / 2);
   }
-  cached.yOffset = canvas.minY - ascenderPx();
+  cached.yOffset = -glyph.top;
   cached.bitmapBytes = static_cast<size_t>(cached.width) * cached.height;
   if (cached.bitmapBytes > 0) {
     if (glyphCacheBytes_ + cached.bitmapBytes > TTF_GLYPH_CACHE_MAX_BYTES) {
@@ -775,9 +776,13 @@ const TtfReaderMetrics::CachedGlyph* TtfReaderMetrics::rasterizeAndCacheGlyphWit
       return nullptr;
     }
     cached.bitmap.reset(bitmapRaw);
+    const int sourcePitch = std::abs(glyph.pitch);
     for (int y = 0; y < cached.height; ++y) {
-      memcpy(cached.bitmap.get() + static_cast<size_t>(y) * cached.width,
-             canvas.pixels + static_cast<size_t>(canvas.minY + y) * canvas.width + canvas.minX, cached.width);
+      const uint8_t* sourceRow = glyph.buffer + static_cast<size_t>(y) * sourcePitch;
+      uint8_t* destRow = cached.bitmap.get() + static_cast<size_t>(y) * cached.width;
+      for (int x = 0; x < cached.width; ++x) {
+        destRow[x] = quantizeCoverage(sourceRow[x]);
+      }
     }
     glyphCacheBytes_ += cached.bitmapBytes;
   }
@@ -910,6 +915,7 @@ void TtfReaderMetrics::drawText(const GfxRenderer& renderer, const int fontId, c
   if (!handlesFontId(fontId) || !text || *text == '\0') return;
 
   const GfxRenderer::RenderMode renderMode = renderer.getRenderMode();
+  const bool pixelState = renderMode == GfxRenderer::BW ? black : false;
   const int baselineY = y + ascenderPx();
   int cursorX = x;
   while (uint32_t cp = utf8NextCodepoint(reinterpret_cast<const uint8_t**>(&text))) {
@@ -931,7 +937,7 @@ void TtfReaderMetrics::drawText(const GfxRenderer& renderer, const int fontId, c
         const uint8_t* row = glyph->bitmap.get() + static_cast<size_t>(gy) * glyph->width;
         for (int gx = 0; gx < glyph->width; ++gx) {
           if (shouldDrawCoveragePixel(renderMode, row[gx])) {
-            renderer.drawPixel(drawX + gx, drawY + gy, black);
+            renderer.drawPixel(drawX + gx, drawY + gy, pixelState);
           }
         }
       }
@@ -950,6 +956,7 @@ void TtfReaderMetrics::drawTextRotated90CW(const GfxRenderer& renderer, const in
   if (!handlesFontId(fontId) || !text || *text == '\0') return;
 
   const GfxRenderer::RenderMode renderMode = renderer.getRenderMode();
+  const bool pixelState = renderMode == GfxRenderer::BW ? black : false;
   int cursorY = y;
   int prevAdvance = 0;
   while (uint32_t cp = utf8NextCodepoint(reinterpret_cast<const uint8_t**>(&text))) {
@@ -977,7 +984,7 @@ void TtfReaderMetrics::drawTextRotated90CW(const GfxRenderer& renderer, const in
         const int screenX = drawX0 + gy;
         for (int gx = 0; gx < glyph->width; ++gx) {
           if (shouldDrawCoveragePixel(renderMode, row[gx])) {
-            renderer.drawPixel(screenX, cursorY - glyph->xOffset - gx, black);
+            renderer.drawPixel(screenX, cursorY - glyph->xOffset - gx, pixelState);
           }
         }
       }
