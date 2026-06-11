@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <utility>
 
 #include "CrossPointSettings.h"
 #include "MappedInputManager.h"
@@ -26,6 +27,16 @@ constexpr const char* PREVIEW_LINE_PUNCT =
     "\xE3\x80\x82";
 }  // namespace
 
+ReaderFontSizeActivity::ReaderFontSizeActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,
+                                               const int initialSize, std::string previewPath,
+                                               const uint32_t previewFileSize, const bool returnSelectionOnly)
+    : Activity("ReaderFontSize", renderer, mappedInput),
+      originalSize_(initialSize),
+      value_(initialSize),
+      returnSelectionOnly_(returnSelectionOnly),
+      previewPath_(std::move(previewPath)),
+      previewFileSize_(previewFileSize) {}
+
 int ReaderFontSizeActivity::clampedValue(const int value) const {
   const int stepped = ((value + SMALL_STEP / 2) / SMALL_STEP) * SMALL_STEP;
   return std::clamp(stepped, MIN_SIZE, MAX_SIZE);
@@ -33,7 +44,9 @@ int ReaderFontSizeActivity::clampedValue(const int value) const {
 
 void ReaderFontSizeActivity::onEnter() {
   Activity::onEnter();
-  originalSize_ = SETTINGS.readerTtfSizePx;
+  if (!returnSelectionOnly_) {
+    originalSize_ = SETTINGS.readerTtfSizePx;
+  }
   value_ = clampedValue(originalSize_);
   accepted_ = false;
   requestUpdate();
@@ -41,7 +54,9 @@ void ReaderFontSizeActivity::onEnter() {
 
 void ReaderFontSizeActivity::onExit() {
   if (!accepted_) {
-    SETTINGS.readerTtfSizePx = static_cast<uint8_t>(originalSize_);
+    if (!returnSelectionOnly_) {
+      SETTINGS.readerTtfSizePx = static_cast<uint8_t>(originalSize_);
+    }
   }
   Activity::onExit();
 }
@@ -62,7 +77,9 @@ void ReaderFontSizeActivity::cancel() {
 
 void ReaderFontSizeActivity::accept() {
   accepted_ = true;
-  SETTINGS.readerTtfSizePx = static_cast<uint8_t>(value_);
+  if (!returnSelectionOnly_) {
+    SETTINGS.readerTtfSizePx = static_cast<uint8_t>(value_);
+  }
   setResult(IntervalResult{static_cast<uint32_t>(value_)});
   finish();
 }
@@ -143,9 +160,18 @@ void ReaderFontSizeActivity::render(RenderLock&&) {
   const int previewHeight = minusButtonRect().y - previewY - 12;
   renderer.drawRect(previewX, previewY, previewWidth, previewHeight);
 
-  SETTINGS.readerTtfSizePx = static_cast<uint8_t>(value_);
-  const bool hasTtf = SETTINGS.readerTtfPath[0] != '\0' && SETTINGS.readerFontMode == CrossPointSettings::READER_FONT_TTF;
-  if (hasTtf && TTF_READER_METRICS.ensureLoadedFromSettings()) {
+  bool hasTtf = false;
+  bool loaded = false;
+  if (returnSelectionOnly_) {
+    hasTtf = !previewPath_.empty();
+    loaded = hasTtf && TTF_READER_METRICS.ensureLoaded(previewPath_.c_str(), static_cast<uint8_t>(value_),
+                                                       previewFileSize_);
+  } else {
+    SETTINGS.readerTtfSizePx = static_cast<uint8_t>(value_);
+    hasTtf = SETTINGS.readerTtfPath[0] != '\0' && SETTINGS.readerFontMode == CrossPointSettings::READER_FONT_TTF;
+    loaded = hasTtf && TTF_READER_METRICS.ensureLoadedFromSettings();
+  }
+  if (loaded) {
     renderer.setReaderFontMetricsProvider(&TTF_READER_METRICS);
     const int fontId = TTF_READER_METRICS.fontId();
     const int lineHeight = std::max(1, renderer.getLineHeight(fontId));

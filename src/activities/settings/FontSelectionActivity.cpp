@@ -28,6 +28,14 @@ FontSelectionActivity::FontSelectionActivity(GfxRenderer& renderer, MappedInputM
                                              const SdCardFontRegistry* registry)
     : Activity("FontSelect", renderer, mappedInput), registry_(registry) {}
 
+FontSelectionActivity::FontSelectionActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,
+                                             const SdCardFontRegistry* registry, const bool returnSelectionOnly,
+                                             std::string currentPath)
+    : Activity("FontSelect", renderer, mappedInput),
+      registry_(registry),
+      returnSelectionOnly_(returnSelectionOnly),
+      currentPath_(std::move(currentPath)) {}
+
 void FontSelectionActivity::onEnter() {
   Activity::onEnter();
 
@@ -51,9 +59,10 @@ void FontSelectionActivity::onEnter() {
   }
 
   selectedIndex_ = 0;
-  if (SETTINGS.readerTtfPath[0] != '\0') {
+  const std::string selectedPath = returnSelectionOnly_ ? currentPath_ : std::string(SETTINGS.readerTtfPath);
+  if (!selectedPath.empty()) {
     for (int i = 0; i < static_cast<int>(fonts_.size()); ++i) {
-      if (fonts_[i].kind == FontEntry::Kind::Ttf && fonts_[i].path == SETTINGS.readerTtfPath) {
+      if (fonts_[i].kind == FontEntry::Kind::Ttf && fonts_[i].path == selectedPath) {
         selectedIndex_ = i;
         break;
       }
@@ -134,6 +143,14 @@ void FontSelectionActivity::loop() {
 
 void FontSelectionActivity::handleSelection() {
   const auto& font = fonts_[selectedIndex_];
+#ifdef CROSSPOINT_BOARD_MURPHY_M4
+  if (returnSelectionOnly_) {
+    if (font.kind != FontEntry::Kind::Ttf) return;
+    setResult(FilePathResult{font.path});
+    finish();
+    return;
+  }
+#endif
   if (font.kind == FontEntry::Kind::Builtin) {
     SETTINGS.readerFontMode = CrossPointSettings::READER_FONT_CPFONT;
     SETTINGS.fontFamily = font.settingIndex;
@@ -223,17 +240,19 @@ void FontSelectionActivity::render(RenderLock&&) {
       pageHeight - contentTop - metrics.buttonHintsHeight - metrics.verticalSpacing;
 #endif
 
-  int currentFontIndex = 0;
 #ifdef CROSSPOINT_BOARD_MURPHY_M4
-  if (SETTINGS.readerTtfPath[0] != '\0') {
+  int currentFontIndex = -1;
+  const std::string selectedPath = returnSelectionOnly_ ? currentPath_ : std::string(SETTINGS.readerTtfPath);
+  if (!selectedPath.empty()) {
     for (int i = 0; i < static_cast<int>(fonts_.size()); ++i) {
-      if (fonts_[i].kind == FontEntry::Kind::Ttf && fonts_[i].path == SETTINGS.readerTtfPath) {
+      if (fonts_[i].kind == FontEntry::Kind::Ttf && fonts_[i].path == selectedPath) {
         currentFontIndex = i;
         break;
       }
     }
   }
 #else
+  int currentFontIndex = 0;
   // Determine which font index is currently active (to mark as "Selected")
     if (SETTINGS.sdFontFamilyName[0] != '\0' && registry_) {
       const auto& families = registry_->getFamilies();

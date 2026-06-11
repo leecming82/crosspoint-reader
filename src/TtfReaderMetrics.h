@@ -20,6 +20,7 @@ class TtfReaderMetrics final : public ReaderFontMetricsProvider {
   static constexpr int INVALID_FONT_ID = 0;
 
   bool ensureLoadedFromSettings();
+  bool ensureLoaded(const char* path, uint8_t pixelSize, uint32_t expectedFileSize = 0);
   void unload();
   bool isLoaded() const { return loaded_; }
   int fontId() const { return loaded_ ? fontId_ : INVALID_FONT_ID; }

@@ -44,6 +44,8 @@
 #include "SdCardFontSystem.h"
 #ifdef CROSSPOINT_BOARD_MURPHY_M4
 #include "TtfReaderMetrics.h"
+#include "activities/settings/FontSelectionActivity.h"
+#include "activities/settings/ReaderFontSizeActivity.h"
 #endif
 #include "components/UITheme.h"
 #include "fontIds.h"
@@ -62,6 +64,17 @@ constexpr uint32_t SHORT_SECTION_MAX_BYTES = 8 * 1024;
 constexpr uint32_t SHORT_SECTION_BATCH_MAX_BYTES = 64 * 1024;
 constexpr int SHORT_SECTION_BATCH_MAX_COUNT = 8;
 
+#ifdef CROSSPOINT_BOARD_MURPHY_M4
+uint32_t fileSizeForPath(const std::string& path) {
+  if (path.empty()) return 0;
+  HalFile file = Storage.open(path.c_str(), O_RDONLY);
+  if (!file) return 0;
+  const uint64_t size = file.fileSize64();
+  file.close();
+  return size > UINT32_MAX ? 0 : static_cast<uint32_t>(size);
+}
+#endif
+
 int clampPercent(int percent) {
   if (percent < 0) {
     return 0;
@@ -70,6 +83,11 @@ int clampPercent(int percent) {
     return 100;
   }
   return percent;
+}
+
+std::string basenameFromPath(const std::string& path) {
+  const size_t slash = path.find_last_of('/');
+  return slash == std::string::npos ? path : path.substr(slash + 1);
 }
 
 std::string popupPronunciationLine(const JapaneseDictionaryMatch& match) {
@@ -358,12 +376,12 @@ void EpubReaderActivity::onEnter() {
   }
 
   resolveReadingProfile();
+  epub->setupCacheDir();
+  reloadEpubFontOverride();
   sdFontSystem.ensureLoaded(renderer, effectiveReaderFontSize());
   // Configure screen orientation based on the explicit reader orientation setting.
   // NOTE: This affects layout math and must be applied before any render calls.
   ReaderUtils::applyOrientation(renderer, SETTINGS.orientation);
-
-  epub->setupCacheDir();
 
   HalFile f;
   if (Storage.openFileForRead("ERS", epub->getCachePath() + "/progress.bin", f)) {
@@ -724,10 +742,12 @@ void EpubReaderActivity::openReaderMenu() {
   }
   const int bookProgressPercent = clampPercent(static_cast<int>(bookProgress + 0.5f));
   const std::string menuTitle = StringUtils::uiSafeBookTitle(epub->getTitle(), epub->getPath());
+  const std::string overrideName = epubFontOverride.enabled ? basenameFromPath(epubFontOverride.path) : "";
   startActivityForResult(
       std::make_unique<EpubReaderMenuActivity>(
           renderer, mappedInput, menuTitle, currentPage, totalPages, bookProgressPercent, SETTINGS.orientation,
-          SETTINGS.writingModePreference, !currentPageFootnotes.empty(), allowsManualVerticalWritingMode()),
+          SETTINGS.writingModePreference, !currentPageFootnotes.empty(), allowsManualVerticalWritingMode(),
+          epubFontOverride.enabled, overrideName, epubFontOverride.sizePx),
       [this](const ActivityResult& result) {
         const auto* menu = std::get_if<MenuResult>(&result.data);
         if (!menu) {
@@ -1026,12 +1046,70 @@ void EpubReaderActivity::onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction 
           progressChangeResultHandler);
       break;
     }
+#ifdef CROSSPOINT_BOARD_MURPHY_M4
+    case EpubReaderMenuActivity::MenuAction::EPUB_FONT: {
+      startActivityForResult(
+          std::make_unique<FontSelectionActivity>(renderer, mappedInput, nullptr, true, epubFontOverride.path),
+          [this](const ActivityResult& result) {
+            if (result.isCancelled) {
+              requestUpdate();
+              return;
+            }
+            const auto* selected = std::get_if<FilePathResult>(&result.data);
+            if (!selected || selected->path.empty()) {
+              requestUpdate();
+              return;
+            }
+            EpubReaderUtils::EpubFontOverride next;
+            next.enabled = true;
+            next.path = selected->path;
+            next.sizePx = epubFontOverride.enabled ? epubFontOverride.sizePx : SETTINGS.readerTtfSizePx;
+            next.fileSize = fileSizeForPath(next.path);
+            applyEpubFontOverride(next);
+          });
+      break;
+    }
+    case EpubReaderMenuActivity::MenuAction::EPUB_FONT_SIZE: {
+      const std::string path =
+          epubFontOverride.enabled ? epubFontOverride.path : std::string(SETTINGS.readerTtfPath);
+      const uint8_t size = epubFontOverride.enabled ? epubFontOverride.sizePx : SETTINGS.readerTtfSizePx;
+      const uint32_t fileSize = epubFontOverride.enabled ? epubFontOverride.fileSize : SETTINGS.readerTtfFileSize;
+      startActivityForResult(
+          std::make_unique<ReaderFontSizeActivity>(renderer, mappedInput, size, path, fileSize, true),
+          [this, path, fileSize](const ActivityResult& result) {
+            if (result.isCancelled) {
+              requestUpdate();
+              return;
+            }
+            const auto* selected = std::get_if<IntervalResult>(&result.data);
+            if (!selected || path.empty()) {
+              requestUpdate();
+              return;
+            }
+            EpubReaderUtils::EpubFontOverride next;
+            next.enabled = true;
+            next.path = path;
+            next.sizePx = static_cast<uint8_t>(std::clamp<uint32_t>(selected->value, 18, 72));
+            next.fileSize = fileSize != 0 ? fileSize : fileSizeForPath(path);
+            applyEpubFontOverride(next);
+          });
+      break;
+    }
+    case EpubReaderMenuActivity::MenuAction::EPUB_FONT_GLOBAL:
+      resetEpubFontOverride();
+      break;
+#endif
     case EpubReaderMenuActivity::MenuAction::RUBY_OFFSET:
       enterRubyAdjustMode();
       break;
     case EpubReaderMenuActivity::MenuAction::ROTATE_SCREEN:
     case EpubReaderMenuActivity::MenuAction::WRITING_MODE:
     case EpubReaderMenuActivity::MenuAction::AUTO_PAGE_TURN:
+#ifndef CROSSPOINT_BOARD_MURPHY_M4
+    case EpubReaderMenuActivity::MenuAction::EPUB_FONT:
+    case EpubReaderMenuActivity::MenuAction::EPUB_FONT_SIZE:
+    case EpubReaderMenuActivity::MenuAction::EPUB_FONT_GLOBAL:
+#endif
       break;
   }
 }
@@ -1367,8 +1445,8 @@ void EpubReaderActivity::render(RenderLock&& lock) {
       }
       LOG_INF("ERS",
               "Indexing session complete mode=%s font_id=%d spine=%d pages=%u viewport=%ux%u duration_ms=%lu",
-              SETTINGS.readerFontMode == CrossPointSettings::READER_FONT_TTF ? "ttf" : "cpfont", layoutFontId,
-              currentSpineIndex, section->pageCount, viewportWidth, viewportHeight, millis() - indexStartMs);
+              useTtfReaderFont() ? "ttf" : "cpfont", layoutFontId, currentSpineIndex, section->pageCount,
+              viewportWidth, viewportHeight, millis() - indexStartMs);
       prebuildAdjacentShortSections(viewportWidth, viewportHeight);
       if (auto* fcm = renderer.getFontCacheManager()) {
         fcm->clearPersistentCache();
@@ -1585,6 +1663,77 @@ bool EpubReaderActivity::saveProgress(int spineIndex, int currentPage, int pageC
   return EpubReaderUtils::saveProgress(*epub, spineIndex, currentPage, pageCount);
 }
 
+#ifdef CROSSPOINT_BOARD_MURPHY_M4
+void EpubReaderActivity::reloadEpubFontOverride() {
+  epubFontOverride = EpubReaderUtils::EpubFontOverride{};
+  if (!epub) return;
+  EpubReaderUtils::EpubFontOverride stored;
+  if (!EpubReaderUtils::loadFontOverride(*epub, stored)) return;
+  if (!Storage.exists(stored.path.c_str())) {
+    LOG_ERR("ERS", "EPUB font override missing path=%s; using global reader font", stored.path.c_str());
+    return;
+  }
+  if (stored.fileSize == 0) {
+    stored.fileSize = fileSizeForPath(stored.path);
+  }
+  epubFontOverride = std::move(stored);
+  LOG_INF("ERS", "EPUB font override active path=%s size=%u file=%lu", epubFontOverride.path.c_str(),
+          epubFontOverride.sizePx, static_cast<unsigned long>(epubFontOverride.fileSize));
+}
+
+void EpubReaderActivity::invalidateEpubFontLayout() {
+  if (!epub) return;
+  int backupSpine = currentSpineIndex;
+  int backupPage = section ? section->currentPage : nextPageNumber;
+  int backupPageCount = section ? section->pageCount : cachedChapterTotalPageCount;
+  if (backupPage < 0) backupPage = 0;
+  if (backupPageCount < 0) backupPageCount = 0;
+
+  clearKanjiCursorState(/*saveResumePosition=*/false, /*requestRedraw=*/false);
+  section.reset();
+  activeGlyphPackSpineIndex = -1;
+  activeGlyphPackFontId = -1;
+  activeGlyphPackReady = false;
+  EpubReaderUtils::clearSectionCache(*epub);
+  saveProgress(backupSpine, backupPage, backupPageCount);
+  cachedSpineIndex = backupSpine;
+  cachedChapterTotalPageCount = backupPageCount;
+  nextPageNumber = backupPage;
+}
+
+void EpubReaderActivity::applyEpubFontOverride(const EpubReaderUtils::EpubFontOverride& value) {
+  if (!epub || !value.enabled || value.path.empty()) return;
+  {
+    RenderLock lock(*this);
+    epubFontOverride = value;
+    epubFontOverride.sizePx = std::clamp<uint8_t>(epubFontOverride.sizePx, 18, 72);
+    if (epubFontOverride.fileSize == 0) {
+      epubFontOverride.fileSize = fileSizeForPath(epubFontOverride.path);
+    }
+    EpubReaderUtils::saveFontOverride(*epub, epubFontOverride);
+    invalidateEpubFontLayout();
+  }
+  requestUpdate();
+}
+
+void EpubReaderActivity::resetEpubFontOverride() {
+  if (!epub) return;
+  {
+    RenderLock lock(*this);
+    if (!epubFontOverride.enabled && !Storage.exists(EpubReaderUtils::fontOverridePath(*epub).c_str())) return;
+    epubFontOverride = EpubReaderUtils::EpubFontOverride{};
+    EpubReaderUtils::clearFontOverride(*epub);
+    invalidateEpubFontLayout();
+  }
+  requestUpdate();
+}
+#else
+void EpubReaderActivity::reloadEpubFontOverride() {}
+void EpubReaderActivity::invalidateEpubFontLayout() {}
+void EpubReaderActivity::applyEpubFontOverride(const EpubReaderUtils::EpubFontOverride&) {}
+void EpubReaderActivity::resetEpubFontOverride() {}
+#endif
+
 void EpubReaderActivity::resolveReadingProfile() {
   switch (SETTINGS.writingModePreference) {
     case CrossPointSettings::WRITING_MODE_HORIZONTAL:
@@ -1627,10 +1776,31 @@ uint8_t EpubReaderActivity::effectiveReaderFontSize() const {
   return size < CrossPointSettings::FONT_SIZE_COUNT ? size : CrossPointSettings::MEDIUM;
 }
 
+bool EpubReaderActivity::useTtfReaderFont() const {
+#ifdef CROSSPOINT_BOARD_MURPHY_M4
+  return SETTINGS.readerFontMode == CrossPointSettings::READER_FONT_TTF || epubFontOverride.enabled;
+#else
+  return false;
+#endif
+}
+
+bool EpubReaderActivity::ensureEffectiveTtfLoaded() const {
+#ifdef CROSSPOINT_BOARD_MURPHY_M4
+  if (epubFontOverride.enabled && !epubFontOverride.path.empty()) {
+    return TTF_READER_METRICS.ensureLoaded(epubFontOverride.path.c_str(), epubFontOverride.sizePx,
+                                           epubFontOverride.fileSize);
+  }
+  if (SETTINGS.readerFontMode == CrossPointSettings::READER_FONT_TTF) {
+    return TTF_READER_METRICS.ensureLoadedFromSettings();
+  }
+#endif
+  return false;
+}
+
 int EpubReaderActivity::effectiveReaderRenderFontId() const {
 #ifdef CROSSPOINT_BOARD_MURPHY_M4
-  if (SETTINGS.readerFontMode == CrossPointSettings::READER_FONT_TTF) {
-    if (TTF_READER_METRICS.ensureLoadedFromSettings()) {
+  if (useTtfReaderFont()) {
+    if (ensureEffectiveTtfLoaded()) {
       renderer.setReaderFontMetricsProvider(&TTF_READER_METRICS);
       return TTF_READER_METRICS.fontId();
     }
@@ -1644,8 +1814,8 @@ int EpubReaderActivity::effectiveReaderFontId() const { return effectiveReaderRe
 
 int EpubReaderActivity::effectiveReaderLayoutFontId() const {
 #ifdef CROSSPOINT_BOARD_MURPHY_M4
-  if (SETTINGS.readerFontMode == CrossPointSettings::READER_FONT_TTF) {
-    if (TTF_READER_METRICS.ensureLoadedFromSettings()) {
+  if (useTtfReaderFont()) {
+    if (ensureEffectiveTtfLoaded()) {
       renderer.setReaderFontMetricsProvider(&TTF_READER_METRICS);
       return TTF_READER_METRICS.fontId();
     }

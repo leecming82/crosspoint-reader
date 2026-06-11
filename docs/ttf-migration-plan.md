@@ -381,6 +381,12 @@ The likely practical compromise is lazy runtime caching. Rasterize glyphs on fir
 
    Exit criteria: a user can set a font/size for one EPUB without changing other EPUBs, reopen the EPUB with the same override and matching glyph cache, reset it to global defaults, and get correct section-cache invalidation when either the override or relevant global default changes.
 
+   Progress:
+   - Added an EPUB-only override file in each EPUB cache directory for selected TTF path, pixel size, and file-size identity.
+   - The EPUB reader now resolves an effective TTF config on entry and uses it for layout, render, section cache identity, and TTF glyph sidecar selection.
+   - Reader menu controls can set an EPUB-specific TTF, set an EPUB-specific size, or reset the EPUB back to the global reader default.
+   - Changing or resetting an EPUB override clears only section pagination caches and preserves reading progress.
+
 - [ ] 16. Reader font architecture cleanup
 
    Once TTF metrics and rendering are working end-to-end, replace cpfont-shaped reader assumptions with generic reader font provider and cache interfaces. The step-8 provider shim intentionally leaves the current indexing workflow intact; this milestone is where the architecture should stop pretending that every reader font is an `EpdFont`/cpfont-like font ID with optional cpfont advance tables.

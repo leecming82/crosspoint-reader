@@ -469,13 +469,21 @@ bool TtfReaderMetrics::ensureLoadedFromSettings() {
   }
 
   const uint8_t size = std::max<uint8_t>(12, std::min<uint8_t>(SETTINGS.readerTtfSizePx, 72));
-  const uint32_t expectedSize = SETTINGS.readerTtfFileSize;
-  if (loaded_ && path_ == SETTINGS.readerTtfPath && pixelSize_ == size &&
-      (expectedSize == 0 || fileSize_ == expectedSize)) {
+  return ensureLoaded(SETTINGS.readerTtfPath, size, SETTINGS.readerTtfFileSize);
+}
+
+bool TtfReaderMetrics::ensureLoaded(const char* path, const uint8_t pixelSize, const uint32_t expectedFileSize) {
+  if (!path || path[0] == '\0') {
+    unload();
+    return false;
+  }
+
+  const uint8_t size = std::max<uint8_t>(12, std::min<uint8_t>(pixelSize, 72));
+  if (loaded_ && path_ == path && pixelSize_ == size && (expectedFileSize == 0 || fileSize_ == expectedFileSize)) {
     return true;
   }
 
-  return loadFromPath(SETTINGS.readerTtfPath, size, expectedSize);
+  return loadFromPath(path, size, expectedFileSize);
 }
 
 bool TtfReaderMetrics::flushGlyphSidecarCache() const { return saveGlyphSidecarCache(); }

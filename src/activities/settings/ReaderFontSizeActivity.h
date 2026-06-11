@@ -4,10 +4,14 @@
 #include "components/themes/BaseTheme.h"
 #include "util/ButtonNavigator.h"
 
+#include <string>
+
 class ReaderFontSizeActivity final : public Activity {
  public:
   explicit ReaderFontSizeActivity(GfxRenderer& renderer, MappedInputManager& mappedInput)
       : Activity("ReaderFontSize", renderer, mappedInput) {}
+  ReaderFontSizeActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, int initialSize, std::string previewPath,
+                         uint32_t previewFileSize, bool returnSelectionOnly);
 
   void onEnter() override;
   void onExit() override;
@@ -24,6 +28,9 @@ class ReaderFontSizeActivity final : public Activity {
   int originalSize_ = 36;
   int value_ = 36;
   bool accepted_ = false;
+  bool returnSelectionOnly_ = false;
+  std::string previewPath_;
+  uint32_t previewFileSize_ = 0;
   ButtonNavigator buttonNavigator_;
 
   int clampedValue(int value) const;

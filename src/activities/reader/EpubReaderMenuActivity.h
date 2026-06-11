@@ -21,6 +21,9 @@ class EpubReaderMenuActivity final : public Activity {
     ROTATE_SCREEN,
     ADD_BOOKMARK,
     BOOKMARKS,
+    EPUB_FONT,
+    EPUB_FONT_SIZE,
+    EPUB_FONT_GLOBAL,
     WRITING_MODE,
     RUBY_OFFSET,
     SCREENSHOT,
@@ -33,7 +36,8 @@ class EpubReaderMenuActivity final : public Activity {
   explicit EpubReaderMenuActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, const std::string& title,
                                   const int currentPage, const int totalPages, const int bookProgressPercent,
                                   uint8_t orientation, uint8_t writingModePreference, bool hasFootnotes,
-                                  bool allowVerticalWritingMode);
+                                  bool allowVerticalWritingMode, bool epubFontOverrideActive = false,
+                                  std::string epubFontName = {}, uint8_t epubFontSizePx = 0);
 
   void onEnter() override;
   void onExit() override;
@@ -98,4 +102,7 @@ class EpubReaderMenuActivity final : public Activity {
   int currentPage = 0;
   int totalPages = 0;
   int bookProgressPercent = 0;
+  bool epubFontOverrideActive = false;
+  std::string epubFontName;
+  uint8_t epubFontSizePx = 0;
 };

@@ -15,6 +15,8 @@ class FontSelectionActivity final : public Activity {
  public:
   explicit FontSelectionActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,
                                  const SdCardFontRegistry* registry);
+  FontSelectionActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, const SdCardFontRegistry* registry,
+                        bool returnSelectionOnly, std::string currentPath = {});
 
   void onEnter() override;
   void onExit() override;
@@ -41,6 +43,8 @@ class FontSelectionActivity final : public Activity {
   };
 
   const SdCardFontRegistry* registry_;
+  bool returnSelectionOnly_ = false;
+  std::string currentPath_;
   ButtonNavigator buttonNavigator_;
   std::vector<FontEntry> fonts_;
 #ifdef CROSSPOINT_BOARD_MURPHY_M4

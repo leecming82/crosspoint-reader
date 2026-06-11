@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "EpubReaderMenuActivity.h"
+#include "EpubReaderUtils.h"
 #include "ProgressMapper.h"
 #include "activities/Activity.h"
 
@@ -50,6 +51,7 @@ class EpubReaderActivity final : public Activity {
   enum class RubyAdjustAxis : uint8_t { X, Y };
   bool rubyAdjustActive = false;
   bool rubyAdjustIgnoreOpeningRelease = false;
+  EpubReaderUtils::EpubFontOverride epubFontOverride;
 
   // Kanji cursor overlay (tategaki dictionary lookup, Phase 1)
   struct KanjiEntry {
@@ -148,6 +150,12 @@ class EpubReaderActivity final : public Activity {
   int effectiveReaderFontId() const;
   int effectiveReaderLayoutFontId() const;
   int effectiveReaderRenderFontId() const;
+  bool useTtfReaderFont() const;
+  bool ensureEffectiveTtfLoaded() const;
+  void reloadEpubFontOverride();
+  void applyEpubFontOverride(const EpubReaderUtils::EpubFontOverride& value);
+  void resetEpubFontOverride();
+  void invalidateEpubFontLayout();
   // Jump to a percentage of the book (0-100), mapping it to spine and page.
   void jumpToPercent(int percent);
   void openReaderMenu();
