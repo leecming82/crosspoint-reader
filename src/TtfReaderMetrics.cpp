@@ -24,7 +24,7 @@ namespace {
 constexpr size_t TTF_HEADER_SIZE = 12;
 constexpr size_t TTF_TABLE_RECORD_SIZE = 16;
 constexpr size_t TTF_RASTER_SCRATCH_BYTES = 64 * 1024;
-constexpr size_t TTF_GLYPH_CACHE_MAX_BYTES = 512 * 1024;
+constexpr size_t TTF_GLYPH_CACHE_MAX_BYTES = 768 * 1024;
 constexpr uint32_t TTF_STATS_LOG_INTERVAL_MS = 3000;
 constexpr uint8_t TTF_RASTER_SUPERSAMPLE = 2;
 constexpr uint32_t FNV_OFFSET = 2166136261u;
@@ -282,8 +282,24 @@ uint8_t coverageToPackedGrayValue(const uint8_t coverage) {
   return static_cast<uint8_t>(3 - level);
 }
 
-bool shouldDrawCoveragePixel(const GfxRenderer::RenderMode renderMode, const uint8_t coverage) {
-  const uint8_t val = coverageToPackedGrayValue(coverage);
+size_t packedGlyphBytes(const int width, const int height) {
+  if (width <= 0 || height <= 0) return 0;
+  return (static_cast<size_t>(width) * height + 3) / 4;
+}
+
+void setPackedGlyphPixel(uint8_t* bitmap, const size_t pixelIndex, const uint8_t value) {
+  const size_t byteIndex = pixelIndex >> 2;
+  const uint8_t shift = static_cast<uint8_t>((3 - (pixelIndex & 0x03)) * 2);
+  bitmap[byteIndex] = static_cast<uint8_t>((bitmap[byteIndex] & ~(0x03 << shift)) | ((value & 0x03) << shift));
+}
+
+uint8_t getPackedGlyphPixel(const uint8_t* bitmap, const size_t pixelIndex) {
+  const size_t byteIndex = pixelIndex >> 2;
+  const uint8_t shift = static_cast<uint8_t>((3 - (pixelIndex & 0x03)) * 2);
+  return static_cast<uint8_t>((bitmap[byteIndex] >> shift) & 0x03);
+}
+
+bool shouldDrawPackedPixel(const GfxRenderer::RenderMode renderMode, const uint8_t val) {
   if (renderMode == GfxRenderer::BW) {
     return val < 3;
   }
@@ -306,6 +322,7 @@ bool downsample2BitCoverage(const uint8_t* highBitmap, const ttf::CustomRasterRe
                             const int outWidth, const int outHeight) {
   if (!highBitmap || !highRaster.ok || !outBitmap || outWidth <= 0 || outHeight <= 0) return false;
 
+  memset(outBitmap, 0xFF, packedGlyphBytes(outWidth, outHeight));
   for (int y = 0; y < outHeight; ++y) {
     for (int x = 0; x < outWidth; ++x) {
       int coverage = 0;
@@ -322,7 +339,7 @@ bool downsample2BitCoverage(const uint8_t* highBitmap, const ttf::CustomRasterRe
       }
       const uint8_t level =
           samples == 0 ? 0 : static_cast<uint8_t>(std::min(3, (coverage * 3 + samples / 2) / samples));
-      outBitmap[static_cast<size_t>(y) * outWidth + x] = static_cast<uint8_t>(level * 85);
+      setPackedGlyphPixel(outBitmap, static_cast<size_t>(y) * outWidth + x, static_cast<uint8_t>(3 - level));
     }
   }
   return true;
@@ -524,7 +541,8 @@ bool TtfReaderMetrics::loadFromPath(const char* path, const uint8_t pixelSize, c
   LOG_INF("TTFR", "reader metrics active id=%d path=%s size=%u file=%lu hash=0x%08lX", fontId_, path_.c_str(),
           pixelSize_, static_cast<unsigned long>(fileSize_), static_cast<unsigned long>(identityHash_));
 #ifdef CROSSPOINT_TTF_USE_OPENFONTRENDER
-  LOG_INF("TTFR", "OpenFontRender rasterizer active size=%u cache_limit=%u", pixelSize_, 768 * 1024);
+  LOG_INF("TTFR", "OpenFontRender rasterizer active size=%u cache_limit=%u", pixelSize_,
+          static_cast<unsigned>(TTF_GLYPH_CACHE_MAX_BYTES));
   logOpenFontRenderMetricSamples();
 #endif
   LOG_INF("TTFR", "metrics upem=%u asc=%d desc=%d gap=%d line=%d glyphs=%u", m.unitsPerEm, m.ascender, m.descender,
@@ -613,6 +631,7 @@ void TtfReaderMetrics::prewarmText(const int fontId, const char* utf8Text, const
   const uint32_t rasterOkStart = rasterOk_;
   const uint32_t rasterFailedStart = rasterFailed_;
   const uint32_t missingStart = missingGlyphs_;
+  const uint32_t evictionsStart = cacheEvictions_;
   const uint64_t rasterUsStart = rasterTimeUs_;
 
   for (const uint32_t cp : uniqueCodepoints) {
@@ -622,17 +641,22 @@ void TtfReaderMetrics::prewarmText(const int fontId, const char* utf8Text, const
   const uint32_t rasterDelta = positiveDelta(rasterOk_, rasterOkStart);
   const uint64_t rasterUsDelta = positiveDelta(rasterTimeUs_, rasterUsStart);
   const uint32_t avgRasterUs = rasterDelta > 0 ? static_cast<uint32_t>(rasterUsDelta / rasterDelta) : 0;
+  const uint32_t cachePct =
+      static_cast<uint32_t>((glyphCacheBytes_ * 100 + TTF_GLYPH_CACHE_MAX_BYTES / 2) / TTF_GLYPH_CACHE_MAX_BYTES);
   LOG_INF("TTFR",
-          "prewarm font_id=%d scanned=%lu unique=%u cache=%u->%u bytes=%u->%u hits_delta=%lu "
-          "misses_delta=%lu raster_delta=%lu raster_fail_delta=%lu missing_delta=%lu raster_us=%llu "
-          "avg_raster_us=%lu elapsed_ms=%lu",
+          "prewarm font_id=%d scanned=%lu unique=%u cache=%u->%u bytes=%u->%u limit=%u pct=%lu "
+          "hits_delta=%lu misses_delta=%lu raster_delta=%lu raster_fail_delta=%lu missing_delta=%lu "
+          "evict_delta=%lu evictions=%lu raster_us=%llu avg_raster_us=%lu elapsed_ms=%lu",
           fontId_, static_cast<unsigned long>(scannedGlyphs), static_cast<unsigned>(uniqueCodepoints.size()),
           static_cast<unsigned>(cacheStart), static_cast<unsigned>(glyphCache_.size()),
           static_cast<unsigned>(cacheBytesStart), static_cast<unsigned>(glyphCacheBytes_),
+          static_cast<unsigned>(TTF_GLYPH_CACHE_MAX_BYTES), static_cast<unsigned long>(cachePct),
           static_cast<unsigned long>(positiveDelta(cacheHits_, hitsStart)),
           static_cast<unsigned long>(positiveDelta(cacheMisses_, missesStart)), static_cast<unsigned long>(rasterDelta),
           static_cast<unsigned long>(positiveDelta(rasterFailed_, rasterFailedStart)),
           static_cast<unsigned long>(positiveDelta(missingGlyphs_, missingStart)),
+          static_cast<unsigned long>(positiveDelta(cacheEvictions_, evictionsStart)),
+          static_cast<unsigned long>(cacheEvictions_),
           static_cast<unsigned long long>(rasterUsDelta), static_cast<unsigned long>(avgRasterUs),
           static_cast<unsigned long>(millis() - startMs));
 }
@@ -696,9 +720,10 @@ const TtfReaderMetrics::CachedGlyph* TtfReaderMetrics::glyphForCodepoint(const u
                                                                          const EpdFontFamily::Style style) const {
   if (!loaded_ || utf8IsCombiningMark(cp)) return nullptr;
 
-  for (const auto& glyph : glyphCache_) {
+  for (auto& glyph : glyphCache_) {
     if (glyph.codepoint == cp) {
       ++cacheHits_;
+      glyph.lastUsed = ++glyphUseClock_;
       return &glyph;
     }
   }
@@ -733,6 +758,7 @@ const TtfReaderMetrics::CachedGlyph* TtfReaderMetrics::rasterizeAndCacheGlyphWit
   cached.advancePx = advanceForCodepoint(cp, style);
 
   if (metrics.glyphLength == 0) {
+    cached.lastUsed = ++glyphUseClock_;
     glyphCache_.push_back(std::move(cached));
     ++rasterOk_;
     return &glyphCache_.back();
@@ -759,14 +785,9 @@ const TtfReaderMetrics::CachedGlyph* TtfReaderMetrics::rasterizeAndCacheGlyphWit
     cached.xOffset = std::max(0, (cached.advancePx - cached.width) / 2);
   }
   cached.yOffset = -glyph.top;
-  cached.bitmapBytes = static_cast<size_t>(cached.width) * cached.height;
+  cached.bitmapBytes = packedGlyphBytes(cached.width, cached.height);
   if (cached.bitmapBytes > 0) {
-    if (glyphCacheBytes_ + cached.bitmapBytes > TTF_GLYPH_CACHE_MAX_BYTES) {
-      LOG_INF("TTFR", "glyph cache reset bytes=%u limit=%u", static_cast<unsigned>(glyphCacheBytes_),
-              static_cast<unsigned>(TTF_GLYPH_CACHE_MAX_BYTES));
-      clearGlyphCache();
-      ++cacheResets_;
-    }
+    if (!reserveGlyphCacheBytes(cached.bitmapBytes)) return nullptr;
     uint8_t* bitmapRaw =
         static_cast<uint8_t*>(heap_caps_malloc(cached.bitmapBytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
     if (!bitmapRaw) {
@@ -776,17 +797,19 @@ const TtfReaderMetrics::CachedGlyph* TtfReaderMetrics::rasterizeAndCacheGlyphWit
       return nullptr;
     }
     cached.bitmap.reset(bitmapRaw);
+    memset(cached.bitmap.get(), 0xFF, cached.bitmapBytes);
     const int sourcePitch = std::abs(glyph.pitch);
     for (int y = 0; y < cached.height; ++y) {
       const uint8_t* sourceRow = glyph.buffer + static_cast<size_t>(y) * sourcePitch;
-      uint8_t* destRow = cached.bitmap.get() + static_cast<size_t>(y) * cached.width;
       for (int x = 0; x < cached.width; ++x) {
-        destRow[x] = quantizeCoverage(sourceRow[x]);
+        setPackedGlyphPixel(cached.bitmap.get(), static_cast<size_t>(y) * cached.width + x,
+                            coverageToPackedGrayValue(quantizeCoverage(sourceRow[x])));
       }
     }
     glyphCacheBytes_ += cached.bitmapBytes;
   }
 
+  cached.lastUsed = ++glyphUseClock_;
   glyphCache_.push_back(std::move(cached));
   ++rasterOk_;
   return &glyphCache_.back();
@@ -807,6 +830,7 @@ const TtfReaderMetrics::CachedGlyph* TtfReaderMetrics::rasterizeAndCacheGlyphWit
   cached.advancePx = advanceForCodepoint(cp, style);
 
   if (metrics.glyphLength == 0) {
+    cached.lastUsed = ++glyphUseClock_;
     glyphCache_.push_back(std::move(cached));
     ++rasterOk_;
     return &glyphCache_.back();
@@ -850,14 +874,9 @@ const TtfReaderMetrics::CachedGlyph* TtfReaderMetrics::rasterizeAndCacheGlyphWit
   cached.height = (result.height + TTF_RASTER_SUPERSAMPLE - 1) / TTF_RASTER_SUPERSAMPLE;
   cached.xOffset = result.xOffset / TTF_RASTER_SUPERSAMPLE;
   cached.yOffset = result.yOffset / TTF_RASTER_SUPERSAMPLE;
-  cached.bitmapBytes = static_cast<size_t>(cached.width) * cached.height;
+  cached.bitmapBytes = packedGlyphBytes(cached.width, cached.height);
   if (cached.bitmapBytes > 0) {
-    if (glyphCacheBytes_ + cached.bitmapBytes > TTF_GLYPH_CACHE_MAX_BYTES) {
-      LOG_INF("TTFR", "glyph cache reset bytes=%u limit=%u", static_cast<unsigned>(glyphCacheBytes_),
-              static_cast<unsigned>(TTF_GLYPH_CACHE_MAX_BYTES));
-      clearGlyphCache();
-      ++cacheResets_;
-    }
+    if (!reserveGlyphCacheBytes(cached.bitmapBytes)) return nullptr;
     uint8_t* bitmapRaw =
         static_cast<uint8_t*>(heap_caps_malloc(cached.bitmapBytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
     if (!bitmapRaw) {
@@ -879,6 +898,7 @@ const TtfReaderMetrics::CachedGlyph* TtfReaderMetrics::rasterizeAndCacheGlyphWit
     glyphCacheBytes_ += cached.bitmapBytes;
   }
 
+  cached.lastUsed = ++glyphUseClock_;
   glyphCache_.push_back(std::move(cached));
   ++rasterOk_;
   return &glyphCache_.back();
@@ -934,9 +954,9 @@ void TtfReaderMetrics::drawText(const GfxRenderer& renderer, const int fontId, c
         continue;
       }
       for (int gy = 0; gy < glyph->height; ++gy) {
-        const uint8_t* row = glyph->bitmap.get() + static_cast<size_t>(gy) * glyph->width;
         for (int gx = 0; gx < glyph->width; ++gx) {
-          if (shouldDrawCoveragePixel(renderMode, row[gx])) {
+          const uint8_t val = getPackedGlyphPixel(glyph->bitmap.get(), static_cast<size_t>(gy) * glyph->width + gx);
+          if (shouldDrawPackedPixel(renderMode, val)) {
             renderer.drawPixel(drawX + gx, drawY + gy, pixelState);
           }
         }
@@ -980,10 +1000,10 @@ void TtfReaderMetrics::drawTextRotated90CW(const GfxRenderer& renderer, const in
       }
 
       for (int gy = 0; gy < glyph->height; ++gy) {
-        const uint8_t* row = glyph->bitmap.get() + static_cast<size_t>(gy) * glyph->width;
         const int screenX = drawX0 + gy;
         for (int gx = 0; gx < glyph->width; ++gx) {
-          if (shouldDrawCoveragePixel(renderMode, row[gx])) {
+          const uint8_t val = getPackedGlyphPixel(glyph->bitmap.get(), static_cast<size_t>(gy) * glyph->width + gx);
+          if (shouldDrawPackedPixel(renderMode, val)) {
             renderer.drawPixel(screenX, cursorY - glyph->xOffset - gx, pixelState);
           }
         }
@@ -997,9 +1017,43 @@ void TtfReaderMetrics::drawTextRotated90CW(const GfxRenderer& renderer, const in
   logRenderStats("draw_rotated");
 }
 
+bool TtfReaderMetrics::reserveGlyphCacheBytes(const size_t incomingBytes) const {
+  if (incomingBytes == 0) return true;
+  if (incomingBytes > TTF_GLYPH_CACHE_MAX_BYTES) {
+    LOG_ERR("TTFR", "glyph too large for cache bytes=%u limit=%u", static_cast<unsigned>(incomingBytes),
+            static_cast<unsigned>(TTF_GLYPH_CACHE_MAX_BYTES));
+    ++rasterFailed_;
+    return false;
+  }
+
+  uint32_t evicted = 0;
+  size_t evictedBytes = 0;
+  while (glyphCacheBytes_ + incomingBytes > TTF_GLYPH_CACHE_MAX_BYTES && !glyphCache_.empty()) {
+    auto victim = std::min_element(glyphCache_.begin(), glyphCache_.end(), [](const CachedGlyph& a, const CachedGlyph& b) {
+      return a.lastUsed < b.lastUsed;
+    });
+    if (victim == glyphCache_.end()) break;
+    evictedBytes += victim->bitmapBytes;
+    glyphCacheBytes_ = victim->bitmapBytes <= glyphCacheBytes_ ? glyphCacheBytes_ - victim->bitmapBytes : 0;
+    glyphCache_.erase(victim);
+    ++evicted;
+  }
+
+  if (evicted > 0) {
+    cacheEvictions_ += evicted;
+    LOG_INF("TTFR", "glyph cache evicted count=%lu bytes=%u cache=%u/%u glyphs=%u incoming=%u",
+            static_cast<unsigned long>(evicted), static_cast<unsigned>(evictedBytes),
+            static_cast<unsigned>(glyphCacheBytes_), static_cast<unsigned>(TTF_GLYPH_CACHE_MAX_BYTES),
+            static_cast<unsigned>(glyphCache_.size()), static_cast<unsigned>(incomingBytes));
+  }
+
+  return glyphCacheBytes_ + incomingBytes <= TTF_GLYPH_CACHE_MAX_BYTES;
+}
+
 void TtfReaderMetrics::clearGlyphCache() const {
   glyphCache_.clear();
   glyphCacheBytes_ = 0;
+  glyphUseClock_ = 0;
   cacheHits_ = 0;
   cacheMisses_ = 0;
   rasterOk_ = 0;
@@ -1008,6 +1062,7 @@ void TtfReaderMetrics::clearGlyphCache() const {
   missingGlyphs_ = 0;
   renderedGlyphs_ = 0;
   cacheResets_ = 0;
+  cacheEvictions_ = 0;
   rasterTimeUs_ = 0;
   downsampleTimeUs_ = 0;
   lastLoggedRasterOk_ = 0;
@@ -1027,16 +1082,21 @@ void TtfReaderMetrics::logRenderStats(const char* label) const {
   const uint64_t deltaRasterUs = positiveDelta(rasterTimeUs_, lastLoggedRasterTimeUs_);
   const uint32_t avgRasterUs = rasterOk_ > 0 ? static_cast<uint32_t>(rasterTimeUs_ / rasterOk_) : 0;
   const uint32_t avgDeltaRasterUs = deltaRasterOk > 0 ? static_cast<uint32_t>(deltaRasterUs / deltaRasterOk) : 0;
+  const uint32_t cachePct =
+      static_cast<uint32_t>((glyphCacheBytes_ * 100 + TTF_GLYPH_CACHE_MAX_BYTES / 2) / TTF_GLYPH_CACHE_MAX_BYTES);
   LOG_INF("TTFR",
-          "render stats label=%s drawn=%lu cached_glyphs=%u cache_bytes=%u hits=%lu misses=%lu raster_ok=%lu "
-          "raster_fail=%lu compound=%lu missing=%lu cache_resets=%lu avg_raster_us=%lu "
+          "render stats label=%s drawn=%lu cached_glyphs=%u cache_bytes=%u cache_limit=%u cache_pct=%lu "
+          "hits=%lu misses=%lu raster_ok=%lu raster_fail=%lu compound=%lu missing=%lu cache_resets=%lu "
+          "cache_evictions=%lu avg_raster_us=%lu "
           "delta_drawn=%lu delta_misses=%lu delta_raster=%lu delta_avg_raster_us=%lu",
           label ? label : "render", static_cast<unsigned long>(renderedGlyphs_),
           static_cast<unsigned>(glyphCache_.size()), static_cast<unsigned>(glyphCacheBytes_),
+          static_cast<unsigned>(TTF_GLYPH_CACHE_MAX_BYTES), static_cast<unsigned long>(cachePct),
           static_cast<unsigned long>(cacheHits_), static_cast<unsigned long>(cacheMisses_),
           static_cast<unsigned long>(rasterOk_), static_cast<unsigned long>(rasterFailed_),
           static_cast<unsigned long>(compoundGlyphs_), static_cast<unsigned long>(missingGlyphs_),
-          static_cast<unsigned long>(cacheResets_), static_cast<unsigned long>(avgRasterUs),
+          static_cast<unsigned long>(cacheResets_), static_cast<unsigned long>(cacheEvictions_),
+          static_cast<unsigned long>(avgRasterUs),
           static_cast<unsigned long>(deltaRenderedGlyphs), static_cast<unsigned long>(deltaCacheMisses),
           static_cast<unsigned long>(deltaRasterOk), static_cast<unsigned long>(avgDeltaRasterUs));
   lastLoggedRasterOk_ = rasterOk_;

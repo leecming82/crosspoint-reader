@@ -87,6 +87,7 @@ class TtfReaderMetrics final : public ReaderFontMetricsProvider {
     int advancePx = 0;
     PsramBuffer bitmap;
     size_t bitmapBytes = 0;
+    uint32_t lastUsed = 0;
   };
 
  private:
@@ -101,6 +102,7 @@ class TtfReaderMetrics final : public ReaderFontMetricsProvider {
   const CachedGlyph* rasterizeAndCacheGlyphWithCustomRasterizer(uint32_t cp, EpdFontFamily::Style style,
                                                                 const ttf::GlyphMetrics& metrics) const;
   bool readGlyphSlice(const ttf::GlyphMetrics& glyph, PsramBuffer& outData, uint32_t& outLength) const;
+  bool reserveGlyphCacheBytes(size_t incomingBytes) const;
   void clearGlyphCache() const;
   void logRenderStats(const char* label) const;
 #ifdef CROSSPOINT_TTF_USE_OPENFONTRENDER
@@ -124,6 +126,7 @@ class TtfReaderMetrics final : public ReaderFontMetricsProvider {
 #endif
   mutable std::vector<CachedGlyph> glyphCache_;
   mutable size_t glyphCacheBytes_ = 0;
+  mutable uint32_t glyphUseClock_ = 0;
   mutable uint32_t cacheHits_ = 0;
   mutable uint32_t cacheMisses_ = 0;
   mutable uint32_t rasterOk_ = 0;
@@ -132,6 +135,7 @@ class TtfReaderMetrics final : public ReaderFontMetricsProvider {
   mutable uint32_t missingGlyphs_ = 0;
   mutable uint32_t renderedGlyphs_ = 0;
   mutable uint32_t cacheResets_ = 0;
+  mutable uint32_t cacheEvictions_ = 0;
   mutable uint64_t rasterTimeUs_ = 0;
   mutable uint64_t downsampleTimeUs_ = 0;
   mutable uint32_t lastLoggedRasterOk_ = 0;

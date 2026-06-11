@@ -331,6 +331,8 @@ The likely practical compromise is lazy runtime caching. Rasterize glyphs on fir
    - Added probe-firmware OpenFontRender timing breakdown for cold and repeated glyph rasterization. `raster_ofr` now reports allocation/clear time, callback setup time, `drawString` time, scan time, copy/cache-simulation time, and total time.
    - Added an experimental OpenFontRender patch/probe path for `renderGlyphBitmap()`, a lower-level glyph primitive that bypasses UTF-8 string layout, draw callbacks, scratch canvas, and crop scanning. Probe logs use `raster_ofr_primitive` and compare cold/repeat timing against `drawString()`.
    - Promoted the OpenFontRender `renderGlyphBitmap()` primitive into the full M4 reader TTF raster path. The reader still uses `TtfRuntimeFont` for layout and font identity, but glyph raster now bypasses `drawString()`, draw callbacks, scratch canvas allocation, and crop scanning.
+   - Packed cached TTF glyph coverage into 2-bit pixels (`0=black`, `1=dark gray`, `2=light gray`, `3=white`) instead of one byte per pixel, matching the cpfont storage shape and increasing effective cache capacity.
+   - Replaced whole-cache reset on overflow with LRU glyph eviction. `TTFR prewarm` and render stats now include cache limit, fill percentage, and eviction counters for page-flip validation.
    - Next validation: flash `murphy_m4`, flip through a Japanese section, and compare `TTFR prewarm ... raster_delta=...` against the following `Page render ... bw_render=...` time. If visible render remains slow after cache warmup, move on to adjacent-page prewarm and/or a persistent glyph sidecar.
 
 - [ ] 12. Japanese reader-adjacent validation
