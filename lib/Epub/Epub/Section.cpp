@@ -21,10 +21,10 @@
 #include "parsers/ChapterHtmlSlimParser.h"
 
 namespace {
-constexpr uint8_t SECTION_FILE_VERSION = 44;
+constexpr uint8_t SECTION_FILE_VERSION = 46;
 constexpr uint32_t READER_FONT_IDENTITY_SIZE = sizeof(uint16_t) + sizeof(uint8_t) + sizeof(uint8_t) +
-                                               sizeof(uint8_t) + sizeof(uint8_t) + sizeof(uint32_t) +
-                                               sizeof(uint32_t) + sizeof(uint32_t) + sizeof(int);
+                                               sizeof(uint8_t) + sizeof(uint8_t) + sizeof(uint16_t) +
+                                               sizeof(uint32_t) + sizeof(uint32_t) + sizeof(uint32_t) + sizeof(int);
 constexpr uint32_t HEADER_SIZE = sizeof(uint8_t) + sizeof(int) + READER_FONT_IDENTITY_SIZE + sizeof(float) +
                                  sizeof(bool) + sizeof(uint8_t) + sizeof(uint16_t) + sizeof(uint16_t) +
                                  sizeof(uint16_t) + sizeof(bool) + sizeof(bool) + sizeof(uint8_t) + sizeof(bool) +
