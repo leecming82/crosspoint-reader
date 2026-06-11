@@ -33,6 +33,9 @@
 #include "RecentBooksStore.h"
 #include "SdCardFontSystem.h"
 #include "SilentRestart.h"
+#ifdef CROSSPOINT_BOARD_MURPHY_M4
+#include "TtfReaderMetrics.h"
+#endif
 #include "activities/Activity.h"
 #include "activities/ActivityManager.h"
 #include "activities/settings/SdFirmwareUpdateActivity.h"
@@ -354,6 +357,7 @@ void enterDeepSleep(bool fromTimeout = false) {
 
 #ifdef CROSSPOINT_BOARD_MURPHY_M4
   appendMurphyBatteryLog("sleep");
+  TTF_READER_METRICS.flushGlyphSidecarCache();
 #endif
 
   // Commit to sleeping before goToSleep() runs the outgoing activity's onExit():

@@ -316,7 +316,7 @@ The likely practical compromise is lazy runtime caching. Rasterize glyphs on fir
    - Added `scripts/generate_japanese_punctuation_epub.py` for repeatable tategaki/yokogaki punctuation validation.
    - Device validation: selected static Japanese TTFs render acceptable EPUB body text and punctuation, and EPUB covers/images render normally after removing render-hot-path OpenFontRender measurement calls.
 
-- [ ] 11. Performance and memory guardrails
+- [x] 11. Performance and memory guardrails
 
    Add limited telemetry to measure first-page cost, page-flip cost, glyph cache hit rate, PSRAM use, missing-glyph counts, and unsupported glyph counts. Remove or gate noisy logging after validation.
 
@@ -324,16 +324,12 @@ The likely practical compromise is lazy runtime caching. Rasterize glyphs on fir
 
    Progress:
 
-   - Page render logs now include render-stage timing plus heap, min-heap, max-allocation, and PSRAM before/after values.
-   - TTF render stats now report glyph-cache size/bytes, hit/miss counts, raster success/failure counts, missing glyphs, cache resets, and average raster time.
-   - Adapted the existing scan/prewarm pass so selected TTF reader fonts can pre-rasterize page glyphs through `TtfReaderMetrics::prewarmText()` before the visible draw. This keeps the TTF glyph cache warm across page flips instead of clearing it like the cpfont decompressor cache.
-   - Added `TTFR prewarm` telemetry with scanned/unique glyph counts, cache growth, hit/miss deltas, raster deltas, raster time, and elapsed time.
-   - Added probe-firmware OpenFontRender timing breakdown for cold and repeated glyph rasterization. `raster_ofr` now reports allocation/clear time, callback setup time, `drawString` time, scan time, copy/cache-simulation time, and total time.
-   - Added an experimental OpenFontRender patch/probe path for `renderGlyphBitmap()`, a lower-level glyph primitive that bypasses UTF-8 string layout, draw callbacks, scratch canvas, and crop scanning. Probe logs use `raster_ofr_primitive` and compare cold/repeat timing against `drawString()`.
-   - Promoted the OpenFontRender `renderGlyphBitmap()` primitive into the full M4 reader TTF raster path. The reader still uses `TtfRuntimeFont` for layout and font identity, but glyph raster now bypasses `drawString()`, draw callbacks, scratch canvas allocation, and crop scanning.
-   - Packed cached TTF glyph coverage into 2-bit pixels (`0=black`, `1=dark gray`, `2=light gray`, `3=white`) instead of one byte per pixel, matching the cpfont storage shape and increasing effective cache capacity.
-   - Replaced whole-cache reset on overflow with LRU glyph eviction. `TTFR prewarm` and render stats now include cache limit, fill percentage, and eviction counters for page-flip validation.
-   - Next validation: flash `murphy_m4`, flip through a Japanese section, and compare `TTFR prewarm ... raster_delta=...` against the following `Page render ... bw_render=...` time. If visible render remains slow after cache warmup, move on to adjacent-page prewarm and/or a persistent glyph sidecar.
+   - Page render and `TTFR` logs now report enough timing, memory, glyph-cache, hit/miss, raster, missing-glyph, and eviction data to validate page-flip behavior without the earlier probe-only noise.
+   - Selected TTF reader fonts use the existing scan/prewarm flow to rasterize page glyphs before the visible draw, keeping a resident glyph cache warm across page flips.
+   - Production TTF rasterization uses OpenFontRender's lower-level `renderGlyphBitmap()` primitive while `TtfRuntimeFont` remains the layout, indexing, and cache-identity source of truth.
+   - Cached TTF glyph coverage is packed into cpfont-shaped 2-bit pixels (`0=black`, `1=dark gray`, `2=light gray`, `3=white`) with bounded LRU eviction instead of whole-cache reset.
+   - A per-font-size persistent glyph sidecar under `/.crosspoint/ttf_cache/` snapshots the packed RAM glyph cache and reloads it for the same TTF identity/size. Rendering still uses RAM/PSRAM only; the sidecar avoids repeated cold rasterization after reloads and is flushed explicitly before deep sleep.
+   - Remaining performance experiments, such as adjacent-page/background prewarm, smarter sidecar merging, and stronger sampled font hashes, are deferred to milestone 14.
 
 - [ ] 12. Japanese reader-adjacent validation
 
@@ -353,11 +349,11 @@ The likely practical compromise is lazy runtime caching. Rasterize glyphs on fir
 
    Exit criteria: a user can copy a `.ttf` to SD, select it, open an EPUB/TXT, and recover if the font is invalid.
 
-- [ ] 14. Optional persistent glyph sidecar
+- [ ] 14. Optional glyph cache refinements
 
-   If runtime rasterization cost remains noticeable, consider a persistent sidecar cache keyed by TTF identity and pixel size. This should store only glyphs actually encountered, not a full CJK font conversion.
+   If runtime rasterization cost remains noticeable, consider deeper cache work: adjacent-page/background prewarm, smarter sidecar merge/indexing, and stronger sampled font hashing.
 
-   Exit criteria: sidecar improves repeated opens/page flips enough to justify the added complexity and can be safely invalidated.
+   Exit criteria: refinements improve repeated opens/page flips enough to justify the added complexity and can be safely invalidated.
 
 - [ ] 15. Optional system font TTF layer
 

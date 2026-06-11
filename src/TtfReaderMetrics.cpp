@@ -26,6 +26,11 @@ constexpr size_t TTF_TABLE_RECORD_SIZE = 16;
 constexpr size_t TTF_RASTER_SCRATCH_BYTES = 64 * 1024;
 constexpr size_t TTF_GLYPH_CACHE_MAX_BYTES = 768 * 1024;
 constexpr uint32_t TTF_STATS_LOG_INTERVAL_MS = 3000;
+constexpr const char* TTF_GLYPH_CACHE_DIR = "/.crosspoint/ttf_cache";
+constexpr uint16_t TTF_GLYPH_SIDECAR_VERSION = 1;
+constexpr uint32_t TTF_GLYPH_SIDECAR_SAVE_INTERVAL_MS = 60000;
+constexpr uint32_t TTF_GLYPH_SIDECAR_SAVE_DIRTY_GLYPHS = 128;
+constexpr size_t TTF_GLYPH_SIDECAR_SAVE_DIRTY_BYTES = 64 * 1024;
 constexpr uint8_t TTF_RASTER_SUPERSAMPLE = 2;
 constexpr uint32_t FNV_OFFSET = 2166136261u;
 constexpr uint32_t FNV_PRIME = 16777619u;
@@ -60,6 +65,45 @@ bool readExact(HalFile& file, uint8_t* dest, const size_t len) {
     total += static_cast<size_t>(got);
   }
   return true;
+}
+
+bool readU16LE(HalFile& file, uint16_t& out) {
+  uint8_t b[2] = {};
+  if (!readExact(file, b, sizeof(b))) return false;
+  out = static_cast<uint16_t>(b[0]) | (static_cast<uint16_t>(b[1]) << 8);
+  return true;
+}
+
+bool readI16LE(HalFile& file, int16_t& out) {
+  uint16_t raw = 0;
+  if (!readU16LE(file, raw)) return false;
+  out = static_cast<int16_t>(raw);
+  return true;
+}
+
+bool readU32LE(HalFile& file, uint32_t& out) {
+  uint8_t b[4] = {};
+  if (!readExact(file, b, sizeof(b))) return false;
+  out = static_cast<uint32_t>(b[0]) | (static_cast<uint32_t>(b[1]) << 8) |
+        (static_cast<uint32_t>(b[2]) << 16) | (static_cast<uint32_t>(b[3]) << 24);
+  return true;
+}
+
+bool writeExact(HalFile& file, const void* src, const size_t len) { return file.write(src, len) == len; }
+
+bool writeU16LE(HalFile& file, const uint16_t value) {
+  const uint8_t b[2] = {static_cast<uint8_t>(value & 0xFF), static_cast<uint8_t>((value >> 8) & 0xFF)};
+  return writeExact(file, b, sizeof(b));
+}
+
+bool writeI16LE(HalFile& file, const int16_t value) {
+  return writeU16LE(file, static_cast<uint16_t>(value));
+}
+
+bool writeU32LE(HalFile& file, const uint32_t value) {
+  const uint8_t b[4] = {static_cast<uint8_t>(value & 0xFF), static_cast<uint8_t>((value >> 8) & 0xFF),
+                        static_cast<uint8_t>((value >> 16) & 0xFF), static_cast<uint8_t>((value >> 24) & 0xFF)};
+  return writeExact(file, b, sizeof(b));
 }
 
 bool findTableRecord(const uint8_t* directoryData, const size_t directorySize, const uint32_t tag,
@@ -287,6 +331,8 @@ size_t packedGlyphBytes(const int width, const int height) {
   return (static_cast<size_t>(width) * height + 3) / 4;
 }
 
+bool fitsInt16(const int value) { return value >= INT16_MIN && value <= INT16_MAX; }
+
 void setPackedGlyphPixel(uint8_t* bitmap, const size_t pixelIndex, const uint8_t value) {
   const size_t byteIndex = pixelIndex >> 2;
   const uint8_t shift = static_cast<uint8_t>((3 - (pixelIndex & 0x03)) * 2);
@@ -431,7 +477,10 @@ bool TtfReaderMetrics::ensureLoadedFromSettings() {
   return loadFromPath(SETTINGS.readerTtfPath, size, expectedSize);
 }
 
+bool TtfReaderMetrics::flushGlyphSidecarCache() const { return saveGlyphSidecarCache(); }
+
 void TtfReaderMetrics::unload() {
+  saveGlyphSidecarCache();
   clearGlyphCache();
 #ifdef CROSSPOINT_TTF_USE_OPENFONTRENDER
   if (openFontRenderLoaded_) {
@@ -528,6 +577,7 @@ bool TtfReaderMetrics::loadFromPath(const char* path, const uint8_t pixelSize, c
 
   loaded_ = true;
   clearGlyphCache();
+  loadGlyphSidecarCache();
 
   if (expectedFileSize != 0 && expectedFileSize != fileSize_) {
     LOG_DBG("TTFR", "TTF file size changed settings=%lu actual=%lu path=%s", static_cast<unsigned long>(expectedFileSize),
@@ -643,10 +693,12 @@ void TtfReaderMetrics::prewarmText(const int fontId, const char* utf8Text, const
   const uint32_t avgRasterUs = rasterDelta > 0 ? static_cast<uint32_t>(rasterUsDelta / rasterDelta) : 0;
   const uint32_t cachePct =
       static_cast<uint32_t>((glyphCacheBytes_ * 100 + TTF_GLYPH_CACHE_MAX_BYTES / 2) / TTF_GLYPH_CACHE_MAX_BYTES);
+  const bool sidecarSaved = maybeSaveGlyphSidecarCache();
   LOG_INF("TTFR",
           "prewarm font_id=%d scanned=%lu unique=%u cache=%u->%u bytes=%u->%u limit=%u pct=%lu "
           "hits_delta=%lu misses_delta=%lu raster_delta=%lu raster_fail_delta=%lu missing_delta=%lu "
-          "evict_delta=%lu evictions=%lu raster_us=%llu avg_raster_us=%lu elapsed_ms=%lu",
+          "evict_delta=%lu evictions=%lu raster_us=%llu avg_raster_us=%lu sidecar_saved=%d "
+          "sidecar_dirty=%lu sidecar_dirty_bytes=%u elapsed_ms=%lu",
           fontId_, static_cast<unsigned long>(scannedGlyphs), static_cast<unsigned>(uniqueCodepoints.size()),
           static_cast<unsigned>(cacheStart), static_cast<unsigned>(glyphCache_.size()),
           static_cast<unsigned>(cacheBytesStart), static_cast<unsigned>(glyphCacheBytes_),
@@ -657,7 +709,8 @@ void TtfReaderMetrics::prewarmText(const int fontId, const char* utf8Text, const
           static_cast<unsigned long>(positiveDelta(missingGlyphs_, missingStart)),
           static_cast<unsigned long>(positiveDelta(cacheEvictions_, evictionsStart)),
           static_cast<unsigned long>(cacheEvictions_),
-          static_cast<unsigned long long>(rasterUsDelta), static_cast<unsigned long>(avgRasterUs),
+          static_cast<unsigned long long>(rasterUsDelta), static_cast<unsigned long>(avgRasterUs), sidecarSaved ? 1 : 0,
+          static_cast<unsigned long>(glyphSidecarDirtyGlyphs_), static_cast<unsigned>(glyphSidecarDirtyBytes_),
           static_cast<unsigned long>(millis() - startMs));
 }
 
@@ -760,6 +813,7 @@ const TtfReaderMetrics::CachedGlyph* TtfReaderMetrics::rasterizeAndCacheGlyphWit
   if (metrics.glyphLength == 0) {
     cached.lastUsed = ++glyphUseClock_;
     glyphCache_.push_back(std::move(cached));
+    markGlyphSidecarDirty(0);
     ++rasterOk_;
     return &glyphCache_.back();
   }
@@ -810,7 +864,9 @@ const TtfReaderMetrics::CachedGlyph* TtfReaderMetrics::rasterizeAndCacheGlyphWit
   }
 
   cached.lastUsed = ++glyphUseClock_;
+  const size_t cachedBytes = cached.bitmapBytes;
   glyphCache_.push_back(std::move(cached));
+  markGlyphSidecarDirty(cachedBytes);
   ++rasterOk_;
   return &glyphCache_.back();
 #else
@@ -832,6 +888,7 @@ const TtfReaderMetrics::CachedGlyph* TtfReaderMetrics::rasterizeAndCacheGlyphWit
   if (metrics.glyphLength == 0) {
     cached.lastUsed = ++glyphUseClock_;
     glyphCache_.push_back(std::move(cached));
+    markGlyphSidecarDirty(0);
     ++rasterOk_;
     return &glyphCache_.back();
   }
@@ -899,7 +956,9 @@ const TtfReaderMetrics::CachedGlyph* TtfReaderMetrics::rasterizeAndCacheGlyphWit
   }
 
   cached.lastUsed = ++glyphUseClock_;
+  const size_t cachedBytes = cached.bitmapBytes;
   glyphCache_.push_back(std::move(cached));
+  markGlyphSidecarDirty(cachedBytes);
   ++rasterOk_;
   return &glyphCache_.back();
 }
@@ -1050,6 +1109,203 @@ bool TtfReaderMetrics::reserveGlyphCacheBytes(const size_t incomingBytes) const 
   return glyphCacheBytes_ + incomingBytes <= TTF_GLYPH_CACHE_MAX_BYTES;
 }
 
+std::string TtfReaderMetrics::glyphSidecarPath() const {
+  char filename[96] = {};
+  snprintf(filename, sizeof(filename), "%s/%08lX_sz%u_v%u.gcache", TTF_GLYPH_CACHE_DIR,
+           static_cast<unsigned long>(identityHash_), pixelSize_, TTF_GLYPH_SIDECAR_VERSION);
+  return filename;
+}
+
+bool TtfReaderMetrics::loadGlyphSidecarCache() const {
+  if (!loaded_ || !Storage.ready()) return false;
+
+  const std::string path = glyphSidecarPath();
+  if (!Storage.exists(path.c_str())) return false;
+
+  const uint32_t startMs = millis();
+  HalFile file = Storage.open(path.c_str(), O_RDONLY);
+  if (!file) return false;
+
+  uint8_t magic[4] = {};
+  uint16_t version = 0;
+  uint16_t reserved = 0;
+  uint32_t identity = 0;
+  uint32_t fileSize = 0;
+  uint16_t pixelSize = 0;
+  uint16_t glyphCount = 0;
+  uint32_t payloadBytes = 0;
+
+  bool ok = readExact(file, magic, sizeof(magic)) && readU16LE(file, version) && readU16LE(file, reserved) &&
+            readU32LE(file, identity) && readU32LE(file, fileSize) && readU16LE(file, pixelSize) &&
+            readU16LE(file, glyphCount) && readU32LE(file, payloadBytes);
+
+  if (!ok || memcmp(magic, "TTGC", 4) != 0 || version != TTF_GLYPH_SIDECAR_VERSION || identity != identityHash_ ||
+      fileSize != fileSize_ || pixelSize != pixelSize_ || payloadBytes > TTF_GLYPH_CACHE_MAX_BYTES) {
+    file.close();
+    LOG_DBG("TTFR", "glyph sidecar skipped path=%s valid=%d version=%u identity=0x%08lX file=%lu px=%u bytes=%lu",
+            path.c_str(), ok ? 1 : 0, version, static_cast<unsigned long>(identity),
+            static_cast<unsigned long>(fileSize), pixelSize, static_cast<unsigned long>(payloadBytes));
+    return false;
+  }
+
+  std::vector<CachedGlyph> loadedGlyphs;
+  loadedGlyphs.reserve(glyphCount);
+  size_t loadedBytes = 0;
+
+  for (uint16_t i = 0; i < glyphCount; ++i) {
+    uint32_t codepoint = 0;
+    uint16_t glyphId = 0;
+    int16_t width = 0;
+    int16_t height = 0;
+    int16_t xOffset = 0;
+    int16_t yOffset = 0;
+    int16_t advancePx = 0;
+    uint32_t bitmapBytes = 0;
+
+    ok = readU32LE(file, codepoint) && readU16LE(file, glyphId) && readI16LE(file, width) && readI16LE(file, height) &&
+         readI16LE(file, xOffset) && readI16LE(file, yOffset) && readI16LE(file, advancePx) &&
+         readU32LE(file, bitmapBytes);
+    if (!ok || width < 0 || height < 0 || bitmapBytes != packedGlyphBytes(width, height) ||
+        loadedBytes + bitmapBytes > TTF_GLYPH_CACHE_MAX_BYTES) {
+      ok = false;
+      break;
+    }
+
+    CachedGlyph glyph;
+    glyph.codepoint = codepoint;
+    glyph.glyphId = glyphId;
+    glyph.width = width;
+    glyph.height = height;
+    glyph.xOffset = xOffset;
+    glyph.yOffset = yOffset;
+    glyph.advancePx = advancePx;
+    glyph.bitmapBytes = bitmapBytes;
+    glyph.lastUsed = ++glyphUseClock_;
+
+    if (bitmapBytes > 0) {
+      uint8_t* raw = static_cast<uint8_t*>(heap_caps_malloc(bitmapBytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+      if (!raw) {
+        ok = false;
+        break;
+      }
+      glyph.bitmap.reset(raw);
+      if (!readExact(file, glyph.bitmap.get(), bitmapBytes)) {
+        ok = false;
+        break;
+      }
+    }
+
+    loadedBytes += bitmapBytes;
+    loadedGlyphs.push_back(std::move(glyph));
+  }
+
+  file.close();
+
+  if (!ok) {
+    LOG_DBG("TTFR", "glyph sidecar invalid path=%s partial_glyphs=%u bytes=%u", path.c_str(),
+            static_cast<unsigned>(loadedGlyphs.size()), static_cast<unsigned>(loadedBytes));
+    return false;
+  }
+
+  glyphCache_ = std::move(loadedGlyphs);
+  glyphCacheBytes_ = loadedBytes;
+  glyphSidecarDirty_ = false;
+  glyphSidecarDirtyGlyphs_ = 0;
+  glyphSidecarDirtyBytes_ = 0;
+  LOG_INF("TTFR", "glyph sidecar loaded path=%s glyphs=%u bytes=%u elapsed_ms=%lu", path.c_str(),
+          static_cast<unsigned>(glyphCache_.size()), static_cast<unsigned>(glyphCacheBytes_),
+          static_cast<unsigned long>(millis() - startMs));
+  return true;
+}
+
+bool TtfReaderMetrics::saveGlyphSidecarCache() const {
+  if (!loaded_ || !Storage.ready() || glyphCache_.empty() || !glyphSidecarDirty_) return false;
+
+  Storage.mkdir("/.crosspoint");
+  Storage.mkdir(TTF_GLYPH_CACHE_DIR);
+
+  const std::string path = glyphSidecarPath();
+  const std::string tmpPath = path + ".tmp";
+  const uint32_t startMs = millis();
+
+  if (Storage.exists(tmpPath.c_str())) Storage.remove(tmpPath.c_str());
+  HalFile file = Storage.open(tmpPath.c_str(), O_WRITE | O_CREAT | O_TRUNC);
+  if (!file) return false;
+
+  bool ok = writeExact(file, "TTGC", 4) && writeU16LE(file, TTF_GLYPH_SIDECAR_VERSION) && writeU16LE(file, 0) &&
+            writeU32LE(file, identityHash_) && writeU32LE(file, fileSize_) && writeU16LE(file, pixelSize_) &&
+            writeU16LE(file, static_cast<uint16_t>(std::min<size_t>(glyphCache_.size(), UINT16_MAX))) &&
+            writeU32LE(file, static_cast<uint32_t>(std::min<size_t>(glyphCacheBytes_, UINT32_MAX)));
+
+  uint16_t writtenGlyphs = 0;
+  size_t writtenBytes = 0;
+  for (const auto& glyph : glyphCache_) {
+    if (!ok || writtenGlyphs == UINT16_MAX) break;
+    if (!fitsInt16(glyph.width) || !fitsInt16(glyph.height) || !fitsInt16(glyph.xOffset) ||
+        !fitsInt16(glyph.yOffset) || !fitsInt16(glyph.advancePx) || glyph.bitmapBytes > UINT32_MAX ||
+        glyph.bitmapBytes != packedGlyphBytes(glyph.width, glyph.height)) {
+      ok = false;
+      break;
+    }
+
+    ok = writeU32LE(file, glyph.codepoint) && writeU16LE(file, glyph.glyphId) &&
+         writeI16LE(file, static_cast<int16_t>(glyph.width)) && writeI16LE(file, static_cast<int16_t>(glyph.height)) &&
+         writeI16LE(file, static_cast<int16_t>(glyph.xOffset)) &&
+         writeI16LE(file, static_cast<int16_t>(glyph.yOffset)) &&
+         writeI16LE(file, static_cast<int16_t>(glyph.advancePx)) &&
+         writeU32LE(file, static_cast<uint32_t>(glyph.bitmapBytes));
+    if (ok && glyph.bitmapBytes > 0) ok = writeExact(file, glyph.bitmap.get(), glyph.bitmapBytes);
+    if (ok) {
+      ++writtenGlyphs;
+      writtenBytes += glyph.bitmapBytes;
+    }
+  }
+
+  file.flush();
+  file.close();
+
+  if (!ok || writtenGlyphs != glyphCache_.size() || writtenBytes != glyphCacheBytes_) {
+    Storage.remove(tmpPath.c_str());
+    LOG_DBG("TTFR", "glyph sidecar save failed path=%s glyphs=%u/%u bytes=%u/%u", path.c_str(), writtenGlyphs,
+            static_cast<unsigned>(glyphCache_.size()), static_cast<unsigned>(writtenBytes),
+            static_cast<unsigned>(glyphCacheBytes_));
+    return false;
+  }
+
+  if (Storage.exists(path.c_str())) Storage.remove(path.c_str());
+  if (!Storage.rename(tmpPath.c_str(), path.c_str())) {
+    Storage.remove(tmpPath.c_str());
+    return false;
+  }
+
+  glyphSidecarDirty_ = false;
+  glyphSidecarDirtyGlyphs_ = 0;
+  glyphSidecarDirtyBytes_ = 0;
+  lastGlyphSidecarSaveMs_ = millis();
+  LOG_INF("TTFR", "glyph sidecar saved path=%s glyphs=%u bytes=%u elapsed_ms=%lu", path.c_str(), writtenGlyphs,
+          static_cast<unsigned>(writtenBytes), static_cast<unsigned long>(lastGlyphSidecarSaveMs_ - startMs));
+  return true;
+}
+
+bool TtfReaderMetrics::maybeSaveGlyphSidecarCache() const {
+  if (!glyphSidecarDirty_) return false;
+  const unsigned long now = millis();
+  if (lastGlyphSidecarSaveMs_ != 0 && now - lastGlyphSidecarSaveMs_ < TTF_GLYPH_SIDECAR_SAVE_INTERVAL_MS) {
+    return false;
+  }
+  if (glyphSidecarDirtyGlyphs_ < TTF_GLYPH_SIDECAR_SAVE_DIRTY_GLYPHS &&
+      glyphSidecarDirtyBytes_ < TTF_GLYPH_SIDECAR_SAVE_DIRTY_BYTES) {
+    return false;
+  }
+  return saveGlyphSidecarCache();
+}
+
+void TtfReaderMetrics::markGlyphSidecarDirty(const size_t bytes) const {
+  glyphSidecarDirty_ = true;
+  ++glyphSidecarDirtyGlyphs_;
+  glyphSidecarDirtyBytes_ += bytes;
+}
+
 void TtfReaderMetrics::clearGlyphCache() const {
   glyphCache_.clear();
   glyphCacheBytes_ = 0;
@@ -1063,6 +1319,10 @@ void TtfReaderMetrics::clearGlyphCache() const {
   renderedGlyphs_ = 0;
   cacheResets_ = 0;
   cacheEvictions_ = 0;
+  glyphSidecarDirty_ = false;
+  glyphSidecarDirtyGlyphs_ = 0;
+  glyphSidecarDirtyBytes_ = 0;
+  lastGlyphSidecarSaveMs_ = 0;
   rasterTimeUs_ = 0;
   downsampleTimeUs_ = 0;
   lastLoggedRasterOk_ = 0;

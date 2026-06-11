@@ -27,6 +27,7 @@ class TtfReaderMetrics final : public ReaderFontMetricsProvider {
   uint8_t pixelSize() const { return pixelSize_; }
   uint32_t fileSize() const { return fileSize_; }
   uint32_t identityHash() const { return identityHash_; }
+  bool flushGlyphSidecarCache() const;
 #ifdef CROSSPOINT_TTF_PROBE
   bool probeLoadFromPath(const char* path, uint8_t pixelSize, uint32_t expectedFileSize = 0) {
     return loadFromPath(path, pixelSize, expectedFileSize);
@@ -103,6 +104,11 @@ class TtfReaderMetrics final : public ReaderFontMetricsProvider {
                                                                 const ttf::GlyphMetrics& metrics) const;
   bool readGlyphSlice(const ttf::GlyphMetrics& glyph, PsramBuffer& outData, uint32_t& outLength) const;
   bool reserveGlyphCacheBytes(size_t incomingBytes) const;
+  std::string glyphSidecarPath() const;
+  bool loadGlyphSidecarCache() const;
+  bool saveGlyphSidecarCache() const;
+  bool maybeSaveGlyphSidecarCache() const;
+  void markGlyphSidecarDirty(size_t bytes) const;
   void clearGlyphCache() const;
   void logRenderStats(const char* label) const;
 #ifdef CROSSPOINT_TTF_USE_OPENFONTRENDER
@@ -136,6 +142,10 @@ class TtfReaderMetrics final : public ReaderFontMetricsProvider {
   mutable uint32_t renderedGlyphs_ = 0;
   mutable uint32_t cacheResets_ = 0;
   mutable uint32_t cacheEvictions_ = 0;
+  mutable bool glyphSidecarDirty_ = false;
+  mutable uint32_t glyphSidecarDirtyGlyphs_ = 0;
+  mutable size_t glyphSidecarDirtyBytes_ = 0;
+  mutable unsigned long lastGlyphSidecarSaveMs_ = 0;
   mutable uint64_t rasterTimeUs_ = 0;
   mutable uint64_t downsampleTimeUs_ = 0;
   mutable uint32_t lastLoggedRasterOk_ = 0;
