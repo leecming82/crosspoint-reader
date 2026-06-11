@@ -1420,6 +1420,7 @@ bool TtfReaderMetrics::loadGlyphSidecarCache() const {
   glyphSidecarDirty_ = false;
   glyphSidecarDirtyGlyphs_ = 0;
   glyphSidecarDirtyBytes_ = 0;
+  lastGlyphSidecarSaveMs_ = millis();
   LOG_INF("TTFR", "glyph sidecar loaded path=%s glyphs=%u bytes=%u elapsed_ms=%lu", path.c_str(),
           static_cast<unsigned>(glyphCache_.size()), static_cast<unsigned>(glyphCacheBytes_),
           static_cast<unsigned long>(millis() - startMs));
@@ -1498,11 +1499,11 @@ bool TtfReaderMetrics::saveGlyphSidecarCache() const {
 bool TtfReaderMetrics::maybeSaveGlyphSidecarCache() const {
   if (!glyphSidecarDirty_) return false;
   const unsigned long now = millis();
-  if (lastGlyphSidecarSaveMs_ != 0 && now - lastGlyphSidecarSaveMs_ < TTF_GLYPH_SIDECAR_SAVE_INTERVAL_MS) {
-    return false;
-  }
   if (glyphSidecarDirtyGlyphs_ < TTF_GLYPH_SIDECAR_SAVE_DIRTY_GLYPHS &&
       glyphSidecarDirtyBytes_ < TTF_GLYPH_SIDECAR_SAVE_DIRTY_BYTES) {
+    return false;
+  }
+  if (lastGlyphSidecarSaveMs_ != 0 && now - lastGlyphSidecarSaveMs_ < TTF_GLYPH_SIDECAR_SAVE_INTERVAL_MS) {
     return false;
   }
   return saveGlyphSidecarCache();
