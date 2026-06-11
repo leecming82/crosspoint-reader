@@ -5,17 +5,25 @@
 #include <HalGPIO.h>
 #include <HalStorage.h>
 #include <Logging.h>
+#ifdef CROSSPOINT_TTF_PROBE_OPENFONTRENDER
+#include <OpenFontRender.h>
+#endif
 #include <TtfCustomRasterizer.h>
 #include <TtfProbe.h>
 #include <TtfRuntimeFont.h>
 #include <TtfStb.h>
+#include <Utf8.h>
 #include <esp_heap_caps.h>
 #include <esp_system.h>
 
 #include <algorithm>
 #include <cctype>
+#include <cstdio>
+#include <fcntl.h>
+#include <list>
 #include <memory>
 #include <string>
+#include <unistd.h>
 #include <vector>
 
 namespace {
@@ -60,6 +68,10 @@ struct ProbeStatus {
   uint8_t sdTtfCustomRasterHits = 0;
   uint8_t sdTtfCustomRasterCompounds = 0;
   uint32_t sdTtfCustomRasterBytes = 0;
+  bool sdTtfOpenFontRenderOk = false;
+  uint8_t sdTtfOpenFontRenderQueries = 0;
+  uint8_t sdTtfOpenFontRenderHits = 0;
+  uint32_t sdTtfOpenFontRenderBytes = 0;
   uint16_t displayWidth = 0;
   uint16_t displayHeight = 0;
   uint32_t displayBufferSize = 0;
@@ -121,6 +133,34 @@ struct TtfSelection {
   uint64_t size = 0;
 };
 
+#ifdef CROSSPOINT_TTF_PROBE_OPENFONTRENDER
+struct OpenFontRenderFileHandle {
+  HalFile file;
+};
+
+std::list<OpenFontRenderFileHandle> ofrFiles;
+
+struct OpenFontRenderProbeCanvas {
+  uint8_t* pixels = nullptr;
+  int width = 0;
+  int height = 0;
+  int minX = INT_MAX;
+  int minY = INT_MAX;
+  int maxX = INT_MIN;
+  int maxY = INT_MIN;
+
+  void putPixel(const int x, const int y, const uint8_t coverage) {
+    if (!pixels || x < 0 || y < 0 || x >= width || y >= height || coverage == 0) return;
+    uint8_t& pixel = pixels[static_cast<size_t>(y) * width + x];
+    if (coverage > pixel) pixel = coverage;
+    minX = std::min(minX, x);
+    minY = std::min(minY, y);
+    maxX = std::max(maxX, x);
+    maxY = std::max(maxY, y);
+  }
+};
+#endif
+
 void logMemory(const char* label) {
   LOG_INF("TTFP", "%s heap free=%lu min=%lu psram free=%lu size=%lu", label,
           static_cast<unsigned long>(ESP.getFreeHeap()), static_cast<unsigned long>(ESP.getMinFreeHeap()),
@@ -137,6 +177,23 @@ uint32_t fnv1aUpdate(uint32_t hash, const uint8_t* data, const size_t len) {
   return hash;
 }
 
+#ifdef CROSSPOINT_TTF_PROBE_OPENFONTRENDER
+uint8_t rgb565ToCoverage(const uint16_t color) {
+  const uint16_t r5 = (color >> 11) & 0x1F;
+  const uint16_t g6 = (color >> 5) & 0x3F;
+  const uint16_t b5 = color & 0x1F;
+  const uint16_t r = (r5 * 255 + 15) / 31;
+  const uint16_t g = (g6 * 255 + 31) / 63;
+  const uint16_t b = (b5 * 255 + 15) / 31;
+  const uint16_t luma = static_cast<uint16_t>((r * 77 + g * 150 + b * 29) >> 8);
+  return static_cast<uint8_t>(255 - std::min<uint16_t>(255, luma));
+}
+
+uint8_t quantizeCoverage(const uint8_t coverage) {
+  return static_cast<uint8_t>(std::min<uint8_t>(3, (coverage + 42) / 85) * 85);
+}
+#endif
+
 bool endsWithTtf(const String& name) {
   const int len = name.length();
   if (len < 4) return false;
@@ -144,6 +201,13 @@ bool endsWithTtf(const String& name) {
          std::tolower(static_cast<unsigned char>(name[len - 3])) == 't' &&
          std::tolower(static_cast<unsigned char>(name[len - 2])) == 't' &&
          std::tolower(static_cast<unsigned char>(name[len - 1])) == 'f';
+}
+
+bool looksVariableFontName(const std::string& path) {
+  std::string lower = path;
+  std::transform(lower.begin(), lower.end(), lower.begin(),
+                 [](const unsigned char c) { return static_cast<char>(std::tolower(c)); });
+  return lower.find("variablefont") != std::string::npos || lower.find("variable-font") != std::string::npos;
 }
 
 std::string normalizeListedPath(const String& listed) {
@@ -557,6 +621,98 @@ void runStbReferenceForSmallestTtf(const TtfSelection& selection) {
   }
 }
 
+#ifdef CROSSPOINT_TTF_PROBE_OPENFONTRENDER
+void logOpenFontRenderGlyph(OpenFontRender& ofr, const uint32_t cp, const char* label) {
+  ++probeStatus.sdTtfOpenFontRenderQueries;
+  constexpr int CANVAS_WIDTH = 192;
+  constexpr int CANVAS_HEIGHT = 192;
+  uint8_t* canvasRaw =
+      static_cast<uint8_t*>(heap_caps_calloc(CANVAS_WIDTH * CANVAS_HEIGHT, 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+  if (!canvasRaw) {
+    LOG_ERR("TTFP", "raster_ofr %s allocation failed", label);
+    return;
+  }
+  std::unique_ptr<uint8_t, PsramFreeDeleter> canvasHolder(canvasRaw);
+  OpenFontRenderProbeCanvas canvas{canvasRaw, CANVAS_WIDTH, CANVAS_HEIGHT};
+
+  ofr.set_drawPixel([&canvas](int32_t x, int32_t y, uint16_t color) {
+    canvas.putPixel(x, y, quantizeCoverage(rgb565ToCoverage(color)));
+  });
+  ofr.set_drawFastHLine([&canvas](int32_t x, int32_t y, int32_t w, uint16_t color) {
+    const uint8_t coverage = quantizeCoverage(rgb565ToCoverage(color));
+    for (int32_t i = 0; i < w; ++i) canvas.putPixel(x + i, y, coverage);
+  });
+  ofr.set_startWrite([]() {});
+  ofr.set_endWrite([]() {});
+
+  std::string text;
+  utf8AppendCodepoint(cp, text);
+  const uint32_t startUs = micros();
+  const uint16_t chars = ofr.drawString(text.c_str(), 48, 0, 0x0000, 0xFFFF, Layout::Horizontal);
+  const uint32_t elapsedUs = micros() - startUs;
+
+  if (chars == 0 || canvas.minX > canvas.maxX || canvas.minY > canvas.maxY) {
+    LOG_INF("TTFP", "raster_ofr %s cp=U+%04lX ok=0 chars=%u us=%lu", label, static_cast<unsigned long>(cp),
+            chars, static_cast<unsigned long>(elapsedUs));
+    return;
+  }
+
+  const int width = canvas.maxX - canvas.minX + 1;
+  const int height = canvas.maxY - canvas.minY + 1;
+  uint32_t ink = 0;
+  uint32_t weak = 0;
+  for (int y = canvas.minY; y <= canvas.maxY; ++y) {
+    for (int x = canvas.minX; x <= canvas.maxX; ++x) {
+      const uint8_t coverage = canvas.pixels[static_cast<size_t>(y) * canvas.width + x];
+      if (coverage != 0) ++ink;
+      if (coverage > 0 && coverage < 255) ++weak;
+    }
+  }
+  ++probeStatus.sdTtfOpenFontRenderHits;
+  probeStatus.sdTtfOpenFontRenderBytes += static_cast<uint32_t>(width * height);
+  probeStatus.sdTtfOpenFontRenderOk = true;
+  LOG_INF("TTFP", "raster_ofr %s cp=U+%04lX ok=1 chars=%u %dx%d bytes=%lu ink=%lu weak=%lu us=%lu", label,
+          static_cast<unsigned long>(cp), chars, width, height, static_cast<unsigned long>(width * height),
+          static_cast<unsigned long>(ink), static_cast<unsigned long>(weak), static_cast<unsigned long>(elapsedUs));
+}
+
+void runOpenFontRenderProbe(const TtfSelection& selection) {
+  if (selection.path.empty()) {
+    LOG_INF("TTFP", "OpenFontRender probe skipped: no TTF selected");
+    return;
+  }
+  LOG_INF("TTFP", "OpenFontRender probe selected path=%s size=%llu variable_name=%d", selection.path.c_str(),
+          static_cast<unsigned long long>(selection.size), looksVariableFontName(selection.path) ? 1 : 0);
+  logMemory("before OpenFontRender probe");
+  OpenFontRender ofr;
+  ofr.setUseRenderTask(false);
+  ofr.setFontSize(METRICS_PIXEL_SIZE);
+  ofr.setFontColor(0x0000, 0xFFFF);
+  ofr.setBackgroundFillMethod(BgFillMethod::None);
+  ofr.setAlignment(Align::TopLeft);
+  ofr.setLayout(Layout::Horizontal);
+  ofr.setCacheSize(1, 4, 768 * 1024);
+  const uint32_t loadStartUs = micros();
+  const auto error = ofr.loadFont(selection.path.c_str());
+  const uint32_t loadUs = micros() - loadStartUs;
+  if (error != 0) {
+    LOG_ERR("TTFP", "OpenFontRender load failed error=%d us=%lu", static_cast<int>(error),
+            static_cast<unsigned long>(loadUs));
+    logMemory("after OpenFontRender probe load failure");
+    return;
+  }
+  LOG_INF("TTFP", "OpenFontRender ready px=%u load_us=%lu", METRICS_PIXEL_SIZE, static_cast<unsigned long>(loadUs));
+  logOpenFontRenderGlyph(ofr, 0x0041, "ascii_A");
+  logOpenFontRenderGlyph(ofr, 0x3042, "kana_a");
+  logOpenFontRenderGlyph(ofr, 0x65E5, "kanji_day");
+  logOpenFontRenderGlyph(ofr, 0x3001, "fullwidth_punct");
+  logOpenFontRenderGlyph(ofr, 0x10FFFF, "missing_probe");
+  ofr.unloadFont();
+  ofrFiles.clear();
+  logMemory("after OpenFontRender probe");
+}
+#endif
+
 void runTtfRuntimeSmoke() {
   const auto sfnt = ttf::probeSfnt(kMinimalSfnt, sizeof(kMinimalSfnt));
   probeStatus.sfntOk = sfnt.ok;
@@ -580,6 +736,7 @@ void scanAndProbeSdTtfReadOnly() {
 
   TtfSelection smallest;
   TtfSelection largest;
+  TtfSelection largestStatic;
   for (const auto& entry : entries) {
     LOG_INF("TTFP", "scan entry=%s", entry.c_str());
     if (!endsWithTtf(entry)) continue;
@@ -597,6 +754,10 @@ void scanAndProbeSdTtfReadOnly() {
       largest.path = candidatePath;
       largest.size = candidateSize;
     }
+    if (!looksVariableFontName(candidatePath) && (largestStatic.path.empty() || candidateSize > largestStatic.size)) {
+      largestStatic.path = candidatePath;
+      largestStatic.size = candidateSize;
+    }
   }
 
   if (largest.path.empty()) {
@@ -611,6 +772,9 @@ void scanAndProbeSdTtfReadOnly() {
     LOG_INF("TTFP", "6A smallest TTF retained for stb reference path=%s size=%llu", smallest.path.c_str(),
             static_cast<unsigned long long>(smallest.size));
   }
+#ifdef CROSSPOINT_TTF_PROBE_OPENFONTRENDER
+  runOpenFontRenderProbe(largestStatic.path.empty() ? largest : largestStatic);
+#endif
 
   std::unique_ptr<uint8_t, PsramFreeDeleter> directoryData;
   size_t directorySize = 0;
@@ -689,28 +853,82 @@ void scanAndProbeSdTtfReadOnly() {
 }
 
 void logProbeStatus(const char* label) {
-  LOG_INF("TTFP", "%s status display=%d %ux%u buffer=%lu storage=%d sfnt=%d tables=%u stb_link=%d "
-                  "sd_found=%d sd_dir=%d sd_full=%d sd_sfnt=%d sd_tables=%u sd_stb=%d sd_stb_skip=%d "
-                  "sd_metrics=%d sd_metric_hits=%u/%u sd_raster=%d sd_raster_hits=%u/%u sd_raster_skip=%d "
-                  "sd_raster_bytes=%lu sd_custom=%d sd_custom_hits=%u/%u sd_custom_compound=%u "
-                  "sd_custom_bytes=%lu sd_size=%llu sd_hash=0x%08lX",
+  LOG_INF("TTFP", "%s status core display=%d %ux%u buffer=%lu storage=%d sfnt=%d tables=%u stb_link=%d",
           label,
           probeStatus.displayInitialized ? 1 : 0, probeStatus.displayWidth, probeStatus.displayHeight,
           static_cast<unsigned long>(probeStatus.displayBufferSize), probeStatus.storageReady ? 1 : 0,
-          probeStatus.sfntOk ? 1 : 0, probeStatus.sfntTableCount, probeStatus.stbLinked ? 1 : 0,
+          probeStatus.sfntOk ? 1 : 0, probeStatus.sfntTableCount, probeStatus.stbLinked ? 1 : 0);
+  LOG_INF("TTFP", "%s status sd found=%d dir=%d full=%d sfnt=%d tables=%u stb=%d stb_skip=%d "
+                  "metrics=%d metric_hits=%u/%u size=%llu hash=0x%08lX",
+          label,
           probeStatus.sdTtfFound ? 1 : 0, probeStatus.sdTtfDirectoryLoaded ? 1 : 0,
           probeStatus.sdTtfFullBufferLoaded ? 1 : 0, probeStatus.sdTtfSfntOk ? 1 : 0, probeStatus.sdTtfTableCount,
           probeStatus.sdTtfStbOk ? 1 : 0, probeStatus.sdTtfStbSkippedLarge ? 1 : 0,
           probeStatus.sdTtfMetricsOk ? 1 : 0, probeStatus.sdTtfMetricHits, probeStatus.sdTtfMetricQueries,
+          static_cast<unsigned long long>(probeStatus.sdTtfSize), static_cast<unsigned long>(probeStatus.sdTtfHash));
+  LOG_INF("TTFP", "%s status raster stb=%d stb_hits=%u/%u stb_skip=%d stb_bytes=%lu "
+                  "custom=%d custom_hits=%u/%u compound=%u custom_bytes=%lu "
+                  "ofr=%d ofr_hits=%u/%u ofr_bytes=%lu",
+          label,
           probeStatus.sdTtfRasterOk ? 1 : 0, probeStatus.sdTtfRasterHits, probeStatus.sdTtfRasterQueries,
           probeStatus.sdTtfRasterSkippedFullBuffer ? 1 : 0, static_cast<unsigned long>(probeStatus.sdTtfRasterBytes),
           probeStatus.sdTtfCustomRasterOk ? 1 : 0, probeStatus.sdTtfCustomRasterHits,
           probeStatus.sdTtfCustomRasterQueries, probeStatus.sdTtfCustomRasterCompounds,
           static_cast<unsigned long>(probeStatus.sdTtfCustomRasterBytes),
-          static_cast<unsigned long long>(probeStatus.sdTtfSize), static_cast<unsigned long>(probeStatus.sdTtfHash));
+          probeStatus.sdTtfOpenFontRenderOk ? 1 : 0, probeStatus.sdTtfOpenFontRenderHits,
+          probeStatus.sdTtfOpenFontRenderQueries, static_cast<unsigned long>(probeStatus.sdTtfOpenFontRenderBytes));
 }
 
 }  // namespace
+
+#ifdef CROSSPOINT_TTF_PROBE_OPENFONTRENDER
+void OFR_fclose(FT_FILE* stream) {
+  if (!stream) return;
+  for (auto it = ofrFiles.begin(); it != ofrFiles.end(); ++it) {
+    if (static_cast<void*>(&(*it)) == stream) {
+      it->file.close();
+      ofrFiles.erase(it);
+      return;
+    }
+  }
+}
+
+FT_FILE* OFR_fopen(const char* filename, const char*) {
+  if (!filename || filename[0] == '\0') return nullptr;
+  HalFile file = Storage.open(filename, O_RDONLY);
+  if (!file) return nullptr;
+  ofrFiles.push_back({std::move(file)});
+  return static_cast<FT_FILE*>(&ofrFiles.back());
+}
+
+size_t OFR_fread(void* ptr, const size_t size, const size_t nmemb, FT_FILE* stream) {
+  if (!ptr || !stream || size == 0 || nmemb == 0) return 0;
+  auto* handle = static_cast<OpenFontRenderFileHandle*>(stream);
+  static uint32_t readCount = 0;
+  if ((++readCount & 0x3F) == 0) yield();
+  const int got = handle->file.read(ptr, size * nmemb);
+  return got <= 0 ? 0 : static_cast<size_t>(got);
+}
+
+int OFR_fseek(FT_FILE* stream, const long int offset, const int whence) {
+  if (!stream) return -1;
+  auto* handle = static_cast<OpenFontRenderFileHandle*>(stream);
+  if (whence == SEEK_SET) return handle->file.seek64(static_cast<uint64_t>(std::max<long int>(0, offset))) ? 0 : -1;
+  if (whence == SEEK_CUR) return handle->file.seekCur(offset) ? 0 : -1;
+  if (whence == SEEK_END) {
+    const int64_t target = static_cast<int64_t>(handle->file.fileSize64()) + offset;
+    if (target < 0) return -1;
+    return handle->file.seek64(static_cast<uint64_t>(target)) ? 0 : -1;
+  }
+  return -1;
+}
+
+long int OFR_ftell(FT_FILE* stream) {
+  if (!stream) return -1;
+  auto* handle = static_cast<OpenFontRenderFileHandle*>(stream);
+  return static_cast<long int>(handle->file.position());
+}
+#endif
 
 void setup() {
   Serial.begin(115200);
@@ -719,6 +937,7 @@ void setup() {
   LOG_INF("TTFP", "CrossPoint TTF probe firmware boot");
   LOG_INF("TTFP", "reset_reason=%d cpu_mhz=%u sdk=%s", static_cast<int>(esp_reset_reason()),
           static_cast<unsigned>(getCpuFrequencyMhz()), ESP.getSdkVersion());
+  LOG_INF("TTFP", "loop_stack_config=%lu", static_cast<unsigned long>(ARDUINO_LOOP_STACK_SIZE));
 
   logMemory("before init");
 

@@ -1755,6 +1755,11 @@ void GfxRenderer::drawTextRotated90CW(const int fontId, const int x, const int y
     return;
   }
 
+  if (readerFontMetricsProvider_ && readerFontMetricsProvider_->handlesFontId(fontId)) {
+    readerFontMetricsProvider_->drawTextRotated90CW(*this, fontId, x, y, text, black, style);
+    return;
+  }
+
   const auto fontIt = fontMap.find(fontId);
   if (fontIt == fontMap.end()) {
     LOG_ERR("GFX", "Font %d not found", fontId);

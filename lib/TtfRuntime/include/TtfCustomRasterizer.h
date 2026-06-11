@@ -22,7 +22,16 @@ struct CustomRasterResult {
   const char* error = nullptr;
 };
 
+enum class CustomFillRule : uint8_t {
+  EvenOdd,
+  NonZero,
+};
+
 CustomRasterResult rasterizeSimpleGlyf(const uint8_t* glyf, uint32_t glyfLength, uint16_t unitsPerEm,
                                        uint16_t pixelSize, uint8_t* bitmap, size_t bitmapCapacity);
+
+CustomRasterResult rasterizeSimpleGlyfWithFillRule(const uint8_t* glyf, uint32_t glyfLength, uint16_t unitsPerEm,
+                                                   uint16_t pixelSize, CustomFillRule fillRule, uint8_t* bitmap,
+                                                   size_t bitmapCapacity);
 
 }  // namespace ttf

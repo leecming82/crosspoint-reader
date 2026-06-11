@@ -5,6 +5,11 @@
 #include <GfxRenderer.h>
 #include <TtfRuntimeFont.h>
 
+#ifdef CROSSPOINT_TTF_READER_OPENFONTRENDER
+#define CROSSPOINT_TTF_USE_OPENFONTRENDER 1
+#include <OpenFontRender.h>
+#endif
+
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -22,6 +27,12 @@ class TtfReaderMetrics final : public ReaderFontMetricsProvider {
   uint8_t pixelSize() const { return pixelSize_; }
   uint32_t fileSize() const { return fileSize_; }
   uint32_t identityHash() const { return identityHash_; }
+#ifdef CROSSPOINT_TTF_PROBE
+  bool probeLoadFromPath(const char* path, uint8_t pixelSize, uint32_t expectedFileSize = 0) {
+    return loadFromPath(path, pixelSize, expectedFileSize);
+  }
+  void probeRasterText(const char* text) const;
+#endif
 
   bool handlesFontId(int fontId) const override;
   int getSpaceWidth(int fontId, EpdFontFamily::Style style) const override;
@@ -34,13 +45,14 @@ class TtfReaderMetrics final : public ReaderFontMetricsProvider {
   int getLineHeight(int fontId) const override;
   void drawText(const GfxRenderer& renderer, int fontId, int x, int y, const char* text, bool black,
                 EpdFontFamily::Style style) const override;
+  void drawTextRotated90CW(const GfxRenderer& renderer, int fontId, int x, int y, const char* text, bool black,
+                           EpdFontFamily::Style style) const override;
 
   struct PsramFreeDeleter {
     void operator()(uint8_t* ptr) const;
   };
 
   using PsramBuffer = std::unique_ptr<uint8_t, PsramFreeDeleter>;
-
   struct OwnedTable {
     PsramBuffer data;
     uint32_t length = 0;
@@ -83,9 +95,16 @@ class TtfReaderMetrics final : public ReaderFontMetricsProvider {
   int ascenderPx() const;
   const CachedGlyph* glyphForCodepoint(uint32_t cp, EpdFontFamily::Style style) const;
   const CachedGlyph* rasterizeAndCacheGlyph(uint32_t cp, EpdFontFamily::Style style) const;
+  const CachedGlyph* rasterizeAndCacheGlyphWithOpenFontRender(uint32_t cp, EpdFontFamily::Style style,
+                                                              const ttf::GlyphMetrics& metrics) const;
+  const CachedGlyph* rasterizeAndCacheGlyphWithCustomRasterizer(uint32_t cp, EpdFontFamily::Style style,
+                                                                const ttf::GlyphMetrics& metrics) const;
   bool readGlyphSlice(const ttf::GlyphMetrics& glyph, PsramBuffer& outData, uint32_t& outLength) const;
   void clearGlyphCache() const;
   void logRenderStats(const char* label) const;
+#ifdef CROSSPOINT_TTF_USE_OPENFONTRENDER
+  void logOpenFontRenderMetricSamples() const;
+#endif
   static uint32_t computeIdentityHash(const char* path, uint8_t pixelSize, uint32_t fileSize);
 
   TableCache tables_;
@@ -98,6 +117,10 @@ class TtfReaderMetrics final : public ReaderFontMetricsProvider {
   uint32_t glyfTableLength_ = 0;
   int fontId_ = INVALID_FONT_ID;
   bool loaded_ = false;
+#ifdef CROSSPOINT_TTF_USE_OPENFONTRENDER
+  mutable OpenFontRender openFontRender_;
+  bool openFontRenderLoaded_ = false;
+#endif
   mutable std::vector<CachedGlyph> glyphCache_;
   mutable size_t glyphCacheBytes_ = 0;
   mutable uint32_t cacheHits_ = 0;
@@ -107,6 +130,13 @@ class TtfReaderMetrics final : public ReaderFontMetricsProvider {
   mutable uint32_t compoundGlyphs_ = 0;
   mutable uint32_t missingGlyphs_ = 0;
   mutable uint32_t renderedGlyphs_ = 0;
+  mutable uint32_t cacheResets_ = 0;
+  mutable uint64_t rasterTimeUs_ = 0;
+  mutable uint64_t downsampleTimeUs_ = 0;
+  mutable uint32_t lastLoggedRasterOk_ = 0;
+  mutable uint32_t lastLoggedCacheMisses_ = 0;
+  mutable uint32_t lastLoggedRenderedGlyphs_ = 0;
+  mutable uint64_t lastLoggedRasterTimeUs_ = 0;
   mutable unsigned long lastStatsLogMs_ = 0;
 };
 

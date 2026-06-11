@@ -300,18 +300,21 @@ The likely practical compromise is lazy runtime caching. Rasterize glyphs on fir
    - Render telemetry now logs `TTFR render stats` with rendered glyph count, glyph-cache size/bytes, hit/miss counts, raster success/failure counts, compound-glyph skips, and missing-glyph counts. Existing reader telemetry still logs page render timing through `Page render ... total=...`.
    - Device acceptance: selected Japanese TTFs change EPUB layout and body rendering, `TTFR reader metrics active` and `TTFR render stats` are logged, and EPUB page render timing remains visible through `ERS Page render ... total=...`. Warm page renders have been observed around 0.7-1.1 s after glyph-cache warmup, with no missing glyphs or compound skips on the tested pages.
 
-- [ ] 10. Rasterization quality and cpfont parity
+- [x] 10. Rasterization quality and static-instance tooling
 
-   Improve the visual quality of the custom TTF rasterizer before adding weight controls or synthetic emboldening. The same Japanese TTF at weight 400 can still look lighter than the equivalent cpfont because cpfonts are pre-rasterized bitmaps, may carry 2-bit coverage, and likely come from a mature rasterization/conversion pipeline. The runtime path currently uses unhinted 1-bit pixel-center filling.
+   Move production reader TTF rasterization to OpenFontRender for static TTFs while keeping `TtfRuntimeFont` as the layout, indexing, cache-identity, and metrics source of truth. Variable fonts are handled as an import/setup concern through local `fontTools` conversion to static instances such as `wght=400`.
 
-   Scope:
+   Exit criteria: the two Japanese variable fonts in `test/` can be converted to static `wght=400` TTFs, probe and full M4 builds can rasterize selected static TTFs through OpenFontRender, EPUB images render normally in full-app tests, and tategaki/yokogaki punctuation fixture output is acceptable.
 
-   - Add a diagnostic that compares selected glyphs through cpfont and TTF paths: advance, glyph box, offsets, bitmap bytes, black-pixel count, and optional small ASCII previews for glyphs such as `A`, `あ`, `日`, and `、`.
-   - Confirm whether the density difference is caused by missing edge coverage, glyph box/baseline mismatch, size calibration, refresh behavior, or cpfont 2-bit coverage being treated as black in BW render.
-   - Consider supersampled TTF rasterization with downsampled coverage, and decide whether the runtime cache should store 1-bit thresholded glyphs or 2-bit coverage glyphs compatible with the existing cpfont BW/grayscale render model.
-   - Keep synthetic bolding and variable `wght` axis support out of this step unless diagnostics prove weight selection is the actual problem.
+   Progress:
 
-   Exit criteria: TTF glyph density and placement can be compared directly against the equivalent cpfont conversion, and the chosen rasterization change makes regular-weight TTF text visually comparable without masking the issue through synthetic bold.
+   - Added `scripts/instantiate_variable_ttf.py` and generated static `wght=400` Japanese TTFs for testing.
+   - Added OpenFontRender to the M4 and probe builds, plus a PlatformIO pre-build patch so OpenFontRender/FreeType heap allocations use PSRAM on ESP32-S3.
+   - Added OpenFontRender probe coverage and promoted OpenFontRender to the M4 reader glyph-raster path. `TtfRuntimeFont` still owns layout metrics; OpenFontRender only produces glyph bitmaps.
+   - Kept the custom rasterizer as fallback and improved it with 2x non-zero winding/downsampled coverage for comparison.
+   - Added glyph-cache/page-render telemetry, load-time metric comparisons, rotated TTF drawing, LSB-based placement, vertical presentation substitutions, and scoped punctuation advance/placement rules.
+   - Added `scripts/generate_japanese_punctuation_epub.py` for repeatable tategaki/yokogaki punctuation validation.
+   - Device validation: selected static Japanese TTFs render acceptable EPUB body text and punctuation, and EPUB covers/images render normally after removing render-hot-path OpenFontRender measurement calls.
 
 - [ ] 11. Performance and memory guardrails
 

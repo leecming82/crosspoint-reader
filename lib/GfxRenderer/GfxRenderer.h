@@ -29,6 +29,8 @@ class ReaderFontMetricsProvider {
   virtual int getLineHeight(int fontId) const = 0;
   virtual void drawText(const GfxRenderer& renderer, int fontId, int x, int y, const char* text, bool black,
                         EpdFontFamily::Style style) const = 0;
+  virtual void drawTextRotated90CW(const GfxRenderer& renderer, int fontId, int x, int y, const char* text, bool black,
+                                   EpdFontFamily::Style style) const = 0;
 };
 
 #include <cstring>

@@ -15,6 +15,7 @@
 #include <Memory.h>
 #include <SdCardFont.h>
 #include <Utf8.h>
+#include <esp_heap_caps.h>
 #include <esp_system.h>
 
 #include <algorithm>
@@ -1658,6 +1659,10 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
                                         const int orientedMarginRight, const int orientedMarginBottom,
                                         const int orientedMarginLeft) {
   const auto t0 = millis();
+  const uint32_t heapStart = ESP.getFreeHeap();
+  const uint32_t heapMinStart = ESP.getMinFreeHeap();
+  const uint32_t maxAllocStart = ESP.getMaxAllocHeap();
+  const uint32_t psramStart = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
   const int rubyOffsetX = static_cast<int>(std::min<uint8_t>(currentRubyOffsetX(), 32)) - 16;
   const int rubyOffsetY = static_cast<int>(std::min<uint8_t>(currentRubyOffsetY(), 32)) - 16;
   const int contentBottom = renderer.getScreenHeight() - orientedMarginBottom;
@@ -1677,11 +1682,6 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
   }
 
   bool renderTextAntiAliasing = SETTINGS.textAntiAliasing;
-#ifdef CROSSPOINT_BOARD_MURPHY_M4
-  if (SETTINGS.readerFontMode == CrossPointSettings::READER_FONT_TTF) {
-    renderTextAntiAliasing = false;
-  }
-#endif
 
   // Force special handling for pages with images when anti-aliasing is on
   const bool pageHasImages = page->hasImages();
@@ -1784,11 +1784,20 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
       const auto tCleanup = millis();
 
       const auto tEnd = millis();
+      const uint32_t heapEnd = ESP.getFreeHeap();
+      const uint32_t heapMinEnd = ESP.getMinFreeHeap();
+      const uint32_t maxAllocEnd = ESP.getMaxAllocHeap();
+      const uint32_t psramEnd = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
       LOG_DBG("ERS",
               "Page render (tiled): prewarm=%lums bw_render=%lums display=%lums gray_lsb=%lums "
-              "gray_msb=%lums gray_display=%lums cleanup=%lums total=%lums",
+              "gray_msb=%lums gray_display=%lums cleanup=%lums total=%lums "
+              "heap=%lu->%lu min=%lu->%lu max_alloc=%lu->%lu psram=%lu->%lu",
               tPrewarm - t0, tBwRender - tPrewarm, tDisplay - tBwRender, tGrayLsb - tDisplay, tGrayMsb - tGrayLsb,
-              tGrayDisplay - tGrayMsb, tCleanup - tGrayDisplay, tEnd - t0);
+              tGrayDisplay - tGrayMsb, tCleanup - tGrayDisplay, tEnd - t0, static_cast<unsigned long>(heapStart),
+              static_cast<unsigned long>(heapEnd), static_cast<unsigned long>(heapMinStart),
+              static_cast<unsigned long>(heapMinEnd), static_cast<unsigned long>(maxAllocStart),
+              static_cast<unsigned long>(maxAllocEnd), static_cast<unsigned long>(psramStart),
+              static_cast<unsigned long>(psramEnd));
       return;
     }
   }
@@ -1834,11 +1843,20 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
       const auto tBwRestore = millis();
 
       const auto tEnd = millis();
+      const uint32_t heapEnd = ESP.getFreeHeap();
+      const uint32_t heapMinEnd = ESP.getMinFreeHeap();
+      const uint32_t maxAllocEnd = ESP.getMaxAllocHeap();
+      const uint32_t psramEnd = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
       LOG_DBG("ERS",
               "Page render: prewarm=%lums bw_render=%lums display=%lums bw_store=%lums "
-              "gray_lsb=%lums gray_msb=%lums gray_display=%lums bw_rerender=%lums total=%lums",
+              "gray_lsb=%lums gray_msb=%lums gray_display=%lums bw_rerender=%lums total=%lums "
+              "heap=%lu->%lu min=%lu->%lu max_alloc=%lu->%lu psram=%lu->%lu",
               tPrewarm - t0, tBwRender - tPrewarm, tDisplay - tBwRender, tBwStore - tDisplay, tGrayLsb - tBwStore,
-              tGrayMsb - tGrayLsb, tGrayDisplay - tGrayMsb, tBwRestore - tGrayDisplay, tEnd - t0);
+              tGrayMsb - tGrayLsb, tGrayDisplay - tGrayMsb, tBwRestore - tGrayDisplay, tEnd - t0,
+              static_cast<unsigned long>(heapStart), static_cast<unsigned long>(heapEnd),
+              static_cast<unsigned long>(heapMinStart), static_cast<unsigned long>(heapMinEnd),
+              static_cast<unsigned long>(maxAllocStart), static_cast<unsigned long>(maxAllocEnd),
+              static_cast<unsigned long>(psramStart), static_cast<unsigned long>(psramEnd));
       return;
     }
 
@@ -1867,19 +1885,38 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
     const auto tBwRestore = millis();
 
     const auto tEnd = millis();
+    const uint32_t heapEnd = ESP.getFreeHeap();
+    const uint32_t heapMinEnd = ESP.getMinFreeHeap();
+    const uint32_t maxAllocEnd = ESP.getMaxAllocHeap();
+    const uint32_t psramEnd = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
     LOG_DBG("ERS",
             "Page render: prewarm=%lums bw_render=%lums display=%lums bw_store=%lums "
-            "gray_lsb=%lums gray_msb=%lums gray_display=%lums bw_restore=%lums total=%lums",
+            "gray_lsb=%lums gray_msb=%lums gray_display=%lums bw_restore=%lums total=%lums "
+            "heap=%lu->%lu min=%lu->%lu max_alloc=%lu->%lu psram=%lu->%lu",
             tPrewarm - t0, tBwRender - tPrewarm, tDisplay - tBwRender, tBwStore - tDisplay, tGrayLsb - tBwStore,
-            tGrayMsb - tGrayLsb, tGrayDisplay - tGrayMsb, tBwRestore - tGrayDisplay, tEnd - t0);
+            tGrayMsb - tGrayLsb, tGrayDisplay - tGrayMsb, tBwRestore - tGrayDisplay, tEnd - t0,
+            static_cast<unsigned long>(heapStart), static_cast<unsigned long>(heapEnd),
+            static_cast<unsigned long>(heapMinStart), static_cast<unsigned long>(heapMinEnd),
+            static_cast<unsigned long>(maxAllocStart), static_cast<unsigned long>(maxAllocEnd),
+            static_cast<unsigned long>(psramStart), static_cast<unsigned long>(psramEnd));
     return;
   }
 
   // No anti-aliasing: BW frame already displayed above, no grayscale to
   // render, so no save/restore.
   const auto tEnd = millis();
-  LOG_DBG("ERS", "Page render: prewarm=%lums bw_render=%lums display=%lums total=%lums", tPrewarm - t0,
-          tBwRender - tPrewarm, tDisplay - tBwRender, tEnd - t0);
+  const uint32_t heapEnd = ESP.getFreeHeap();
+  const uint32_t heapMinEnd = ESP.getMinFreeHeap();
+  const uint32_t maxAllocEnd = ESP.getMaxAllocHeap();
+  const uint32_t psramEnd = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
+  LOG_DBG("ERS",
+          "Page render: prewarm=%lums bw_render=%lums display=%lums total=%lums "
+          "heap=%lu->%lu min=%lu->%lu max_alloc=%lu->%lu psram=%lu->%lu",
+          tPrewarm - t0, tBwRender - tPrewarm, tDisplay - tBwRender, tEnd - t0,
+          static_cast<unsigned long>(heapStart), static_cast<unsigned long>(heapEnd),
+          static_cast<unsigned long>(heapMinStart), static_cast<unsigned long>(heapMinEnd),
+          static_cast<unsigned long>(maxAllocStart), static_cast<unsigned long>(maxAllocEnd),
+          static_cast<unsigned long>(psramStart), static_cast<unsigned long>(psramEnd));
 }
 
 std::string EpubReaderActivity::statusBarTitleForCurrentSpine() const {

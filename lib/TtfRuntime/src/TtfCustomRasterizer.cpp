@@ -28,6 +28,11 @@ struct Segment {
   float y1 = 0.0f;
 };
 
+struct WindingCrossing {
+  float x = 0.0f;
+  int winding = 0;
+};
+
 uint16_t readU16BE(const uint8_t* p) { return (static_cast<uint16_t>(p[0]) << 8) | p[1]; }
 
 int16_t readS16BE(const uint8_t* p) { return static_cast<int16_t>(readU16BE(p)); }
@@ -129,7 +134,7 @@ bool appendContourSegments(std::vector<Segment>& segments, const std::vector<Gly
   return true;
 }
 
-void fillBitmap(const std::vector<Segment>& segments, uint8_t* bitmap, const int width, const int height) {
+void fillBitmapEvenOdd(const std::vector<Segment>& segments, uint8_t* bitmap, const int width, const int height) {
   std::vector<float> crossings;
   crossings.reserve(64);
 
@@ -158,10 +163,66 @@ void fillBitmap(const std::vector<Segment>& segments, uint8_t* bitmap, const int
   }
 }
 
+void fillSpan(uint8_t* bitmap, const int width, const int height, int x0, int x1, const int y) {
+  if (y < 0 || y >= height) return;
+  x0 = std::max(0, std::min(width - 1, x0));
+  x1 = std::max(0, std::min(width - 1, x1));
+  for (int x = x0; x <= x1; ++x) {
+    bitmap[static_cast<size_t>(y) * width + x] = 255;
+  }
+}
+
+void fillBitmapNonZero(const std::vector<Segment>& segments, uint8_t* bitmap, const int width, const int height) {
+  std::vector<WindingCrossing> crossings;
+  crossings.reserve(64);
+
+  for (int y = 0; y < height; ++y) {
+    const float scanY = static_cast<float>(y) + 0.5f;
+    crossings.clear();
+    for (const auto& segment : segments) {
+      if (segment.y0 == segment.y1) continue;
+      const float yMin = std::min(segment.y0, segment.y1);
+      const float yMax = std::max(segment.y0, segment.y1);
+      if (scanY < yMin || scanY >= yMax) continue;
+      const float t = (scanY - segment.y0) / (segment.y1 - segment.y0);
+      crossings.push_back({segment.x0 + t * (segment.x1 - segment.x0), segment.y1 > segment.y0 ? 1 : -1});
+    }
+
+    std::sort(crossings.begin(), crossings.end(), [](const WindingCrossing& a, const WindingCrossing& b) {
+      if (a.x == b.x) return a.winding < b.winding;
+      return a.x < b.x;
+    });
+
+    int winding = 0;
+    float spanStart = 0.0f;
+    for (const auto& crossing : crossings) {
+      const int previous = winding;
+      winding += crossing.winding;
+      if (previous == 0 && winding != 0) {
+        spanStart = crossing.x;
+      } else if (previous != 0 && winding == 0) {
+        fillSpan(bitmap, width, height, static_cast<int>(std::ceil(spanStart)),
+                 static_cast<int>(std::floor(crossing.x)), y);
+      }
+    }
+  }
+}
+
+void fillBitmap(const std::vector<Segment>& segments, uint8_t* bitmap, const int width, const int height,
+                const CustomFillRule fillRule) {
+  if (fillRule == CustomFillRule::NonZero) {
+    fillBitmapNonZero(segments, bitmap, width, height);
+  } else {
+    fillBitmapEvenOdd(segments, bitmap, width, height);
+  }
+}
+
 }  // namespace
 
-CustomRasterResult rasterizeSimpleGlyf(const uint8_t* glyf, const uint32_t glyfLength, const uint16_t unitsPerEm,
-                                       const uint16_t pixelSize, uint8_t* bitmap, const size_t bitmapCapacity) {
+CustomRasterResult rasterizeSimpleGlyfWithFillRule(const uint8_t* glyf, const uint32_t glyfLength,
+                                                   const uint16_t unitsPerEm, const uint16_t pixelSize,
+                                                   const CustomFillRule fillRule, uint8_t* bitmap,
+                                                   const size_t bitmapCapacity) {
   CustomRasterResult result{};
   if (!glyf || glyfLength < 10) {
     result.error = "empty or short glyf";
@@ -312,9 +373,15 @@ CustomRasterResult rasterizeSimpleGlyf(const uint8_t* glyf, const uint32_t glyfL
   }
 
   std::memset(bitmap, 0, result.bitmapBytes);
-  fillBitmap(segments, bitmap, result.width, result.height);
+  fillBitmap(segments, bitmap, result.width, result.height, fillRule);
   result.ok = true;
   return result;
+}
+
+CustomRasterResult rasterizeSimpleGlyf(const uint8_t* glyf, const uint32_t glyfLength, const uint16_t unitsPerEm,
+                                       const uint16_t pixelSize, uint8_t* bitmap, const size_t bitmapCapacity) {
+  return rasterizeSimpleGlyfWithFillRule(glyf, glyfLength, unitsPerEm, pixelSize, CustomFillRule::EvenOdd, bitmap,
+                                         bitmapCapacity);
 }
 
 }  // namespace ttf
