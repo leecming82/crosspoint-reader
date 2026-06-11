@@ -44,6 +44,7 @@ void writeReaderFontIdentity(HalFile& file, const ReaderFontIdentity& identity) 
   serialization::writePod(file, identity.provider);
   serialization::writePod(file, identity.pixelSize);
   serialization::writePod(file, identity.reserved);
+  serialization::writePod(file, identity.weight);
   serialization::writePod(file, identity.fileSize);
   serialization::writePod(file, identity.fileHash);
   serialization::writePod(file, identity.providerVersion);
@@ -57,6 +58,11 @@ ReaderFontIdentity readReaderFontIdentity(HalFile& file) {
   serialization::readPod(file, identity.provider);
   serialization::readPod(file, identity.pixelSize);
   serialization::readPod(file, identity.reserved);
+  if (identity.version >= 2) {
+    serialization::readPod(file, identity.weight);
+  } else {
+    identity.weight = 400;
+  }
   serialization::readPod(file, identity.fileSize);
   serialization::readPod(file, identity.fileHash);
   serialization::readPod(file, identity.providerVersion);

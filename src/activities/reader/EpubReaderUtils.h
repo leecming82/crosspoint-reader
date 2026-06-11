@@ -15,6 +15,7 @@ struct EpubFontOverride {
   bool enabled = false;
   std::string path;
   uint8_t sizePx = 36;
+  uint16_t weight = 400;
   uint32_t fileSize = 0;
 };
 
@@ -32,6 +33,15 @@ inline void writeLe32(uint8_t* p, const uint32_t value) {
   p[3] = static_cast<uint8_t>((value >> 24) & 0xFF);
 }
 
+inline uint16_t readLe16(const uint8_t* p) {
+  return static_cast<uint16_t>(p[0]) | (static_cast<uint16_t>(p[1]) << 8);
+}
+
+inline void writeLe16(uint8_t* p, const uint16_t value) {
+  p[0] = static_cast<uint8_t>(value & 0xFF);
+  p[1] = static_cast<uint8_t>((value >> 8) & 0xFF);
+}
+
 inline bool loadFontOverride(const Epub& epub, EpubFontOverride& out) {
   out = EpubFontOverride{};
   HalFile f;
@@ -43,9 +53,18 @@ inline bool loadFontOverride(const Epub& epub, EpubFontOverride& out) {
   if (f.read(header, sizeof(header)) != sizeof(header)) {
     return false;
   }
-  if (memcmp(header, "XPEF", 4) != 0 || header[4] != 1) {
+  if (memcmp(header, "XPEF", 4) != 0 || header[4] < 1 || header[4] > 2) {
     LOG_DBG("ERS", "Ignoring unsupported EPUB font override");
     return false;
+  }
+
+  uint16_t weight = 400;
+  if (header[4] >= 2) {
+    uint8_t weightBytes[2] = {};
+    if (f.read(weightBytes, sizeof(weightBytes)) != sizeof(weightBytes)) {
+      return false;
+    }
+    weight = readLe16(weightBytes);
   }
 
   const uint32_t fileSize = readLe32(header + 6);
@@ -61,6 +80,7 @@ inline bool loadFontOverride(const Epub& epub, EpubFontOverride& out) {
 
   out.enabled = true;
   out.sizePx = std::clamp<uint8_t>(header[5], 18, 72);
+  out.weight = std::clamp<uint16_t>(weight, 100, 900);
   out.fileSize = fileSize;
   out.path = std::move(path);
   return out.enabled && !out.path.empty();
@@ -79,12 +99,13 @@ inline bool saveFontOverride(const Epub& epub, const EpubFontOverride& value) {
   }
 
   const uint32_t pathLen = static_cast<uint32_t>(std::min<size_t>(value.path.size(), 180));
-  uint8_t header[14] = {};
+  uint8_t header[16] = {};
   memcpy(header, "XPEF", 4);
-  header[4] = 1;
+  header[4] = 2;
   header[5] = std::clamp<uint8_t>(value.sizePx, 18, 72);
   writeLe32(header + 6, value.fileSize);
   writeLe32(header + 10, pathLen);
+  writeLe16(header + 14, std::clamp<uint16_t>(value.weight, 100, 900));
 
   if (f.write(header, sizeof(header)) != sizeof(header) ||
       f.write(reinterpret_cast<const uint8_t*>(value.path.data()), pathLen) != pathLen) {

@@ -95,7 +95,7 @@ EpubReaderMenuActivity::EpubReaderMenuActivity(GfxRenderer& renderer, MappedInpu
                                                const uint8_t writingModePreference, const bool hasFootnotes,
                                                const bool allowVerticalWritingMode,
                                                const bool epubFontOverrideActive, std::string epubFontName,
-                                               const uint8_t epubFontSizePx)
+                                               const uint8_t epubFontSizePx, const uint16_t epubFontWeight)
     : Activity("EpubReaderMenu", renderer, mappedInput),
       menuItems(buildMenuItems(hasFootnotes)),
       tabMenuItems(buildTabbedMenuItems(hasFootnotes)),
@@ -108,7 +108,8 @@ EpubReaderMenuActivity::EpubReaderMenuActivity(GfxRenderer& renderer, MappedInpu
       bookProgressPercent(bookProgressPercent),
       epubFontOverrideActive(epubFontOverrideActive),
       epubFontName(std::move(epubFontName)),
-      epubFontSizePx(epubFontSizePx) {}
+      epubFontSizePx(epubFontSizePx),
+      epubFontWeight(epubFontWeight) {}
 
 std::vector<EpubReaderMenuActivity::MenuItem> EpubReaderMenuActivity::buildMenuItems(bool hasFootnotes) {
   std::vector<MenuItem> items;
@@ -518,7 +519,8 @@ void EpubReaderMenuActivity::render(RenderLock&&) {
         } else if (value == MenuAction::EPUB_FONT) {
           return epubFontOverrideActive && !epubFontName.empty() ? epubFontName : std::string(tr(STR_DEFAULT_VALUE));
         } else if (value == MenuAction::EPUB_FONT_SIZE) {
-          return epubFontOverrideActive && epubFontSizePx > 0 ? std::to_string(epubFontSizePx) + " px"
+          return epubFontOverrideActive && epubFontSizePx > 0 ? std::to_string(epubFontSizePx) + " px / " +
+                                                                    std::to_string(epubFontWeight)
                                                               : std::string(tr(STR_DEFAULT_VALUE));
         } else if (value == MenuAction::EPUB_FONT_GLOBAL) {
           return epubFontOverrideActive ? std::string(tr(STR_STATE_ON)) : std::string(tr(STR_SELECTED));
@@ -548,7 +550,8 @@ void EpubReaderMenuActivity::render(RenderLock&&) {
         } else if (value == MenuAction::EPUB_FONT) {
           return epubFontOverrideActive && !epubFontName.empty() ? epubFontName : std::string(tr(STR_DEFAULT_VALUE));
         } else if (value == MenuAction::EPUB_FONT_SIZE) {
-          return epubFontOverrideActive && epubFontSizePx > 0 ? std::to_string(epubFontSizePx) + " px"
+          return epubFontOverrideActive && epubFontSizePx > 0 ? std::to_string(epubFontSizePx) + " px / " +
+                                                                    std::to_string(epubFontWeight)
                                                               : std::string(tr(STR_DEFAULT_VALUE));
         } else if (value == MenuAction::EPUB_FONT_GLOBAL) {
           return epubFontOverrideActive ? std::string(tr(STR_STATE_ON)) : std::string(tr(STR_SELECTED));

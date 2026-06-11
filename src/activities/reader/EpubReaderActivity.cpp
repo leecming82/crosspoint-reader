@@ -746,7 +746,7 @@ void EpubReaderActivity::openReaderMenu() {
       std::make_unique<EpubReaderMenuActivity>(
           renderer, mappedInput, menuTitle, currentPage, totalPages, bookProgressPercent, SETTINGS.orientation,
           SETTINGS.writingModePreference, !currentPageFootnotes.empty(), allowsManualVerticalWritingMode(),
-          epubFontOverride.enabled, overrideName, epubFontOverride.sizePx),
+          epubFontOverride.enabled, overrideName, epubFontOverride.sizePx, epubFontOverride.weight),
       [this](const ActivityResult& result) {
         const auto* menu = std::get_if<MenuResult>(&result.data);
         if (!menu) {
@@ -1063,6 +1063,7 @@ void EpubReaderActivity::onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction 
             next.enabled = true;
             next.path = selected->path;
             next.sizePx = epubFontOverride.enabled ? epubFontOverride.sizePx : SETTINGS.readerTtfSizePx;
+            next.weight = epubFontOverride.enabled ? epubFontOverride.weight : SETTINGS.readerTtfWeight * 10;
             next.fileSize = fileSizeForPath(next.path);
             applyEpubFontOverride(next);
           });
@@ -1072,15 +1073,16 @@ void EpubReaderActivity::onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction 
       const std::string path =
           epubFontOverride.enabled ? epubFontOverride.path : std::string(SETTINGS.readerTtfPath);
       const uint8_t size = epubFontOverride.enabled ? epubFontOverride.sizePx : SETTINGS.readerTtfSizePx;
+      const uint16_t weight = epubFontOverride.enabled ? epubFontOverride.weight : SETTINGS.readerTtfWeight * 10;
       const uint32_t fileSize = epubFontOverride.enabled ? epubFontOverride.fileSize : SETTINGS.readerTtfFileSize;
       startActivityForResult(
-          std::make_unique<ReaderFontSizeActivity>(renderer, mappedInput, size, path, fileSize, true),
+          std::make_unique<ReaderFontSizeActivity>(renderer, mappedInput, size, weight, path, fileSize, true),
           [this, path, fileSize](const ActivityResult& result) {
             if (result.isCancelled) {
               requestUpdate();
               return;
             }
-            const auto* selected = std::get_if<IntervalResult>(&result.data);
+            const auto* selected = std::get_if<ReaderFontSettingsResult>(&result.data);
             if (!selected || path.empty()) {
               requestUpdate();
               return;
@@ -1088,7 +1090,8 @@ void EpubReaderActivity::onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction 
             EpubReaderUtils::EpubFontOverride next;
             next.enabled = true;
             next.path = path;
-            next.sizePx = static_cast<uint8_t>(std::clamp<uint32_t>(selected->value, 18, 72));
+            next.sizePx = static_cast<uint8_t>(std::clamp<uint8_t>(selected->sizePx, 18, 72));
+            next.weight = std::clamp<uint16_t>(selected->weight, 100, 900);
             next.fileSize = fileSize != 0 ? fileSize : fileSizeForPath(path);
             applyEpubFontOverride(next);
           });
@@ -1679,8 +1682,8 @@ void EpubReaderActivity::reloadEpubFontOverride() {
   }
   epubFontOverride = std::move(stored);
   readerFontConfig = ReaderFontResolver::resolveForEpub(epub.get());
-  LOG_INF("ERS", "EPUB font override active path=%s size=%u file=%lu", epubFontOverride.path.c_str(),
-          epubFontOverride.sizePx, static_cast<unsigned long>(epubFontOverride.fileSize));
+  LOG_INF("ERS", "EPUB font override active path=%s size=%u weight=%u file=%lu", epubFontOverride.path.c_str(),
+          epubFontOverride.sizePx, epubFontOverride.weight, static_cast<unsigned long>(epubFontOverride.fileSize));
 }
 
 void EpubReaderActivity::invalidateEpubFontLayout() {
@@ -1709,6 +1712,7 @@ void EpubReaderActivity::applyEpubFontOverride(const EpubReaderUtils::EpubFontOv
     RenderLock lock(*this);
     epubFontOverride = value;
     epubFontOverride.sizePx = std::clamp<uint8_t>(epubFontOverride.sizePx, 18, 72);
+    epubFontOverride.weight = std::clamp<uint16_t>(epubFontOverride.weight, 100, 900);
     if (epubFontOverride.fileSize == 0) {
       epubFontOverride.fileSize = fileSizeForPath(epubFontOverride.path);
     }

@@ -22,6 +22,6 @@ namespace ReaderFontResolver {
 
 ReaderFontConfig resolveGlobal();
 ReaderFontConfig resolveForEpub(const Epub* epub);
-uint32_t computeTtfIdentityHash(const char* path, uint8_t pixelSize, uint32_t fileSize);
+uint32_t computeTtfIdentityHash(const char* path, uint8_t pixelSize, uint16_t weight, uint32_t fileSize);
 
 }  // namespace ReaderFontResolver

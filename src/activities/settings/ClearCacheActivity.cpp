@@ -12,6 +12,10 @@
 #include "util/TouchNavigator.h"
 #include "util/TouchUi.h"
 
+#ifdef CROSSPOINT_BOARD_MURPHY_M4
+#include "TtfReaderMetrics.h"
+#endif
+
 namespace {
 void drawTouchButton(const GfxRenderer& renderer, const Rect rect, const char* label) {
   renderer.drawRoundedRect(rect.x, rect.y, rect.width, rect.height, 1, 6, true);
@@ -137,20 +141,30 @@ void ClearCacheActivity::confirmClear() {
 }
 
 void ClearCacheActivity::clearCache() {
-  LOG_DBG("CLEAR_CACHE", "Clearing cache...");
+  LOG_DBG("CLEAR_CACHE", "Clearing all caches...");
+
+  clearedCount = 0;
+  failedCount = 0;
+
+#ifdef CROSSPOINT_BOARD_MURPHY_M4
+  const bool hadTtfGlyphCache = Storage.exists("/.crosspoint/ttf_cache");
+  if (TTF_READER_METRICS.clearPersistentGlyphCache()) {
+    if (hadTtfGlyphCache) clearedCount++;
+  } else {
+    failedCount++;
+  }
+#endif
 
   // Open .crosspoint directory
   auto root = Storage.open("/.crosspoint");
   if (!root || !root.isDirectory()) {
-    LOG_DBG("CLEAR_CACHE", "Failed to open cache directory");
+    LOG_DBG("CLEAR_CACHE", "Cache directory does not exist");
     if (root) root.close();
-    state = FAILED;
+    state = failedCount == 0 ? SUCCESS : FAILED;
     requestUpdate();
     return;
   }
 
-  clearedCount = 0;
-  failedCount = 0;
   char name[128];
 
   // Iterate through all entries in the directory
@@ -177,9 +191,9 @@ void ClearCacheActivity::clearCache() {
   }
   root.close();
 
-  LOG_DBG("CLEAR_CACHE", "Cache cleared: %d removed, %d failed", clearedCount, failedCount);
+  LOG_DBG("CLEAR_CACHE", "All caches cleared: %d removed, %d failed", clearedCount, failedCount);
 
-  state = SUCCESS;
+  state = failedCount == 0 ? SUCCESS : FAILED;
   requestUpdate();
 }
 

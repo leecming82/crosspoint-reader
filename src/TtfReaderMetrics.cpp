@@ -15,7 +15,6 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <list>
 
 namespace {
 
@@ -25,11 +24,12 @@ constexpr size_t TTF_RASTER_SCRATCH_BYTES = 64 * 1024;
 constexpr size_t TTF_GLYPH_CACHE_MAX_BYTES = 768 * 1024;
 constexpr uint32_t TTF_STATS_LOG_INTERVAL_MS = 3000;
 constexpr const char* TTF_GLYPH_CACHE_DIR = "/.crosspoint/ttf_cache";
-constexpr uint16_t TTF_GLYPH_SIDECAR_VERSION = 1;
+constexpr uint16_t TTF_GLYPH_SIDECAR_VERSION = 2;
 constexpr uint32_t TTF_GLYPH_SIDECAR_SAVE_INTERVAL_MS = 60000;
 constexpr uint32_t TTF_GLYPH_SIDECAR_SAVE_DIRTY_GLYPHS = 128;
 constexpr size_t TTF_GLYPH_SIDECAR_SAVE_DIRTY_BYTES = 64 * 1024;
 constexpr uint8_t TTF_RASTER_SUPERSAMPLE = 2;
+constexpr size_t TTF_DIRECT_FT_STREAM_CACHE_WINDOW_BYTES = 8 * 1024;
 
 EpdFontFamily::Style firstStyleFromMask(const uint8_t styleMask) {
   for (uint8_t i = 0; i < 4; ++i) {
@@ -37,14 +37,6 @@ EpdFontFamily::Style firstStyleFromMask(const uint8_t styleMask) {
   }
   return EpdFontFamily::REGULAR;
 }
-
-#ifdef CROSSPOINT_TTF_USE_OPENFONTRENDER
-struct OpenFontRenderFileHandle {
-  HalFile file;
-};
-
-std::list<OpenFontRenderFileHandle> ofrFiles;
-#endif
 
 uint16_t readU16BE(const uint8_t* p) { return (static_cast<uint16_t>(p[0]) << 8) | p[1]; }
 
@@ -349,13 +341,22 @@ bool shouldDrawPackedPixel(const GfxRenderer::RenderMode renderMode, const uint8
   return false;
 }
 
-#ifdef CROSSPOINT_TTF_USE_OPENFONTRENDER
 uint8_t quantizeCoverage(const uint8_t coverage) {
   // Match cpfont conversion buckets: white, light gray, dark gray, black.
   if (coverage < 64) return 0;
   if (coverage < 128) return 85;
   if (coverage < 192) return 170;
   return 255;
+}
+
+#ifdef CROSSPOINT_TTF_USE_DIRECT_FREETYPE
+std::string ftTagToString(const FT_ULong tag) {
+  char out[5] = {static_cast<char>((tag >> 24) & 0xFF), static_cast<char>((tag >> 16) & 0xFF),
+                 static_cast<char>((tag >> 8) & 0xFF), static_cast<char>(tag & 0xFF), '\0'};
+  for (int i = 0; i < 4; ++i) {
+    if (out[i] < 0x20 || out[i] > 0x7E) out[i] = '?';
+  }
+  return std::string(out);
 }
 #endif
 
@@ -388,52 +389,120 @@ bool downsample2BitCoverage(const uint8_t* highBitmap, const ttf::CustomRasterRe
 
 }  // namespace
 
-#ifdef CROSSPOINT_TTF_USE_OPENFONTRENDER
-void OFR_fclose(FT_FILE* stream) {
-  if (!stream) return;
-  for (auto it = ofrFiles.begin(); it != ofrFiles.end(); ++it) {
-    if (static_cast<void*>(&(*it)) == stream) {
-      it->file.close();
-      ofrFiles.erase(it);
-      return;
+#ifdef CROSSPOINT_TTF_USE_DIRECT_FREETYPE
+unsigned long directFreeTypeStreamRead(FT_Stream stream, const unsigned long offset, unsigned char* buffer,
+                                       const unsigned long count) {
+  if (!stream || !stream->descriptor.pointer) return 0;
+  auto* handle = static_cast<TtfReaderMetrics::DirectFreeTypeStreamHandle*>(stream->descriptor.pointer);
+  if (!handle->file) return 0;
+  const uint32_t startUs = micros();
+  ++handle->readCalls;
+  handle->requestedBytes += count;
+  if (count == 0) {
+    handle->streamReadUs += micros() - startUs;
+    return 0;
+  }
+  if (!buffer) {
+    handle->streamReadUs += micros() - startUs;
+    return 0;
+  }
+
+  unsigned long total = 0;
+  while (total < count) {
+    const uint64_t currentOffset = static_cast<uint64_t>(offset) + total;
+    TtfReaderMetrics::DirectFreeTypeStreamWindow* hitWindow = nullptr;
+    for (auto& window : handle->cacheWindows) {
+      if (window.data && currentOffset >= window.start && currentOffset < window.start + window.length) {
+        hitWindow = &window;
+        break;
+      }
     }
+
+    if (hitWindow) {
+      ++handle->cacheHits;
+      hitWindow->lastUsed = ++handle->cacheClock;
+      const uint32_t cacheOffset = static_cast<uint32_t>(currentOffset - hitWindow->start);
+      const uint32_t available = hitWindow->length - cacheOffset;
+      const uint32_t want = std::min<uint32_t>(available, count - total);
+      memcpy(buffer + total, hitWindow->data.get() + cacheOffset, want);
+      total += want;
+      continue;
+    }
+
+    ++handle->cacheMisses;
+    TtfReaderMetrics::DirectFreeTypeStreamWindow* fillWindow = nullptr;
+    for (auto& window : handle->cacheWindows) {
+      if (window.data && window.length == 0) {
+        fillWindow = &window;
+        break;
+      }
+    }
+    if (!fillWindow) {
+      for (auto& window : handle->cacheWindows) {
+        if (!window.data) continue;
+        if (!fillWindow || window.lastUsed < fillWindow->lastUsed) fillWindow = &window;
+      }
+    }
+
+    const bool useCache = fillWindow && fillWindow->data;
+    const uint64_t alignedOffset = useCache
+                                       ? (currentOffset / TTF_DIRECT_FT_STREAM_CACHE_WINDOW_BYTES) *
+                                             TTF_DIRECT_FT_STREAM_CACHE_WINDOW_BYTES
+                                       : currentOffset;
+    const uint64_t streamSize = stream->size;
+    if (alignedOffset >= streamSize) {
+      ++handle->shortReads;
+      break;
+    }
+    const uint32_t fillSize = useCache
+                                  ? static_cast<uint32_t>(
+                                        std::min<uint64_t>(TTF_DIRECT_FT_STREAM_CACHE_WINDOW_BYTES,
+                                                           streamSize - alignedOffset))
+                                  : static_cast<uint32_t>(count - total);
+    if (fillSize == 0 || !handle->file.seek64(alignedOffset)) {
+      ++handle->shortReads;
+      break;
+    }
+
+    ++handle->physicalSeeks;
+    ++handle->physicalReads;
+    const uint32_t physicalStartUs = micros();
+    uint8_t* readDest = useCache ? fillWindow->data.get() : buffer + total;
+    uint32_t filled = 0;
+    while (filled < fillSize) {
+      const int got = handle->file.read(readDest + filled, fillSize - filled);
+      if (got <= 0) break;
+      filled += static_cast<uint32_t>(got);
+      if ((filled & 0x0FFF) == 0) yield();
+    }
+    handle->physicalReadUs += micros() - physicalStartUs;
+    handle->physicalBytes += filled;
+    if (filled != fillSize) ++handle->shortReads;
+
+    if (!useCache) {
+      total += filled;
+      break;
+    }
+    fillWindow->start = alignedOffset;
+    fillWindow->length = filled;
+    fillWindow->lastUsed = ++handle->cacheClock;
+    if (filled == 0) break;
   }
+
+  handle->readBytes += total;
+  if (total != count) ++handle->shortReads;
+  handle->streamReadUs += micros() - startUs;
+  return total;
 }
 
-FT_FILE* OFR_fopen(const char* filename, const char*) {
-  if (!filename || filename[0] == '\0') return nullptr;
-  HalFile file = Storage.open(filename, O_RDONLY);
-  if (!file) return nullptr;
-  ofrFiles.push_back({std::move(file)});
-  return static_cast<FT_FILE*>(&ofrFiles.back());
-}
-
-size_t OFR_fread(void* ptr, const size_t size, const size_t nmemb, FT_FILE* stream) {
-  if (!ptr || !stream || size == 0 || nmemb == 0) return 0;
-  auto* handle = static_cast<OpenFontRenderFileHandle*>(stream);
-  static uint32_t readCount = 0;
-  if ((++readCount & 0x3F) == 0) yield();
-  const int got = handle->file.read(ptr, size * nmemb);
-  return got <= 0 ? 0 : static_cast<size_t>(got);
-}
-
-int OFR_fseek(FT_FILE* stream, const long int offset, const int whence) {
-  if (!stream) return -1;
-  auto* handle = static_cast<OpenFontRenderFileHandle*>(stream);
-  if (whence == SEEK_SET) return handle->file.seek64(static_cast<uint64_t>(std::max<long int>(0, offset))) ? 0 : -1;
-  if (whence == SEEK_CUR) return handle->file.seekCur(offset) ? 0 : -1;
-  if (whence == SEEK_END) {
-    const int64_t target = static_cast<int64_t>(handle->file.fileSize64()) + offset;
-    if (target < 0) return -1;
-    return handle->file.seek64(static_cast<uint64_t>(target)) ? 0 : -1;
+void directFreeTypeStreamClose(FT_Stream stream) {
+  if (!stream || !stream->descriptor.pointer) return;
+  auto* handle = static_cast<TtfReaderMetrics::DirectFreeTypeStreamHandle*>(stream->descriptor.pointer);
+  if (handle->file) handle->file.close();
+  for (auto& window : handle->cacheWindows) {
+    window.data.reset();
+    window.length = 0;
   }
-  return -1;
-}
-
-long int OFR_ftell(FT_FILE* stream) {
-  if (!stream) return -1;
-  auto* handle = static_cast<OpenFontRenderFileHandle*>(stream);
-  return static_cast<long int>(handle->file.position());
 }
 #endif
 
@@ -467,28 +536,48 @@ bool TtfReaderMetrics::ensureLoaded(const ReaderFontConfig& config) {
     return false;
   }
 
-  const bool loaded = ensureLoaded(config.ttfPath.c_str(), config.identity.pixelSize, config.identity.fileSize);
+  const bool loaded =
+      ensureLoaded(config.ttfPath.c_str(), config.identity.pixelSize, config.identity.fileSize, config.identity.weight);
   if (loaded) activeConfig_ = config;
   return loaded;
 }
 
-bool TtfReaderMetrics::ensureLoaded(const char* path, const uint8_t pixelSize, const uint32_t expectedFileSize) {
+bool TtfReaderMetrics::ensureLoaded(const char* path, const uint8_t pixelSize, const uint32_t expectedFileSize,
+                                    const uint16_t weight) {
   if (!path || path[0] == '\0') {
     unload();
     return false;
   }
 
   const uint8_t size = std::max<uint8_t>(12, std::min<uint8_t>(pixelSize, 72));
-  if (loaded_ && path_ == path && pixelSize_ == size && (expectedFileSize == 0 || fileSize_ == expectedFileSize)) {
+  const uint16_t clampedWeight = std::max<uint16_t>(100, std::min<uint16_t>(weight, 900));
+  if (loaded_ && path_ == path && pixelSize_ == size && weight_ == clampedWeight &&
+      (expectedFileSize == 0 || fileSize_ == expectedFileSize)) {
     return true;
   }
 
-  return loadFromPath(path, size, expectedFileSize);
+  return loadFromPath(path, size, expectedFileSize, clampedWeight);
 }
 
 bool TtfReaderMetrics::flushGlyphSidecarCache() const { return flushPersistentCache(); }
 
 bool TtfReaderMetrics::flushPersistentCache() const { return saveGlyphSidecarCache(); }
+
+bool TtfReaderMetrics::clearPersistentGlyphCache() const {
+  clearGlyphCache();
+  glyphSidecarDirty_ = false;
+  glyphSidecarDirtyGlyphs_ = 0;
+  glyphSidecarDirtyBytes_ = 0;
+  lastGlyphSidecarSaveMs_ = 0;
+
+  if (!Storage.ready() || !Storage.exists(TTF_GLYPH_CACHE_DIR)) return true;
+  if (Storage.removeDir(TTF_GLYPH_CACHE_DIR)) {
+    LOG_INF("TTFR", "glyph sidecar cache cleared path=%s", TTF_GLYPH_CACHE_DIR);
+    return true;
+  }
+  LOG_ERR("TTFR", "failed to clear glyph sidecar cache path=%s", TTF_GLYPH_CACHE_DIR);
+  return false;
+}
 
 ReaderFontCacheStats TtfReaderMetrics::cacheStats() const {
   ReaderFontCacheStats stats;
@@ -505,21 +594,146 @@ ReaderFontCacheStats TtfReaderMetrics::cacheStats() const {
   return stats;
 }
 
+#ifdef CROSSPOINT_TTF_USE_DIRECT_FREETYPE
+bool TtfReaderMetrics::initializeDirectFreeType() {
+  unloadDirectFreeType();
+  directFtStream_ = DirectFreeTypeStreamHandle{};
+  directFtStream_.path = path_;
+
+  size_t allocatedWindows = 0;
+  for (auto& window : directFtStream_.cacheWindows) {
+    uint8_t* raw = static_cast<uint8_t*>(
+        heap_caps_malloc(TTF_DIRECT_FT_STREAM_CACHE_WINDOW_BYTES, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    if (raw) {
+      window.data.reset(raw);
+      ++allocatedWindows;
+    }
+  }
+  if (allocatedWindows == 0) {
+    LOG_ERR("TTFR", "Direct FreeType stream cache allocation failed");
+  }
+
+  directFtStream_.file = Storage.open(path_.c_str(), O_RDONLY);
+  if (!directFtStream_.file) {
+    LOG_ERR("TTFR", "Direct FreeType failed to open path=%s", path_.c_str());
+    unloadDirectFreeType();
+    return false;
+  }
+
+  memset(&directFtStream_.stream, 0, sizeof(directFtStream_.stream));
+  directFtStream_.stream.size = fileSize_;
+  directFtStream_.stream.descriptor.pointer = &directFtStream_;
+  directFtStream_.stream.pathname.pointer = const_cast<char*>(directFtStream_.path.c_str());
+  directFtStream_.stream.read = directFreeTypeStreamRead;
+  directFtStream_.stream.close = directFreeTypeStreamClose;
+
+  FT_Error error = FT_Init_FreeType(&directFtLibrary_);
+  if (error != 0) {
+    LOG_ERR("TTFR", "Direct FreeType init failed error=%ld", static_cast<long>(error));
+    unloadDirectFreeType();
+    return false;
+  }
+
+  FT_Open_Args openArgs = {};
+  openArgs.flags = FT_OPEN_STREAM;
+  openArgs.stream = &directFtStream_.stream;
+  const uint32_t openStartUs = micros();
+  error = FT_Open_Face(directFtLibrary_, &openArgs, 0, &directFtFace_);
+  const uint32_t openUs = micros() - openStartUs;
+  if (error != 0) {
+    LOG_ERR("TTFR", "Direct FreeType face open failed error=%ld path=%s", static_cast<long>(error), path_.c_str());
+    unloadDirectFreeType();
+    return false;
+  }
+
+  error = FT_Set_Pixel_Sizes(directFtFace_, 0, pixelSize_);
+  if (error != 0) {
+    LOG_ERR("TTFR", "Direct FreeType pixel size failed error=%ld px=%u", static_cast<long>(error), pixelSize_);
+    unloadDirectFreeType();
+    return false;
+  }
+
+  directFreeTypeVariationOk_ = setDirectFreeTypeWeight(weight_);
+  directFreeTypeLoaded_ = true;
+  warmDirectFreeType();
+  LOG_INF("TTFR",
+          "Direct FreeType rasterizer active versioned_stream=1 windows=%lu bytes_each=%lu weight=%u variation_set=%d "
+          "family=%s style=%s open_us=%lu",
+          static_cast<unsigned long>(allocatedWindows),
+          static_cast<unsigned long>(TTF_DIRECT_FT_STREAM_CACHE_WINDOW_BYTES), static_cast<unsigned>(weight_),
+          directFreeTypeVariationOk_ ? 1 : 0, directFtFace_->family_name ? directFtFace_->family_name : "?",
+          directFtFace_->style_name ? directFtFace_->style_name : "?", static_cast<unsigned long>(openUs));
+  return true;
+}
+
+void TtfReaderMetrics::unloadDirectFreeType() {
+  directFreeTypeLoaded_ = false;
+  directFreeTypeVariationOk_ = false;
+  if (directFtFace_) {
+    FT_Done_Face(directFtFace_);
+    directFtFace_ = nullptr;
+  }
+  if (directFtLibrary_) {
+    FT_Done_FreeType(directFtLibrary_);
+    directFtLibrary_ = nullptr;
+  }
+  if (directFtStream_.file) directFtStream_.file.close();
+  for (auto& window : directFtStream_.cacheWindows) {
+    window.data.reset();
+    window.length = 0;
+  }
+}
+
+bool TtfReaderMetrics::setDirectFreeTypeWeight(const uint16_t weight) {
+  if (!directFtFace_) return false;
+  FT_MM_Var* mmVar = nullptr;
+  FT_Error error = FT_Get_MM_Var(directFtFace_, &mmVar);
+  if (error != 0 || !mmVar) return false;
+
+  std::vector<FT_Fixed> coords(mmVar->num_axis);
+  bool foundWeight = false;
+  for (FT_UInt i = 0; i < mmVar->num_axis; ++i) {
+    const auto& axis = mmVar->axis[i];
+    coords[i] = axis.def;
+    const std::string tag = ftTagToString(axis.tag);
+    if (tag == "wght") {
+      const FT_Fixed target = static_cast<FT_Fixed>(std::max<uint16_t>(100, std::min<uint16_t>(weight, 900))) << 16;
+      coords[i] = std::max(axis.minimum, std::min(axis.maximum, target));
+      foundWeight = true;
+    }
+  }
+
+  error = foundWeight ? FT_Set_Var_Design_Coordinates(directFtFace_, mmVar->num_axis, coords.data()) : 0;
+#ifdef FT_CONFIG_OPTION_USE_MODULE_ERRORS
+  FT_Done_MM_Var(directFtLibrary_, mmVar);
+#endif
+  return foundWeight && error == 0;
+}
+
+void TtfReaderMetrics::warmDirectFreeType() const {
+  if (!directFreeTypeLoaded_ || !directFtFace_) return;
+  const FT_UInt glyphIndex = FT_Get_Char_Index(directFtFace_, 'A');
+  if (glyphIndex == 0) return;
+  const uint32_t startUs = micros();
+  if (FT_Load_Glyph(directFtFace_, glyphIndex, FT_LOAD_DEFAULT) == 0) {
+    FT_Render_Glyph(directFtFace_->glyph, FT_RENDER_MODE_NORMAL);
+  }
+  LOG_INF("TTFR", "Direct FreeType warm glyph_us=%lu", static_cast<unsigned long>(micros() - startUs));
+}
+#endif
+
 void TtfReaderMetrics::unload() {
   saveGlyphSidecarCache();
   clearGlyphCache();
-#ifdef CROSSPOINT_TTF_USE_OPENFONTRENDER
-  if (openFontRenderLoaded_) {
-    openFontRender_.unloadFont();
-    openFontRenderLoaded_ = false;
-  }
-  ofrFiles.clear();
+#ifdef CROSSPOINT_TTF_USE_DIRECT_FREETYPE
+  unloadDirectFreeType();
 #endif
   tables_.reset();
   font_ = ttf::TtfRuntimeFont();
   activeConfig_ = ReaderFontConfig{};
   path_.clear();
   pixelSize_ = 0;
+  weight_ = 400;
   fileSize_ = 0;
   identityHash_ = 0;
   glyfTableOffset_ = 0;
@@ -528,7 +742,8 @@ void TtfReaderMetrics::unload() {
   loaded_ = false;
 }
 
-bool TtfReaderMetrics::loadFromPath(const char* path, const uint8_t pixelSize, const uint32_t expectedFileSize) {
+bool TtfReaderMetrics::loadFromPath(const char* path, const uint8_t pixelSize, const uint32_t expectedFileSize,
+                                    const uint16_t weight) {
   unload();
   if (!path || path[0] == '\0') return false;
 
@@ -580,26 +795,16 @@ bool TtfReaderMetrics::loadFromPath(const char* path, const uint8_t pixelSize, c
 
   path_ = path;
   pixelSize_ = pixelSize;
+  weight_ = std::max<uint16_t>(100, std::min<uint16_t>(weight, 900));
   fileSize_ = static_cast<uint32_t>(actualFileSize);
-  identityHash_ = computeIdentityHash(path, pixelSize_, fileSize_);
+  identityHash_ = computeIdentityHash(path, pixelSize_, fileSize_, weight_);
   fontId_ = static_cast<int>(identityHash_ | 0x80000000u);
   if (fontId_ == INVALID_FONT_ID) fontId_ = static_cast<int>(0x80000001u);
 
-#ifdef CROSSPOINT_TTF_USE_OPENFONTRENDER
-  openFontRender_.setUseRenderTask(false);
-  openFontRender_.setFontSize(pixelSize_);
-  openFontRender_.setFontColor(0x0000, 0xFFFF);
-  openFontRender_.setBackgroundFillMethod(BgFillMethod::None);
-  openFontRender_.setAlignment(Align::TopLeft);
-  openFontRender_.setLayout(Layout::Horizontal);
-  openFontRender_.setCacheSize(1, 4, 768 * 1024);
-  const auto ofrError = openFontRender_.loadFont(path);
-  if (ofrError != 0) {
-    LOG_ERR("TTFR", "OpenFontRender load failed path=%s error=%d", path, static_cast<int>(ofrError));
-    unload();
-    return false;
+#ifdef CROSSPOINT_TTF_USE_DIRECT_FREETYPE
+  if (!initializeDirectFreeType()) {
+    LOG_ERR("TTFR", "Direct FreeType unavailable; attempting fallback rasterizer path=%s", path);
   }
-  openFontRenderLoaded_ = true;
 #endif
 
   loaded_ = true;
@@ -615,13 +820,9 @@ bool TtfReaderMetrics::loadFromPath(const char* path, const uint8_t pixelSize, c
   const auto ascii = font_.metricsForCodepoint('A');
   const auto kana = font_.metricsForCodepoint(0x3042);
   const auto kanji = font_.metricsForCodepoint(0x65E5);
-  LOG_INF("TTFR", "reader metrics active id=%d path=%s size=%u file=%lu hash=0x%08lX", fontId_, path_.c_str(),
-          pixelSize_, static_cast<unsigned long>(fileSize_), static_cast<unsigned long>(identityHash_));
-#ifdef CROSSPOINT_TTF_USE_OPENFONTRENDER
-  LOG_INF("TTFR", "OpenFontRender rasterizer active size=%u cache_limit=%u", pixelSize_,
-          static_cast<unsigned>(TTF_GLYPH_CACHE_MAX_BYTES));
-  logOpenFontRenderMetricSamples();
-#endif
+  LOG_INF("TTFR", "reader metrics active id=%d path=%s size=%u weight=%u file=%lu hash=0x%08lX", fontId_,
+          path_.c_str(), pixelSize_, static_cast<unsigned>(weight_), static_cast<unsigned long>(fileSize_),
+          static_cast<unsigned long>(identityHash_));
   LOG_INF("TTFR", "metrics upem=%u asc=%d desc=%d gap=%d line=%d glyphs=%u", m.unitsPerEm, m.ascender, m.descender,
           m.lineGap, lineHeightPx(), m.numGlyphs);
   LOG_INF("TTFR", "sample A present=%d glyph=%u adv=%d kana present=%d glyph=%u adv=%d kanji present=%d glyph=%u adv=%d",
@@ -631,36 +832,6 @@ bool TtfReaderMetrics::loadFromPath(const char* path, const uint8_t pixelSize, c
 }
 
 bool TtfReaderMetrics::handlesFontId(const int fontId) const { return loaded_ && fontId == fontId_; }
-
-#ifdef CROSSPOINT_TTF_USE_OPENFONTRENDER
-void TtfReaderMetrics::logOpenFontRenderMetricSamples() const {
-  if (!loaded_ || !openFontRenderLoaded_) return;
-
-  struct Sample {
-    const char* label;
-    const char* text;
-  };
-
-  static constexpr Sample samples[] = {
-      {"ascii_A", "A"},
-      {"kana_a", "\xE3\x81\x82"},
-      {"kanji_day", "\xE6\x97\xA5"},
-      {"fullwidth_punct", "\xE3\x80\x81"},
-      {"mixed", "A\xE3\x81\x82\xE6\x97\xA5"},
-  };
-
-  openFontRender_.setFontSize(pixelSize_);
-  openFontRender_.setAlignment(Align::TopLeft);
-  openFontRender_.setLayout(Layout::Horizontal);
-
-  for (const auto& sample : samples) {
-    const int metricsAdvance = getTextAdvanceX(fontId_, sample.text, EpdFontFamily::REGULAR);
-    const int ofrWidth = static_cast<int>(openFontRender_.getTextWidth(sample.text));
-    LOG_INF("TTFR", "metric compare %s metrics_adv=%d ofr_width=%d delta=%d", sample.label, metricsAdvance, ofrWidth,
-            ofrWidth - metricsAdvance);
-  }
-}
-#endif
 
 #ifdef CROSSPOINT_TTF_PROBE
 void TtfReaderMetrics::probeRasterText(const char* text) const {
@@ -713,6 +884,7 @@ void TtfReaderMetrics::prewarmText(const int fontId, const char* utf8Text, const
 
   for (const uint32_t cp : uniqueCodepoints) {
     glyphForCodepoint(cp, style);
+    yield();
   }
 
   const uint32_t rasterDelta = positiveDelta(rasterOk_, rasterOkStart);
@@ -820,68 +992,77 @@ const TtfReaderMetrics::CachedGlyph* TtfReaderMetrics::rasterizeAndCacheGlyph(co
     return nullptr;
   }
 
-#ifdef CROSSPOINT_TTF_USE_OPENFONTRENDER
-  if (openFontRenderLoaded_) {
-    return rasterizeAndCacheGlyphWithOpenFontRender(cp, style, metrics);
+#ifdef CROSSPOINT_TTF_USE_DIRECT_FREETYPE
+  if (directFreeTypeLoaded_) {
+    return rasterizeAndCacheGlyphWithDirectFreeType(cp, style, metrics);
   }
 #endif
 
   return rasterizeAndCacheGlyphWithCustomRasterizer(cp, style, metrics);
 }
 
-const TtfReaderMetrics::CachedGlyph* TtfReaderMetrics::rasterizeAndCacheGlyphWithOpenFontRender(
+const TtfReaderMetrics::CachedGlyph* TtfReaderMetrics::rasterizeAndCacheGlyphWithDirectFreeType(
     const uint32_t cp, const EpdFontFamily::Style style, const ttf::GlyphMetrics& metrics) const {
-#ifdef CROSSPOINT_TTF_USE_OPENFONTRENDER
+#ifdef CROSSPOINT_TTF_USE_DIRECT_FREETYPE
+  if (!directFreeTypeLoaded_ || !directFtFace_) return nullptr;
+
   CachedGlyph cached;
   cached.codepoint = cp;
   cached.glyphId = metrics.glyphId;
   cached.advancePx = advanceForCodepoint(cp, style);
 
-  if (metrics.glyphLength == 0) {
-    cached.lastUsed = ++glyphUseClock_;
-    glyphCache_.push_back(std::move(cached));
-    markGlyphSidecarDirty(0);
-    ++rasterOk_;
-    return &glyphCache_.back();
-  }
-
-  OpenFontRender::GlyphBitmap glyph;
-  const uint32_t rasterStartUs = micros();
-  const FT_Error error = openFontRender_.renderGlyphBitmap(cp, glyph);
-  rasterTimeUs_ += micros() - rasterStartUs;
-  if (error || !glyph.buffer || glyph.width <= 0 || glyph.rows <= 0) {
-    ++rasterFailed_;
-    LOG_DBG("TTFR", "OpenFontRender primitive failed cp=U+%04lX glyph=%u error=%d", static_cast<unsigned long>(cp),
-            metrics.glyphId, static_cast<int>(error));
+  const FT_UInt glyphIndex = FT_Get_Char_Index(directFtFace_, cp);
+  if (glyphIndex == 0) {
+    ++missingGlyphs_;
     return nullptr;
   }
 
-  cached.glyphId = static_cast<uint16_t>(glyph.glyph_index);
-  cached.width = glyph.width;
-  cached.height = glyph.rows;
-  cached.xOffset = std::max(glyph.left, static_cast<int>(metrics.leftSideBearingPx));
+  const uint32_t rasterStartUs = micros();
+  FT_Error error = FT_Load_Glyph(directFtFace_, glyphIndex, FT_LOAD_DEFAULT);
+  if (error == 0) error = FT_Render_Glyph(directFtFace_->glyph, FT_RENDER_MODE_NORMAL);
+  rasterTimeUs_ += micros() - rasterStartUs;
+  if (error != 0) {
+    ++rasterFailed_;
+    LOG_DBG("TTFR", "Direct FreeType glyph failed cp=U+%04lX glyph=%lu error=%ld", static_cast<unsigned long>(cp),
+            static_cast<unsigned long>(glyphIndex), static_cast<long>(error));
+    return nullptr;
+  }
+
+  const FT_Bitmap& glyphBitmap = directFtFace_->glyph->bitmap;
+  cached.glyphId = static_cast<uint16_t>(glyphIndex);
+  cached.width = glyphBitmap.width;
+  cached.height = glyphBitmap.rows;
+  cached.xOffset = std::max(static_cast<int>(directFtFace_->glyph->bitmap_left),
+                            static_cast<int>(metrics.leftSideBearingPx));
   if (usesTuckedHorizontalAdvance(cp)) {
     cached.xOffset = 0;
   } else if (isVerticalColonPresentationForm(cp)) {
     cached.xOffset = std::max(0, (cached.advancePx - cached.width) / 2);
   }
-  cached.yOffset = -glyph.top;
+  cached.yOffset = -directFtFace_->glyph->bitmap_top;
   cached.bitmapBytes = packedGlyphBytes(cached.width, cached.height);
+
   if (cached.bitmapBytes > 0) {
     if (!reserveGlyphCacheBytes(cached.bitmapBytes)) return nullptr;
     uint8_t* bitmapRaw =
         static_cast<uint8_t*>(heap_caps_malloc(cached.bitmapBytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
     if (!bitmapRaw) {
       ++rasterFailed_;
-      LOG_ERR("TTFR", "Failed to allocate OpenFontRender glyph cp=U+%04lX bytes=%u", static_cast<unsigned long>(cp),
+      LOG_ERR("TTFR", "Failed to allocate Direct FreeType glyph cp=U+%04lX bytes=%u", static_cast<unsigned long>(cp),
               static_cast<unsigned>(cached.bitmapBytes));
       return nullptr;
     }
     cached.bitmap.reset(bitmapRaw);
     memset(cached.bitmap.get(), 0xFF, cached.bitmapBytes);
-    const int sourcePitch = std::abs(glyph.pitch);
+
+    const int sourcePitch = glyphBitmap.pitch < 0 ? -glyphBitmap.pitch : glyphBitmap.pitch;
+    const uint8_t* sourceBase = glyphBitmap.pitch < 0
+                                    ? glyphBitmap.buffer + static_cast<size_t>(cached.height - 1) * sourcePitch
+                                    : glyphBitmap.buffer;
     for (int y = 0; y < cached.height; ++y) {
-      const uint8_t* sourceRow = glyph.buffer + static_cast<size_t>(y) * sourcePitch;
+      const uint8_t* sourceRow =
+          glyphBitmap.pitch < 0 ? sourceBase - static_cast<size_t>(y) * sourcePitch
+                                : sourceBase + static_cast<size_t>(y) * sourcePitch;
       for (int x = 0; x < cached.width; ++x) {
         setPackedGlyphPixel(cached.bitmap.get(), static_cast<size_t>(y) * cached.width + x,
                             coverageToPackedGrayValue(quantizeCoverage(sourceRow[x])));
@@ -1409,8 +1590,9 @@ int TtfReaderMetrics::getFontAscenderSize(const int fontId) const { return handl
 
 int TtfReaderMetrics::getLineHeight(const int fontId) const { return handlesFontId(fontId) ? lineHeightPx() : 0; }
 
-uint32_t TtfReaderMetrics::computeIdentityHash(const char* path, const uint8_t pixelSize, const uint32_t fileSize) {
-  return ReaderFontResolver::computeTtfIdentityHash(path, pixelSize, fileSize);
+uint32_t TtfReaderMetrics::computeIdentityHash(const char* path, const uint8_t pixelSize, const uint32_t fileSize,
+                                               const uint16_t weight) {
+  return ReaderFontResolver::computeTtfIdentityHash(path, pixelSize, weight, fileSize);
 }
 
 #endif

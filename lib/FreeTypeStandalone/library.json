@@ -1,0 +1,24 @@
+{
+  "name": "FreeTypeStandalone",
+  "version": "2.13.3-crosspoint-probe",
+  "description": "Trimmed standalone FreeType probe build with TrueType GX variation support.",
+  "build": {
+    "includeDir": "include",
+    "flags": [
+      "-DFT2_BUILD_LIBRARY",
+      "-DFT_CONFIG_OPTION_SYSTEM_ZLIB=0"
+    ],
+    "srcFilter": [
+      "-<*>",
+      "+<base/ftbase.c>",
+      "+<base/ftbitmap.c>",
+      "+<base/ftdebug.c>",
+      "+<base/ftinit.c>",
+      "+<base/ftsystem.c>",
+      "+<base/ftmm.c>",
+      "+<sfnt/sfnt.c>",
+      "+<smooth/smooth.c>",
+      "+<truetype/truetype.c>"
+    ]
+  }
+}

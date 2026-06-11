@@ -21,11 +21,12 @@
 
 namespace {
 portMUX_TYPE renderWaitMux = portMUX_INITIALIZER_UNLOCKED;
+constexpr uint32_t ACTIVITY_RENDER_TASK_STACK_BYTES = 32768;
 }
 
 void ActivityManager::begin() {
   xTaskCreate(&renderTaskTrampoline, "ActivityManagerRender",
-              8192,              // Stack size
+              ACTIVITY_RENDER_TASK_STACK_BYTES,
               this,              // Parameters
               1,                 // Priority
               &renderTaskHandle  // Task handle

@@ -10,8 +10,8 @@ class ReaderFontSizeActivity final : public Activity {
  public:
   explicit ReaderFontSizeActivity(GfxRenderer& renderer, MappedInputManager& mappedInput)
       : Activity("ReaderFontSize", renderer, mappedInput) {}
-  ReaderFontSizeActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, int initialSize, std::string previewPath,
-                         uint32_t previewFileSize, bool returnSelectionOnly);
+  ReaderFontSizeActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, int initialSize, int initialWeight,
+                         std::string previewPath, uint32_t previewFileSize, bool returnSelectionOnly);
 
   void onEnter() override;
   void onExit() override;
@@ -23,10 +23,14 @@ class ReaderFontSizeActivity final : public Activity {
   static constexpr int MIN_SIZE = 18;
   static constexpr int MAX_SIZE = 72;
   static constexpr int SMALL_STEP = 2;
-  static constexpr int LARGE_STEP = 6;
+  static constexpr int MIN_WEIGHT = 100;
+  static constexpr int MAX_WEIGHT = 900;
+  static constexpr int WEIGHT_STEP = 50;
 
   int originalSize_ = 36;
+  int originalWeight_ = 400;
   int value_ = 36;
+  int weight_ = 400;
   bool accepted_ = false;
   bool returnSelectionOnly_ = false;
   std::string previewPath_;
@@ -34,9 +38,13 @@ class ReaderFontSizeActivity final : public Activity {
   ButtonNavigator buttonNavigator_;
 
   int clampedValue(int value) const;
+  int clampedWeight(int value) const;
   void adjustValue(int delta);
+  void adjustWeight(int delta);
   void cancel();
   void accept();
-  Rect minusButtonRect() const;
-  Rect plusButtonRect() const;
+  Rect sizeMinusButtonRect() const;
+  Rect sizePlusButtonRect() const;
+  Rect weightMinusButtonRect() const;
+  Rect weightPlusButtonRect() const;
 };

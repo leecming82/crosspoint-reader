@@ -53,6 +53,25 @@ inline SettingInfo buildTtfFontSizeSetting() {
   return SettingInfo::Value(StrId::STR_FONT_SIZE, &CrossPointSettings::readerTtfSizePx, {18, 72, 2}, nullptr,
                             StrId::STR_CAT_READER);
 }
+
+inline SettingInfo buildTtfFontWeightSetting() {
+  SettingInfo s;
+  s.nameId = StrId::STR_FONT_WEIGHT;
+  s.type = SettingType::ENUM;
+  s.category = StrId::STR_CAT_READER;
+  for (int weight = 100; weight <= 900; weight += 50) {
+    s.enumStringValues.push_back(std::to_string(weight));
+  }
+  s.valueGetter = []() -> uint8_t {
+    const uint8_t weight10 = std::clamp<uint8_t>(SETTINGS.readerTtfWeight, 10, 90);
+    return static_cast<uint8_t>(std::min<int>(16, std::max<int>(0, (weight10 - 10) / 5)));
+  };
+  s.valueSetter = [](uint8_t value) {
+    value = std::min<uint8_t>(value, 16);
+    SETTINGS.readerTtfWeight = static_cast<uint8_t>(10 + value * 5);
+  };
+  return s;
+}
 #endif
 
 // Shared settings list used by both the device settings UI and the web settings API.
@@ -94,6 +113,7 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
         // --- Reader ---
         buildTtfFontFamilySetting(),
         buildTtfFontSizeSetting(),
+        buildTtfFontWeightSetting(),
         SettingInfo::Enum(StrId::STR_LINE_SPACING, &CrossPointSettings::lineSpacing,
                           {StrId::STR_TIGHT, StrId::STR_NORMAL, StrId::STR_WIDE}, "lineSpacing", StrId::STR_CAT_READER),
         SettingInfo::Value(StrId::STR_SCREEN_MARGIN, &CrossPointSettings::screenMargin, {5, 40, 5}, "screenMargin",

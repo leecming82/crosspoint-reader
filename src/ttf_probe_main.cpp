@@ -5,8 +5,10 @@
 #include <HalGPIO.h>
 #include <HalStorage.h>
 #include <Logging.h>
-#ifdef CROSSPOINT_TTF_PROBE_OPENFONTRENDER
-#include <OpenFontRender.h>
+#ifdef CROSSPOINT_TTF_PROBE_DIRECT_FREETYPE
+#include <ft2build.h>
+#include FT_FREETYPE_H
+#include FT_MULTIPLE_MASTERS_H
 #endif
 #include <TtfCustomRasterizer.h>
 #include <TtfProbe.h>
@@ -17,10 +19,11 @@
 #include <esp_system.h>
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <cstdio>
+#include <cstring>
 #include <fcntl.h>
-#include <list>
 #include <memory>
 #include <string>
 #include <unistd.h>
@@ -40,7 +43,9 @@ constexpr size_t TABLE_CACHE_SAFETY_MARGIN = 512 * 1024;
 constexpr uint16_t METRICS_PIXEL_SIZE = 24;
 constexpr size_t RASTER_SCRATCH_BYTES = 64 * 1024;
 constexpr size_t GLYF_SLICE_SAFETY_MARGIN = 512 * 1024;
-constexpr uint32_t OFR_TIMING_DELAY_MS = 20000;
+constexpr uint32_t DIRECT_FT_DELAY_MS = 20000;
+constexpr size_t DIRECT_FT_STREAM_CACHE_WINDOW_BYTES = 8 * 1024;
+constexpr size_t DIRECT_FT_STREAM_CACHE_WINDOWS = 8;
 
 struct ProbeStatus {
   bool displayInitialized = false;
@@ -69,10 +74,11 @@ struct ProbeStatus {
   uint8_t sdTtfCustomRasterHits = 0;
   uint8_t sdTtfCustomRasterCompounds = 0;
   uint32_t sdTtfCustomRasterBytes = 0;
-  bool sdTtfOpenFontRenderOk = false;
-  uint8_t sdTtfOpenFontRenderQueries = 0;
-  uint8_t sdTtfOpenFontRenderHits = 0;
-  uint32_t sdTtfOpenFontRenderBytes = 0;
+  bool sdTtfDirectFreeTypeOk = false;
+  bool sdTtfDirectFreeTypeVariationOk = false;
+  uint8_t sdTtfDirectFreeTypeQueries = 0;
+  uint8_t sdTtfDirectFreeTypeHits = 0;
+  uint32_t sdTtfDirectFreeTypeBytes = 0;
   uint16_t displayWidth = 0;
   uint16_t displayHeight = 0;
   uint32_t displayBufferSize = 0;
@@ -134,39 +140,38 @@ struct TtfSelection {
   uint64_t size = 0;
 };
 
-#ifdef CROSSPOINT_TTF_PROBE_OPENFONTRENDER
-TtfSelection deferredOpenFontRenderSelection;
-bool deferredOpenFontRenderProbePending = false;
-bool deferredOpenFontRenderProbeDone = false;
-#endif
+#ifdef CROSSPOINT_TTF_PROBE_DIRECT_FREETYPE
+TtfSelection deferredDirectFreeTypeSelection;
+bool deferredDirectFreeTypeProbePending = false;
+bool deferredDirectFreeTypeProbeDone = false;
 
-#ifdef CROSSPOINT_TTF_PROBE_OPENFONTRENDER
-struct OpenFontRenderFileHandle {
-  HalFile file;
+struct DirectFreeTypeStreamWindow {
+  std::unique_ptr<uint8_t, PsramFreeDeleter> data;
+  uint64_t start = 0;
+  uint32_t length = 0;
+  uint32_t lastUsed = 0;
 };
 
-std::list<OpenFontRenderFileHandle> ofrFiles;
-
-struct CoverageBuckets {
-  uint32_t white = 0;
-  uint32_t light = 0;
-  uint32_t dark = 0;
-  uint32_t black = 0;
-
-  void addQuantized(const uint8_t coverage) {
-    if (coverage == 0) {
-      ++white;
-    } else if (coverage == 85) {
-      ++light;
-    } else if (coverage == 170) {
-      ++dark;
-    } else {
-      ++black;
-    }
-  }
-
-  uint32_t nonWhite() const { return light + dark + black; }
-  uint32_t gray() const { return light + dark; }
+struct DirectFreeTypeStreamHandle {
+  HalFile file;
+  FT_StreamRec stream = {};
+  std::string path;
+  std::array<DirectFreeTypeStreamWindow, DIRECT_FT_STREAM_CACHE_WINDOWS> cacheWindows;
+  uint32_t cacheClock = 0;
+  uint32_t cacheHits = 0;
+  uint32_t cacheMisses = 0;
+  uint32_t physicalReads = 0;
+  uint32_t physicalSeeks = 0;
+  uint64_t physicalBytes = 0;
+  uint32_t physicalReadUs = 0;
+  uint32_t readCalls = 0;
+  uint32_t seekCalls = 0;
+  uint32_t shortReads = 0;
+  uint64_t requestedBytes = 0;
+  uint64_t readBytes = 0;
+  uint32_t maxReadRequest = 0;
+  uint32_t glyphMaxReadRequest = 0;
+  uint32_t streamReadUs = 0;
 };
 #endif
 
@@ -186,15 +191,6 @@ uint32_t fnv1aUpdate(uint32_t hash, const uint8_t* data, const size_t len) {
   return hash;
 }
 
-#ifdef CROSSPOINT_TTF_PROBE_OPENFONTRENDER
-uint8_t quantizeCoverage(const uint8_t coverage) {
-  if (coverage < 64) return 0;
-  if (coverage < 128) return 85;
-  if (coverage < 192) return 170;
-  return 255;
-}
-#endif
-
 bool endsWithTtf(const String& name) {
   const int len = name.length();
   if (len < 4) return false;
@@ -208,7 +204,7 @@ bool looksVariableFontName(const std::string& path) {
   std::string lower = path;
   std::transform(lower.begin(), lower.end(), lower.begin(),
                  [](const unsigned char c) { return static_cast<char>(std::tolower(c)); });
-  return lower.find("variablefont") != std::string::npos || lower.find("variable-font") != std::string::npos;
+  return lower.find("variable") != std::string::npos;
 }
 
 std::string normalizeListedPath(const String& listed) {
@@ -622,114 +618,463 @@ void runStbReferenceForSmallestTtf(const TtfSelection& selection) {
   }
 }
 
-#ifdef CROSSPOINT_TTF_PROBE_OPENFONTRENDER
-void logOpenFontRenderPrimitiveGlyph(OpenFontRender& ofr, const uint32_t cp, const char* label, const char* passLabel) {
-  ++probeStatus.sdTtfOpenFontRenderQueries;
+#ifdef CROSSPOINT_TTF_PROBE_DIRECT_FREETYPE
+unsigned long directFreeTypeStreamRead(FT_Stream stream, const unsigned long offset, unsigned char* buffer,
+                                       const unsigned long count) {
+  if (!stream || !stream->descriptor.pointer) return 0;
+  auto* handle = static_cast<DirectFreeTypeStreamHandle*>(stream->descriptor.pointer);
+  if (!handle->file) return 0;
+  const uint32_t startUs = micros();
+  ++handle->readCalls;
+  ++handle->seekCalls;
+  handle->requestedBytes += count;
+  handle->maxReadRequest = std::max<uint32_t>(handle->maxReadRequest, count);
+  handle->glyphMaxReadRequest = std::max<uint32_t>(handle->glyphMaxReadRequest, count);
+  if (count == 0) {
+    handle->streamReadUs += micros() - startUs;
+    return 0;
+  }
+  if (!buffer) {
+    handle->streamReadUs += micros() - startUs;
+    return 0;
+  }
+
+  unsigned long total = 0;
+  while (total < count) {
+    const uint64_t currentOffset = static_cast<uint64_t>(offset) + total;
+    DirectFreeTypeStreamWindow* hitWindow = nullptr;
+    for (auto& window : handle->cacheWindows) {
+      if (window.data && currentOffset >= window.start && currentOffset < window.start + window.length) {
+        hitWindow = &window;
+        break;
+      }
+    }
+
+    if (hitWindow) {
+      ++handle->cacheHits;
+      hitWindow->lastUsed = ++handle->cacheClock;
+      const uint32_t cacheOffset = static_cast<uint32_t>(currentOffset - hitWindow->start);
+      const uint32_t available = hitWindow->length - cacheOffset;
+      const uint32_t want = std::min<uint32_t>(available, count - total);
+      std::memcpy(buffer + total, hitWindow->data.get() + cacheOffset, want);
+      total += want;
+      continue;
+    }
+
+    ++handle->cacheMisses;
+    DirectFreeTypeStreamWindow* fillWindow = nullptr;
+    for (auto& window : handle->cacheWindows) {
+      if (window.data && window.length == 0) {
+        fillWindow = &window;
+        break;
+      }
+    }
+    if (!fillWindow) {
+      for (auto& window : handle->cacheWindows) {
+        if (!window.data) continue;
+        if (!fillWindow || window.lastUsed < fillWindow->lastUsed) {
+          fillWindow = &window;
+        }
+      }
+    }
+
+    const bool useCache = fillWindow && fillWindow->data;
+    const uint64_t alignedOffset = useCache
+                                       ? (currentOffset / DIRECT_FT_STREAM_CACHE_WINDOW_BYTES) *
+                                             DIRECT_FT_STREAM_CACHE_WINDOW_BYTES
+                                       : currentOffset;
+    const uint64_t streamSize = stream->size;
+    if (alignedOffset >= streamSize) {
+      ++handle->shortReads;
+      break;
+    }
+    const uint32_t fillSize = useCache
+                                  ? static_cast<uint32_t>(
+                                        std::min<uint64_t>(DIRECT_FT_STREAM_CACHE_WINDOW_BYTES,
+                                                           streamSize - alignedOffset))
+                                  : static_cast<uint32_t>(count - total);
+    if (fillSize == 0 || !handle->file.seek64(alignedOffset)) {
+      ++handle->shortReads;
+      break;
+    }
+
+    ++handle->physicalSeeks;
+    ++handle->physicalReads;
+    const uint32_t physicalStartUs = micros();
+    uint8_t* readDest = useCache ? fillWindow->data.get() : buffer + total;
+    uint32_t filled = 0;
+    while (filled < fillSize) {
+      const int got = handle->file.read(readDest + filled, fillSize - filled);
+      if (got <= 0) break;
+      filled += static_cast<uint32_t>(got);
+      if ((filled & 0x0FFF) == 0) yield();
+    }
+    handle->physicalReadUs += micros() - physicalStartUs;
+    handle->physicalBytes += filled;
+    if (filled != fillSize) ++handle->shortReads;
+
+    if (!useCache) {
+      total += filled;
+      break;
+    }
+    fillWindow->start = alignedOffset;
+    fillWindow->length = filled;
+    fillWindow->lastUsed = ++handle->cacheClock;
+    if (filled == 0) break;
+  }
+  handle->readBytes += total;
+  if (total != count) ++handle->shortReads;
+  handle->streamReadUs += micros() - startUs;
+  return total;
+}
+
+void directFreeTypeStreamClose(FT_Stream stream) {
+  if (!stream || !stream->descriptor.pointer) return;
+  auto* handle = static_cast<DirectFreeTypeStreamHandle*>(stream->descriptor.pointer);
+  if (handle->file) handle->file.close();
+  for (auto& window : handle->cacheWindows) {
+    window.data.reset();
+    window.length = 0;
+  }
+}
+
+bool openDirectFreeTypeStream(const TtfSelection& selection, DirectFreeTypeStreamHandle& handle) {
+  handle.path = selection.path;
+  handle.cacheClock = 0;
+  handle.cacheHits = 0;
+  handle.cacheMisses = 0;
+  handle.physicalReads = 0;
+  handle.physicalSeeks = 0;
+  handle.physicalBytes = 0;
+  handle.physicalReadUs = 0;
+  handle.readCalls = 0;
+  handle.seekCalls = 0;
+  handle.shortReads = 0;
+  handle.requestedBytes = 0;
+  handle.readBytes = 0;
+  handle.maxReadRequest = 0;
+  handle.glyphMaxReadRequest = 0;
+  handle.streamReadUs = 0;
+  size_t allocatedWindows = 0;
+  for (auto& window : handle.cacheWindows) {
+    window.start = 0;
+    window.length = 0;
+    window.lastUsed = 0;
+    uint8_t* cacheRaw = static_cast<uint8_t*>(
+        heap_caps_malloc(DIRECT_FT_STREAM_CACHE_WINDOW_BYTES, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    if (cacheRaw) {
+      window.data.reset(cacheRaw);
+      ++allocatedWindows;
+    } else {
+      window.data.reset();
+    }
+  }
+  if (allocatedWindows == 0) {
+    LOG_ERR("TTFP", "direct FreeType stream cache allocation failed windows=%lu bytes_each=%lu; using uncached stream",
+            static_cast<unsigned long>(DIRECT_FT_STREAM_CACHE_WINDOWS),
+            static_cast<unsigned long>(DIRECT_FT_STREAM_CACHE_WINDOW_BYTES));
+  } else {
+    LOG_INF("TTFP", "direct FreeType stream cache windows=%lu bytes_each=%lu",
+            static_cast<unsigned long>(allocatedWindows),
+            static_cast<unsigned long>(DIRECT_FT_STREAM_CACHE_WINDOW_BYTES));
+  }
+  handle.file = Storage.open(selection.path.c_str(), O_RDONLY);
+  if (!handle.file) {
+    LOG_ERR("TTFP", "direct FreeType failed to open stream path=%s", selection.path.c_str());
+    return false;
+  }
+  std::memset(&handle.stream, 0, sizeof(handle.stream));
+  handle.stream.size = static_cast<unsigned long>(selection.size);
+  handle.stream.descriptor.pointer = &handle;
+  handle.stream.pathname.pointer = const_cast<char*>(handle.path.c_str());
+  handle.stream.read = directFreeTypeStreamRead;
+  handle.stream.close = directFreeTypeStreamClose;
+  return true;
+}
+
+std::string ftTagToString(const FT_ULong tag) {
+  char out[5] = {static_cast<char>((tag >> 24) & 0xFF), static_cast<char>((tag >> 16) & 0xFF),
+                 static_cast<char>((tag >> 8) & 0xFF), static_cast<char>(tag & 0xFF), '\0'};
+  for (int i = 0; i < 4; ++i) {
+    if (out[i] < 0x20 || out[i] > 0x7E) out[i] = '?';
+  }
+  return std::string(out);
+}
+
+long fixedToRoundedLong(const FT_Fixed value) {
+  if (value >= 0) return static_cast<long>((value + 0x8000L) >> 16);
+  return -static_cast<long>((-value + 0x8000L) >> 16);
+}
+
+void logDirectFreeTypeGlyph(FT_Face face, DirectFreeTypeStreamHandle& streamHandle, const uint32_t cp,
+                            const char* label, const char* passLabel) {
+  ++probeStatus.sdTtfDirectFreeTypeQueries;
+  const uint32_t readsBefore = streamHandle.readCalls;
+  const uint32_t seeksBefore = streamHandle.seekCalls;
+  const uint32_t shortsBefore = streamHandle.shortReads;
+  const uint64_t requestedBefore = streamHandle.requestedBytes;
+  const uint64_t bytesBefore = streamHandle.readBytes;
+  const uint32_t streamUsBefore = streamHandle.streamReadUs;
+  const uint32_t cacheHitsBefore = streamHandle.cacheHits;
+  const uint32_t cacheMissesBefore = streamHandle.cacheMisses;
+  const uint32_t physicalReadsBefore = streamHandle.physicalReads;
+  const uint32_t physicalSeeksBefore = streamHandle.physicalSeeks;
+  const uint64_t physicalBytesBefore = streamHandle.physicalBytes;
+  const uint32_t physicalUsBefore = streamHandle.physicalReadUs;
+  streamHandle.glyphMaxReadRequest = 0;
   const uint32_t totalStartUs = micros();
-  OpenFontRender::GlyphBitmap glyph;
-  const uint32_t renderStartUs = micros();
-  const FT_Error error = ofr.renderGlyphBitmap(cp, glyph);
-  const uint32_t renderUs = micros() - renderStartUs;
-  if (error || !glyph.buffer || glyph.width <= 0 || glyph.rows <= 0) {
+  const FT_UInt glyphIndex = FT_Get_Char_Index(face, cp);
+  if (glyphIndex == 0) {
     const uint32_t totalUs = micros() - totalStartUs;
     LOG_INF("TTFP",
-            "raster_ofr_primitive pass=%s %s cp=U+%04lX ok=0 error=%d glyph=%lu render_us=%lu scan_us=0 "
-            "copy_us=0 total_us=%lu",
-            passLabel, label, static_cast<unsigned long>(cp), static_cast<int>(error),
-            static_cast<unsigned long>(glyph.glyph_index), static_cast<unsigned long>(renderUs),
-            static_cast<unsigned long>(totalUs));
+            "raster_ft_direct pass=%s %s cp=U+%04lX ok=0 glyph=0 us=%lu error=missing glyph",
+            passLabel, label, static_cast<unsigned long>(cp), static_cast<unsigned long>(totalUs));
+    LOG_INF("TTFP", "ft_stream pass=%s %s reads=%lu seeks=%lu short=%lu req=%llu bytes=%llu max_req=%lu us=%lu",
+            passLabel, label, static_cast<unsigned long>(streamHandle.readCalls - readsBefore),
+            static_cast<unsigned long>(streamHandle.seekCalls - seeksBefore),
+            static_cast<unsigned long>(streamHandle.shortReads - shortsBefore),
+            static_cast<unsigned long long>(streamHandle.requestedBytes - requestedBefore),
+            static_cast<unsigned long long>(streamHandle.readBytes - bytesBefore),
+            static_cast<unsigned long>(streamHandle.glyphMaxReadRequest),
+            static_cast<unsigned long>(streamHandle.streamReadUs - streamUsBefore));
+    LOG_INF("TTFP", "ft_cache pass=%s %s hits=%lu misses=%lu sd_reads=%lu sd_seeks=%lu sd_bytes=%llu sd_us=%lu",
+            passLabel, label, static_cast<unsigned long>(streamHandle.cacheHits - cacheHitsBefore),
+            static_cast<unsigned long>(streamHandle.cacheMisses - cacheMissesBefore),
+            static_cast<unsigned long>(streamHandle.physicalReads - physicalReadsBefore),
+            static_cast<unsigned long>(streamHandle.physicalSeeks - physicalSeeksBefore),
+            static_cast<unsigned long long>(streamHandle.physicalBytes - physicalBytesBefore),
+            static_cast<unsigned long>(streamHandle.physicalReadUs - physicalUsBefore));
     return;
   }
 
-  const int pitch = std::abs(glyph.pitch);
+  const uint32_t loadStartUs = micros();
+  FT_Error error = FT_Load_Glyph(face, glyphIndex, FT_LOAD_DEFAULT);
+  const uint32_t loadUs = micros() - loadStartUs;
+  if (error != 0) {
+    const uint32_t totalUs = micros() - totalStartUs;
+    LOG_INF("TTFP",
+            "raster_ft_direct pass=%s %s cp=U+%04lX ok=0 glyph=%lu load_error=%ld load_us=%lu total_us=%lu "
+            "stream_us=%lu",
+            passLabel, label, static_cast<unsigned long>(cp), static_cast<unsigned long>(glyphIndex),
+            static_cast<long>(error), static_cast<unsigned long>(loadUs), static_cast<unsigned long>(totalUs),
+            static_cast<unsigned long>(streamHandle.streamReadUs - streamUsBefore));
+    LOG_INF("TTFP", "ft_stream pass=%s %s reads=%lu seeks=%lu short=%lu req=%llu bytes=%llu max_req=%lu us=%lu",
+            passLabel, label, static_cast<unsigned long>(streamHandle.readCalls - readsBefore),
+            static_cast<unsigned long>(streamHandle.seekCalls - seeksBefore),
+            static_cast<unsigned long>(streamHandle.shortReads - shortsBefore),
+            static_cast<unsigned long long>(streamHandle.requestedBytes - requestedBefore),
+            static_cast<unsigned long long>(streamHandle.readBytes - bytesBefore),
+            static_cast<unsigned long>(streamHandle.glyphMaxReadRequest),
+            static_cast<unsigned long>(streamHandle.streamReadUs - streamUsBefore));
+    LOG_INF("TTFP", "ft_cache pass=%s %s hits=%lu misses=%lu sd_reads=%lu sd_seeks=%lu sd_bytes=%llu sd_us=%lu",
+            passLabel, label, static_cast<unsigned long>(streamHandle.cacheHits - cacheHitsBefore),
+            static_cast<unsigned long>(streamHandle.cacheMisses - cacheMissesBefore),
+            static_cast<unsigned long>(streamHandle.physicalReads - physicalReadsBefore),
+            static_cast<unsigned long>(streamHandle.physicalSeeks - physicalSeeksBefore),
+            static_cast<unsigned long long>(streamHandle.physicalBytes - physicalBytesBefore),
+            static_cast<unsigned long>(streamHandle.physicalReadUs - physicalUsBefore));
+    return;
+  }
+
+  const uint32_t renderStartUs = micros();
+  error = FT_Render_Glyph(face->glyph, FT_RENDER_MODE_NORMAL);
+  const uint32_t renderUs = micros() - renderStartUs;
+  if (error != 0) {
+    const uint32_t totalUs = micros() - totalStartUs;
+    LOG_INF("TTFP",
+            "raster_ft_direct pass=%s %s cp=U+%04lX ok=0 glyph=%lu render_error=%ld load_us=%lu render_us=%lu "
+            "total_us=%lu stream_us=%lu",
+            passLabel, label, static_cast<unsigned long>(cp), static_cast<unsigned long>(glyphIndex),
+            static_cast<long>(error), static_cast<unsigned long>(loadUs), static_cast<unsigned long>(renderUs),
+            static_cast<unsigned long>(totalUs), static_cast<unsigned long>(streamHandle.streamReadUs - streamUsBefore));
+    LOG_INF("TTFP", "ft_stream pass=%s %s reads=%lu seeks=%lu short=%lu req=%llu bytes=%llu max_req=%lu us=%lu",
+            passLabel, label, static_cast<unsigned long>(streamHandle.readCalls - readsBefore),
+            static_cast<unsigned long>(streamHandle.seekCalls - seeksBefore),
+            static_cast<unsigned long>(streamHandle.shortReads - shortsBefore),
+            static_cast<unsigned long long>(streamHandle.requestedBytes - requestedBefore),
+            static_cast<unsigned long long>(streamHandle.readBytes - bytesBefore),
+            static_cast<unsigned long>(streamHandle.glyphMaxReadRequest),
+            static_cast<unsigned long>(streamHandle.streamReadUs - streamUsBefore));
+    LOG_INF("TTFP", "ft_cache pass=%s %s hits=%lu misses=%lu sd_reads=%lu sd_seeks=%lu sd_bytes=%llu sd_us=%lu",
+            passLabel, label, static_cast<unsigned long>(streamHandle.cacheHits - cacheHitsBefore),
+            static_cast<unsigned long>(streamHandle.cacheMisses - cacheMissesBefore),
+            static_cast<unsigned long>(streamHandle.physicalReads - physicalReadsBefore),
+            static_cast<unsigned long>(streamHandle.physicalSeeks - physicalSeeksBefore),
+            static_cast<unsigned long long>(streamHandle.physicalBytes - physicalBytesBefore),
+            static_cast<unsigned long>(streamHandle.physicalReadUs - physicalUsBefore));
+    return;
+  }
+
+  const FT_Bitmap& bitmap = face->glyph->bitmap;
   uint32_t ink = 0;
   uint32_t weak = 0;
-  CoverageBuckets buckets;
+  uint64_t coverage = 0;
   const uint32_t scanStartUs = micros();
-  for (int y = 0; y < glyph.rows; ++y) {
-    const uint8_t* row = glyph.buffer + static_cast<size_t>(y) * pitch;
-    for (int x = 0; x < glyph.width; ++x) {
-      const uint8_t coverage = row[x];
-      if (coverage != 0) ++ink;
-      if (coverage > 0 && coverage < 255) ++weak;
-      buckets.addQuantized(quantizeCoverage(coverage));
+  const int pitch = bitmap.pitch < 0 ? -bitmap.pitch : bitmap.pitch;
+  for (int y = 0; y < static_cast<int>(bitmap.rows); ++y) {
+    const uint8_t* row = bitmap.buffer + static_cast<size_t>(y) * pitch;
+    for (int x = 0; x < static_cast<int>(bitmap.width); ++x) {
+      const uint8_t value = row[x];
+      if (value != 0) ++ink;
+      if (value > 0 && value < 255) ++weak;
+      coverage += value;
     }
   }
   const uint32_t scanUs = micros() - scanStartUs;
-
-  const size_t bitmapBytes = static_cast<size_t>(glyph.width) * glyph.rows;
-  const uint32_t copyStartUs = micros();
-  uint8_t* bitmapRaw = static_cast<uint8_t*>(heap_caps_malloc(bitmapBytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-  std::unique_ptr<uint8_t, PsramFreeDeleter> bitmapHolder(bitmapRaw);
-  if (bitmapRaw) {
-    for (int y = 0; y < glyph.rows; ++y) {
-      const uint8_t* row = glyph.buffer + static_cast<size_t>(y) * pitch;
-      uint8_t* dest = bitmapRaw + static_cast<size_t>(y) * glyph.width;
-      for (int x = 0; x < glyph.width; ++x) {
-        dest[x] = quantizeCoverage(row[x]);
-      }
-    }
-  }
-  const uint32_t copyUs = micros() - copyStartUs;
-
-  ++probeStatus.sdTtfOpenFontRenderHits;
-  probeStatus.sdTtfOpenFontRenderBytes += static_cast<uint32_t>(bitmapBytes);
-  probeStatus.sdTtfOpenFontRenderOk = true;
+  const uint32_t bytes = static_cast<uint32_t>(pitch) * bitmap.rows;
+  ++probeStatus.sdTtfDirectFreeTypeHits;
+  probeStatus.sdTtfDirectFreeTypeBytes += bytes;
+  probeStatus.sdTtfDirectFreeTypeOk = true;
   const uint32_t totalUs = micros() - totalStartUs;
   LOG_INF("TTFP",
-          "raster_ofr_primitive pass=%s %s cp=U+%04lX ok=1 glyph=%lu %dx%d pitch=%d mode=%d bytes=%lu "
-          "left=%d top=%d adv=%d ink=%lu weak=%lu q_white=%lu q_light=%lu q_dark=%lu q_black=%lu "
-          "bw_pixels=%lu gray_pixels=%lu render_us=%lu scan_us=%lu copy_us=%lu total_us=%lu copy_ok=%d",
-          passLabel, label, static_cast<unsigned long>(cp), static_cast<unsigned long>(glyph.glyph_index), glyph.width,
-          glyph.rows, glyph.pitch, glyph.pixel_mode, static_cast<unsigned long>(bitmapBytes), glyph.left, glyph.top,
-          glyph.advance_x, static_cast<unsigned long>(ink), static_cast<unsigned long>(weak),
-          static_cast<unsigned long>(buckets.white), static_cast<unsigned long>(buckets.light),
-          static_cast<unsigned long>(buckets.dark), static_cast<unsigned long>(buckets.black),
-          static_cast<unsigned long>(buckets.nonWhite()), static_cast<unsigned long>(buckets.gray()),
-          static_cast<unsigned long>(renderUs), static_cast<unsigned long>(scanUs), static_cast<unsigned long>(copyUs),
-          static_cast<unsigned long>(totalUs), bitmapRaw ? 1 : 0);
+          "raster_ft_direct pass=%s %s cp=U+%04lX ok=1 glyph=%lu %lux%lu pitch=%d mode=%d bytes=%lu "
+          "left=%ld top=%ld adv=%ld ink=%lu weak=%lu coverage=%llu load_us=%lu render_us=%lu scan_us=%lu total_us=%lu "
+          "stream_us=%lu stack_high_water=%lu",
+          passLabel, label, static_cast<unsigned long>(cp), static_cast<unsigned long>(glyphIndex),
+          static_cast<unsigned long>(bitmap.width), static_cast<unsigned long>(bitmap.rows), bitmap.pitch,
+          static_cast<int>(bitmap.pixel_mode), static_cast<unsigned long>(bytes),
+          static_cast<long>(face->glyph->bitmap_left), static_cast<long>(face->glyph->bitmap_top),
+          static_cast<long>(face->glyph->advance.x >> 6), static_cast<unsigned long>(ink),
+          static_cast<unsigned long>(weak), static_cast<unsigned long long>(coverage), static_cast<unsigned long>(loadUs),
+          static_cast<unsigned long>(renderUs), static_cast<unsigned long>(scanUs), static_cast<unsigned long>(totalUs),
+          static_cast<unsigned long>(streamHandle.streamReadUs - streamUsBefore),
+          static_cast<unsigned long>(uxTaskGetStackHighWaterMark(nullptr) * sizeof(StackType_t)));
+  LOG_INF("TTFP", "ft_stream pass=%s %s reads=%lu seeks=%lu short=%lu req=%llu bytes=%llu max_req=%lu us=%lu",
+          passLabel, label, static_cast<unsigned long>(streamHandle.readCalls - readsBefore),
+          static_cast<unsigned long>(streamHandle.seekCalls - seeksBefore),
+          static_cast<unsigned long>(streamHandle.shortReads - shortsBefore),
+          static_cast<unsigned long long>(streamHandle.requestedBytes - requestedBefore),
+          static_cast<unsigned long long>(streamHandle.readBytes - bytesBefore),
+          static_cast<unsigned long>(streamHandle.glyphMaxReadRequest),
+          static_cast<unsigned long>(streamHandle.streamReadUs - streamUsBefore));
+  LOG_INF("TTFP", "ft_cache pass=%s %s hits=%lu misses=%lu sd_reads=%lu sd_seeks=%lu sd_bytes=%llu sd_us=%lu",
+          passLabel, label, static_cast<unsigned long>(streamHandle.cacheHits - cacheHitsBefore),
+          static_cast<unsigned long>(streamHandle.cacheMisses - cacheMissesBefore),
+          static_cast<unsigned long>(streamHandle.physicalReads - physicalReadsBefore),
+          static_cast<unsigned long>(streamHandle.physicalSeeks - physicalSeeksBefore),
+          static_cast<unsigned long long>(streamHandle.physicalBytes - physicalBytesBefore),
+          static_cast<unsigned long>(streamHandle.physicalReadUs - physicalUsBefore));
 }
 
-void runOpenFontRenderPrimitiveGlyphSet(OpenFontRender& ofr, const char* passLabel) {
-  logOpenFontRenderPrimitiveGlyph(ofr, 0x0041, "ascii_A", passLabel);
-  logOpenFontRenderPrimitiveGlyph(ofr, 0x3042, "kana_a", passLabel);
-  logOpenFontRenderPrimitiveGlyph(ofr, 0x65E5, "kanji_day", passLabel);
-  logOpenFontRenderPrimitiveGlyph(ofr, 0x3001, "fullwidth_punct", passLabel);
-  logOpenFontRenderPrimitiveGlyph(ofr, 0x10FFFF, "missing_probe", passLabel);
+void logDirectFreeTypeGlyphSet(FT_Face face, DirectFreeTypeStreamHandle& streamHandle, const char* passLabel) {
+  logDirectFreeTypeGlyph(face, streamHandle, 0x0041, "ascii_A", passLabel);
+  logDirectFreeTypeGlyph(face, streamHandle, 0x3042, "kana_a", passLabel);
+  logDirectFreeTypeGlyph(face, streamHandle, 0x65E5, "kanji_day", passLabel);
+  logDirectFreeTypeGlyph(face, streamHandle, 0x3001, "fullwidth_punct", passLabel);
+  logDirectFreeTypeGlyph(face, streamHandle, 0x10FFFF, "missing_probe", passLabel);
 }
 
-void runOpenFontRenderProbe(const TtfSelection& selection) {
+void runDirectFreeTypeProbePass(const TtfSelection& selection, const bool applyWeight400, const char* variantLabel) {
   if (selection.path.empty()) {
-    LOG_INF("TTFP", "OpenFontRender probe skipped: no TTF selected");
+    LOG_INF("TTFP", "direct FreeType probe skipped: no Variable TTF selected");
     return;
   }
-  LOG_INF("TTFP", "OpenFontRender probe selected path=%s size=%llu variable_name=%d", selection.path.c_str(),
-          static_cast<unsigned long long>(selection.size), looksVariableFontName(selection.path) ? 1 : 0);
-  logMemory("before OpenFontRender probe");
-  OpenFontRender ofr;
-  ofr.setUseRenderTask(false);
-  ofr.setFontSize(METRICS_PIXEL_SIZE);
-  ofr.setFontColor(0x0000, 0xFFFF);
-  ofr.setBackgroundFillMethod(BgFillMethod::None);
-  ofr.setAlignment(Align::TopLeft);
-  ofr.setLayout(Layout::Horizontal);
-  ofr.setCacheSize(1, 4, 768 * 1024);
-  const uint32_t loadStartUs = micros();
-  const auto error = ofr.loadFont(selection.path.c_str());
-  const uint32_t loadUs = micros() - loadStartUs;
+
+  LOG_INF("TTFP", "direct FreeType probe variant=%s selected path=%s size=%llu variable_name=%d", variantLabel,
+          selection.path.c_str(), static_cast<unsigned long long>(selection.size),
+          looksVariableFontName(selection.path) ? 1 : 0);
+  logMemory("before direct FreeType probe pass");
+  LOG_INF("TTFP", "direct FreeType variant=%s stack high_water_before=%lu bytes", variantLabel,
+          static_cast<unsigned long>(uxTaskGetStackHighWaterMark(nullptr) * sizeof(StackType_t)));
+
+  FT_Library library = nullptr;
+  FT_Face face = nullptr;
+  FT_Error error = FT_Init_FreeType(&library);
   if (error != 0) {
-    LOG_ERR("TTFP", "OpenFontRender load failed error=%d us=%lu", static_cast<int>(error),
-            static_cast<unsigned long>(loadUs));
-    logMemory("after OpenFontRender probe load failure");
+    LOG_ERR("TTFP", "direct FreeType init failed error=%ld", static_cast<long>(error));
     return;
   }
-  LOG_INF("TTFP", "OpenFontRender ready mode=primitive px=%u load_us=%lu", METRICS_PIXEL_SIZE,
-          static_cast<unsigned long>(loadUs));
-  runOpenFontRenderPrimitiveGlyphSet(ofr, "cold");
-  runOpenFontRenderPrimitiveGlyphSet(ofr, "repeat");
-  ofr.unloadFont();
-  ofrFiles.clear();
-  logMemory("after OpenFontRender probe");
+
+  FT_Int major = 0;
+  FT_Int minor = 0;
+  FT_Int patch = 0;
+  FT_Library_Version(library, &major, &minor, &patch);
+  LOG_INF("TTFP", "direct FreeType variant=%s library version=%d.%d.%d", variantLabel, major, minor, patch);
+  LOG_INF("TTFP", "direct FreeType variant=%s standalone stream probe expects GX var support", variantLabel);
+
+  DirectFreeTypeStreamHandle streamHandle;
+  if (!openDirectFreeTypeStream(selection, streamHandle)) {
+    FT_Done_FreeType(library);
+    logMemory("after direct FreeType probe stream failure");
+    return;
+  }
+  FT_Open_Args openArgs = {};
+  openArgs.flags = FT_OPEN_STREAM;
+  openArgs.stream = &streamHandle.stream;
+  const uint32_t openStartUs = micros();
+  error = FT_Open_Face(library, &openArgs, 0, &face);
+  const uint32_t openUs = micros() - openStartUs;
+  if (error != 0) {
+    LOG_ERR("TTFP", "direct FreeType variant=%s face open failed error=%ld us=%lu path=%s", variantLabel,
+            static_cast<long>(error), static_cast<unsigned long>(openUs), selection.path.c_str());
+    FT_Done_FreeType(library);
+    logMemory("after direct FreeType probe open failure");
+    return;
+  }
+
+  error = FT_Set_Pixel_Sizes(face, 0, METRICS_PIXEL_SIZE);
+  if (error != 0) {
+    LOG_ERR("TTFP", "direct FreeType variant=%s pixel size failed error=%ld px=%u", variantLabel,
+            static_cast<long>(error), METRICS_PIXEL_SIZE);
+  }
+
+  LOG_INF("TTFP",
+          "direct FreeType variant=%s ready path=%s family=%s style=%s glyphs=%ld asc=%ld desc=%ld height=%ld upem=%u "
+          "px=%u open_us=%lu",
+          variantLabel, selection.path.c_str(), face->family_name ? face->family_name : "?",
+          face->style_name ? face->style_name : "?",
+          static_cast<long>(face->num_glyphs), static_cast<long>(face->ascender), static_cast<long>(face->descender),
+          static_cast<long>(face->height), face->units_per_EM, METRICS_PIXEL_SIZE, static_cast<unsigned long>(openUs));
+
+  FT_MM_Var* mmVar = nullptr;
+  error = FT_Get_MM_Var(face, &mmVar);
+  if (error == 0 && mmVar) {
+    std::vector<FT_Fixed> coords(mmVar->num_axis);
+    bool foundWeight = false;
+    for (FT_UInt i = 0; i < mmVar->num_axis; ++i) {
+      const auto& axis = mmVar->axis[i];
+      coords[i] = axis.def;
+      const std::string tag = ftTagToString(axis.tag);
+      LOG_INF("TTFP", "direct FreeType variant=%s axis %u tag=%s min=%ld def=%ld max=%ld", variantLabel,
+              static_cast<unsigned>(i), tag.c_str(), fixedToRoundedLong(axis.minimum), fixedToRoundedLong(axis.def),
+              fixedToRoundedLong(axis.maximum));
+      if (applyWeight400 && tag == "wght") {
+        const FT_Fixed target = 400L << 16;
+        coords[i] = std::max(axis.minimum, std::min(axis.maximum, target));
+        foundWeight = true;
+      }
+    }
+    if (applyWeight400) {
+      error = FT_Set_Var_Design_Coordinates(face, mmVar->num_axis, coords.data());
+      probeStatus.sdTtfDirectFreeTypeVariationOk = foundWeight && error == 0;
+      LOG_INF("TTFP", "direct FreeType variant=%s variation set wght=400 found=%d error=%ld", variantLabel,
+              foundWeight ? 1 : 0, static_cast<long>(error));
+    } else {
+      LOG_INF("TTFP", "direct FreeType variant=%s variation left at default coordinates", variantLabel);
+    }
+  } else {
+    LOG_INF("TTFP", "direct FreeType variant=%s variation unavailable error=%ld", variantLabel, static_cast<long>(error));
+  }
+
+  char coldLabel[32];
+  char repeatLabel[32];
+  std::snprintf(coldLabel, sizeof(coldLabel), "%s_cold", variantLabel);
+  std::snprintf(repeatLabel, sizeof(repeatLabel), "%s_repeat", variantLabel);
+  logDirectFreeTypeGlyphSet(face, streamHandle, coldLabel);
+  logDirectFreeTypeGlyphSet(face, streamHandle, repeatLabel);
+
+  FT_Done_Face(face);
+  FT_Done_FreeType(library);
+  LOG_INF("TTFP", "direct FreeType variant=%s stack high_water_after=%lu bytes", variantLabel,
+          static_cast<unsigned long>(uxTaskGetStackHighWaterMark(nullptr) * sizeof(StackType_t)));
+  logMemory("after direct FreeType probe pass");
+}
+
+void runDirectFreeTypeProbe(const TtfSelection& selection) {
+  runDirectFreeTypeProbePass(selection, false, "default");
+  if (looksVariableFontName(selection.path)) {
+    runDirectFreeTypeProbePass(selection, true, "w400");
+  }
 }
 #endif
 
@@ -756,7 +1101,7 @@ void scanAndProbeSdTtfReadOnly() {
 
   TtfSelection smallest;
   TtfSelection largest;
-  TtfSelection largestStatic;
+  TtfSelection largestVariable;
   for (const auto& entry : entries) {
     LOG_INF("TTFP", "scan entry=%s", entry.c_str());
     if (!endsWithTtf(entry)) continue;
@@ -774,9 +1119,10 @@ void scanAndProbeSdTtfReadOnly() {
       largest.path = candidatePath;
       largest.size = candidateSize;
     }
-    if (!looksVariableFontName(candidatePath) && (largestStatic.path.empty() || candidateSize > largestStatic.size)) {
-      largestStatic.path = candidatePath;
-      largestStatic.size = candidateSize;
+    if (looksVariableFontName(candidatePath) &&
+        (largestVariable.path.empty() || candidateSize > largestVariable.size)) {
+      largestVariable.path = candidatePath;
+      largestVariable.size = candidateSize;
     }
   }
 
@@ -786,31 +1132,43 @@ void scanAndProbeSdTtfReadOnly() {
   }
 
   probeStatus.sdTtfFound = true;
-  LOG_INF("TTFP", "6B selected largest TTF path=%s size=%llu", largest.path.c_str(),
-          static_cast<unsigned long long>(largest.size));
-  if (!smallest.path.empty() && smallest.path != largest.path) {
+  const TtfSelection primary = largestVariable.path.empty() ? largest : largestVariable;
+  if (largestVariable.path.empty()) {
+    LOG_INF("TTFP", "18 no Variable TTF found in %s; using largest TTF path=%s size=%llu", TTF_SCAN_DIR,
+            largest.path.c_str(), static_cast<unsigned long long>(largest.size));
+  } else {
+    LOG_INF("TTFP", "18 selected largest Variable TTF path=%s size=%llu", largestVariable.path.c_str(),
+            static_cast<unsigned long long>(largestVariable.size));
+  }
+  LOG_INF("TTFP", "probe primary TTF path=%s size=%llu variable_name=%d", primary.path.c_str(),
+          static_cast<unsigned long long>(primary.size), looksVariableFontName(primary.path) ? 1 : 0);
+  if (!smallest.path.empty() && smallest.path != primary.path) {
     LOG_INF("TTFP", "6A smallest TTF retained for stb reference path=%s size=%llu", smallest.path.c_str(),
             static_cast<unsigned long long>(smallest.size));
   }
-#ifdef CROSSPOINT_TTF_PROBE_OPENFONTRENDER
-  deferredOpenFontRenderSelection = largestStatic.path.empty() ? largest : largestStatic;
-  deferredOpenFontRenderProbePending = !deferredOpenFontRenderSelection.path.empty();
-  deferredOpenFontRenderProbeDone = false;
-  LOG_INF("TTFP", "OpenFontRender timing probe deferred delay_ms=%lu path=%s size=%llu",
-          static_cast<unsigned long>(OFR_TIMING_DELAY_MS), deferredOpenFontRenderSelection.path.c_str(),
-          static_cast<unsigned long long>(deferredOpenFontRenderSelection.size));
+#ifdef CROSSPOINT_TTF_PROBE_DIRECT_FREETYPE
+  deferredDirectFreeTypeSelection = primary;
+  deferredDirectFreeTypeProbePending = !deferredDirectFreeTypeSelection.path.empty();
+  deferredDirectFreeTypeProbeDone = false;
+  if (deferredDirectFreeTypeProbePending) {
+    LOG_INF("TTFP", "direct FreeType variable probe deferred delay_ms=%lu path=%s size=%llu variable_name=%d",
+            static_cast<unsigned long>(DIRECT_FT_DELAY_MS), deferredDirectFreeTypeSelection.path.c_str(),
+            static_cast<unsigned long long>(deferredDirectFreeTypeSelection.size),
+            looksVariableFontName(deferredDirectFreeTypeSelection.path) ? 1 : 0);
+  } else {
+    LOG_INF("TTFP", "direct FreeType variable probe skipped: no TTF path selected");
+  }
 #endif
-
   std::unique_ptr<uint8_t, PsramFreeDeleter> directoryData;
   size_t directorySize = 0;
   uint32_t hash = 0;
-  if (!loadSfntDirectoryReadOnly(largest.path.c_str(), directoryData, directorySize, hash)) {
+  if (!loadSfntDirectoryReadOnly(primary.path.c_str(), directoryData, directorySize, hash)) {
     return;
   }
 
   probeStatus.sdTtfDirectoryLoaded = true;
   probeStatus.sdTtfHash = hash;
-  LOG_INF("TTFP", "loaded TTF directory path=%s file_size=%llu directory_size=%lu hash=0x%08lX", largest.path.c_str(),
+  LOG_INF("TTFP", "loaded TTF directory path=%s file_size=%llu directory_size=%lu hash=0x%08lX", primary.path.c_str(),
           static_cast<unsigned long long>(probeStatus.sdTtfSize), static_cast<unsigned long>(directorySize),
           static_cast<unsigned long>(hash));
 
@@ -830,7 +1188,7 @@ void scanAndProbeSdTtfReadOnly() {
   }
 
   MetricsTableCache tableCache;
-  if (!loadMetricsTablesReadOnly(largest.path.c_str(), directoryData.get(), directorySize, tableCache)) {
+  if (!loadMetricsTablesReadOnly(primary.path.c_str(), directoryData.get(), directorySize, tableCache)) {
     LOG_ERR("TTFP", "failed to cache runtime metrics tables");
     return;
   }
@@ -866,13 +1224,13 @@ void scanAndProbeSdTtfReadOnly() {
   }
   std::unique_ptr<uint8_t, PsramFreeDeleter> customScratch(customScratchRaw);
   logMemory("before custom raster");
-  logCustomRasterGlyph(largest.path.c_str(), directoryData.get(), directorySize, metrics, glyphAscii, "ascii_A",
+  logCustomRasterGlyph(primary.path.c_str(), directoryData.get(), directorySize, metrics, glyphAscii, "ascii_A",
                        customScratch.get(), RASTER_SCRATCH_BYTES);
-  logCustomRasterGlyph(largest.path.c_str(), directoryData.get(), directorySize, metrics, glyphKana, "kana_a",
+  logCustomRasterGlyph(primary.path.c_str(), directoryData.get(), directorySize, metrics, glyphKana, "kana_a",
                        customScratch.get(), RASTER_SCRATCH_BYTES);
-  logCustomRasterGlyph(largest.path.c_str(), directoryData.get(), directorySize, metrics, glyphKanji, "kanji_day",
+  logCustomRasterGlyph(primary.path.c_str(), directoryData.get(), directorySize, metrics, glyphKanji, "kanji_day",
                        customScratch.get(), RASTER_SCRATCH_BYTES);
-  logCustomRasterGlyph(largest.path.c_str(), directoryData.get(), directorySize, metrics, glyphPunct, "fullwidth_punct",
+  logCustomRasterGlyph(primary.path.c_str(), directoryData.get(), directorySize, metrics, glyphPunct, "fullwidth_punct",
                        customScratch.get(), RASTER_SCRATCH_BYTES);
   logMemory("after custom raster");
 }
@@ -893,67 +1251,19 @@ void logProbeStatus(const char* label) {
           static_cast<unsigned long long>(probeStatus.sdTtfSize), static_cast<unsigned long>(probeStatus.sdTtfHash));
   LOG_INF("TTFP", "%s status raster stb=%d stb_hits=%u/%u stb_skip=%d stb_bytes=%lu "
                   "custom=%d custom_hits=%u/%u compound=%u custom_bytes=%lu "
-                  "ofr=%d ofr_hits=%u/%u ofr_bytes=%lu",
+                  "ft=%d ft_var=%d ft_hits=%u/%u ft_bytes=%lu",
           label,
           probeStatus.sdTtfRasterOk ? 1 : 0, probeStatus.sdTtfRasterHits, probeStatus.sdTtfRasterQueries,
           probeStatus.sdTtfRasterSkippedFullBuffer ? 1 : 0, static_cast<unsigned long>(probeStatus.sdTtfRasterBytes),
           probeStatus.sdTtfCustomRasterOk ? 1 : 0, probeStatus.sdTtfCustomRasterHits,
           probeStatus.sdTtfCustomRasterQueries, probeStatus.sdTtfCustomRasterCompounds,
           static_cast<unsigned long>(probeStatus.sdTtfCustomRasterBytes),
-          probeStatus.sdTtfOpenFontRenderOk ? 1 : 0, probeStatus.sdTtfOpenFontRenderHits,
-          probeStatus.sdTtfOpenFontRenderQueries, static_cast<unsigned long>(probeStatus.sdTtfOpenFontRenderBytes));
+          probeStatus.sdTtfDirectFreeTypeOk ? 1 : 0, probeStatus.sdTtfDirectFreeTypeVariationOk ? 1 : 0,
+          probeStatus.sdTtfDirectFreeTypeHits, probeStatus.sdTtfDirectFreeTypeQueries,
+          static_cast<unsigned long>(probeStatus.sdTtfDirectFreeTypeBytes));
 }
 
 }  // namespace
-
-#ifdef CROSSPOINT_TTF_PROBE_OPENFONTRENDER
-void OFR_fclose(FT_FILE* stream) {
-  if (!stream) return;
-  for (auto it = ofrFiles.begin(); it != ofrFiles.end(); ++it) {
-    if (static_cast<void*>(&(*it)) == stream) {
-      it->file.close();
-      ofrFiles.erase(it);
-      return;
-    }
-  }
-}
-
-FT_FILE* OFR_fopen(const char* filename, const char*) {
-  if (!filename || filename[0] == '\0') return nullptr;
-  HalFile file = Storage.open(filename, O_RDONLY);
-  if (!file) return nullptr;
-  ofrFiles.push_back({std::move(file)});
-  return static_cast<FT_FILE*>(&ofrFiles.back());
-}
-
-size_t OFR_fread(void* ptr, const size_t size, const size_t nmemb, FT_FILE* stream) {
-  if (!ptr || !stream || size == 0 || nmemb == 0) return 0;
-  auto* handle = static_cast<OpenFontRenderFileHandle*>(stream);
-  static uint32_t readCount = 0;
-  if ((++readCount & 0x3F) == 0) yield();
-  const int got = handle->file.read(ptr, size * nmemb);
-  return got <= 0 ? 0 : static_cast<size_t>(got);
-}
-
-int OFR_fseek(FT_FILE* stream, const long int offset, const int whence) {
-  if (!stream) return -1;
-  auto* handle = static_cast<OpenFontRenderFileHandle*>(stream);
-  if (whence == SEEK_SET) return handle->file.seek64(static_cast<uint64_t>(std::max<long int>(0, offset))) ? 0 : -1;
-  if (whence == SEEK_CUR) return handle->file.seekCur(offset) ? 0 : -1;
-  if (whence == SEEK_END) {
-    const int64_t target = static_cast<int64_t>(handle->file.fileSize64()) + offset;
-    if (target < 0) return -1;
-    return handle->file.seek64(static_cast<uint64_t>(target)) ? 0 : -1;
-  }
-  return -1;
-}
-
-long int OFR_ftell(FT_FILE* stream) {
-  if (!stream) return -1;
-  auto* handle = static_cast<OpenFontRenderFileHandle*>(stream);
-  return static_cast<long int>(handle->file.position());
-}
-#endif
 
 void setup() {
   Serial.begin(115200);
@@ -993,14 +1303,14 @@ void loop() {
   static uint32_t lastLog = 0;
   static uint32_t lastStatus = 0;
   const uint32_t now = millis();
-#ifdef CROSSPOINT_TTF_PROBE_OPENFONTRENDER
-  if (deferredOpenFontRenderProbePending && !deferredOpenFontRenderProbeDone && now >= OFR_TIMING_DELAY_MS) {
-    deferredOpenFontRenderProbeDone = true;
-    deferredOpenFontRenderProbePending = false;
-    LOG_INF("TTFP", "OpenFontRender timing probe starting after delay_ms=%lu",
-            static_cast<unsigned long>(OFR_TIMING_DELAY_MS));
-    runOpenFontRenderProbe(deferredOpenFontRenderSelection);
-    logProbeStatus("after ofr timing");
+#ifdef CROSSPOINT_TTF_PROBE_DIRECT_FREETYPE
+  if (deferredDirectFreeTypeProbePending && !deferredDirectFreeTypeProbeDone && now >= DIRECT_FT_DELAY_MS) {
+    deferredDirectFreeTypeProbeDone = true;
+    deferredDirectFreeTypeProbePending = false;
+    LOG_INF("TTFP", "direct FreeType variable probe starting after delay_ms=%lu",
+            static_cast<unsigned long>(DIRECT_FT_DELAY_MS));
+    runDirectFreeTypeProbe(deferredDirectFreeTypeSelection);
+    logProbeStatus("after direct freetype");
   }
 #endif
   if (lastLog == 0 || now - lastLog >= LOG_INTERVAL_MS) {

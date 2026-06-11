@@ -148,6 +148,7 @@ bool JsonSettingsIO::saveSettings(const CrossPointSettings& s, const char* path)
   doc["readerFontMode"] = s.readerFontMode;
   doc["readerTtfPath"] = s.readerTtfPath;
   doc["readerTtfSizePx"] = s.readerTtfSizePx;
+  doc["readerTtfWeight"] = s.readerTtfWeight;
   doc["readerTtfFileSize"] = s.readerTtfFileSize;
   doc["readerTtfHash"] = s.readerTtfHash;
   // Reader-menu-only ruby paint offsets. Stored manually so they do not appear in Settings UI.
@@ -307,6 +308,12 @@ bool JsonSettingsIO::loadSettings(CrossPointSettings& s, const char* json, bool*
     s.readerTtfSizePx = 12;
   } else if (s.readerTtfSizePx > 72) {
     s.readerTtfSizePx = 72;
+  }
+  s.readerTtfWeight = doc["readerTtfWeight"] | (uint8_t)40;
+  if (s.readerTtfWeight < 10) {
+    s.readerTtfWeight = 10;
+  } else if (s.readerTtfWeight > 90) {
+    s.readerTtfWeight = 90;
   }
   s.readerTtfFileSize = doc["readerTtfFileSize"] | static_cast<uint32_t>(0);
   s.readerTtfHash = doc["readerTtfHash"] | static_cast<uint32_t>(0);

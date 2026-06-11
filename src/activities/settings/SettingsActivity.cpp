@@ -438,6 +438,7 @@ void SettingsActivity::toggleCurrentSetting() {
   const uint8_t previousFontSize = SETTINGS.fontSize;
   const uint8_t previousJapaneseFontSize = SETTINGS.japaneseFontSize;
   const uint8_t previousTtfFontSize = SETTINGS.readerTtfSizePx;
+  const uint8_t previousTtfWeight = SETTINGS.readerTtfWeight;
   const bool sleepScreenChanged = setting.valuePtr == &CrossPointSettings::sleepScreen;
   const bool quickResumeTimeoutChanged = setting.valuePtr == &CrossPointSettings::quickResumeSleepScreen;
 
@@ -445,7 +446,7 @@ void SettingsActivity::toggleCurrentSetting() {
     openSleepTimeoutPicker();
     return;
   }
-  if (setting.valuePtr == &CrossPointSettings::readerTtfSizePx) {
+  if (setting.valuePtr == &CrossPointSettings::readerTtfSizePx || setting.nameId == StrId::STR_FONT_WEIGHT) {
     openReaderFontSizePicker();
     return;
   }
@@ -526,7 +527,7 @@ void SettingsActivity::toggleCurrentSetting() {
 
   CrossPointSettings::normalizeDependentSettings(SETTINGS);
   if (SETTINGS.fontSize != previousFontSize || SETTINGS.japaneseFontSize != previousJapaneseFontSize ||
-      SETTINGS.readerTtfSizePx != previousTtfFontSize) {
+      SETTINGS.readerTtfSizePx != previousTtfFontSize || SETTINGS.readerTtfWeight != previousTtfWeight) {
     SETTINGS.resetRubyOffsets();
   }
   syncQuickResumeTimeoutForSleepScreen(sleepScreenChanged, quickResumeTimeoutChanged);
@@ -574,11 +575,17 @@ void SettingsActivity::openSleepTimeoutPicker() {
 
 void SettingsActivity::openReaderFontSizePicker() {
   const uint8_t previousTtfFontSize = SETTINGS.readerTtfSizePx;
+  const uint8_t previousTtfWeight = SETTINGS.readerTtfWeight;
   startActivityForResult(std::make_unique<ReaderFontSizeActivity>(renderer, mappedInput),
-                         [this, previousTtfFontSize](const ActivityResult& result) {
+                         [this, previousTtfFontSize, previousTtfWeight](const ActivityResult& result) {
                            if (!result.isCancelled) {
-                             SETTINGS.readerTtfSizePx = static_cast<uint8_t>(std::get<IntervalResult>(result.data).value);
-                             if (SETTINGS.readerTtfSizePx != previousTtfFontSize) {
+                             if (const auto* selected = std::get_if<ReaderFontSettingsResult>(&result.data)) {
+                               SETTINGS.readerTtfSizePx = selected->sizePx;
+                               SETTINGS.readerTtfWeight = static_cast<uint8_t>(std::clamp<uint16_t>(
+                                   static_cast<uint16_t>(selected->weight / 10), 10, 90));
+                             }
+                             if (SETTINGS.readerTtfSizePx != previousTtfFontSize ||
+                                 SETTINGS.readerTtfWeight != previousTtfWeight) {
                                SETTINGS.resetRubyOffsets();
                              }
                              SETTINGS.saveToFile();

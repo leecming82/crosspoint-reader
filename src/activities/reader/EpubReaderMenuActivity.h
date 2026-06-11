@@ -3,6 +3,7 @@
 #include <Epub.h>
 #include <I18n.h>
 
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -37,7 +38,8 @@ class EpubReaderMenuActivity final : public Activity {
                                   const int currentPage, const int totalPages, const int bookProgressPercent,
                                   uint8_t orientation, uint8_t writingModePreference, bool hasFootnotes,
                                   bool allowVerticalWritingMode, bool epubFontOverrideActive = false,
-                                  std::string epubFontName = {}, uint8_t epubFontSizePx = 0);
+                                  std::string epubFontName = {}, uint8_t epubFontSizePx = 0,
+                                  uint16_t epubFontWeight = 400);
 
   void onEnter() override;
   void onExit() override;
@@ -105,4 +107,5 @@ class EpubReaderMenuActivity final : public Activity {
   bool epubFontOverrideActive = false;
   std::string epubFontName;
   uint8_t epubFontSizePx = 0;
+  uint16_t epubFontWeight = 400;
 };

@@ -3,13 +3,17 @@
 #ifdef CROSSPOINT_BOARD_MURPHY_M4
 
 #include <GfxRenderer.h>
+#include <HalStorage.h>
 #include <TtfRuntimeFont.h>
 
-#ifdef CROSSPOINT_TTF_READER_OPENFONTRENDER
-#define CROSSPOINT_TTF_USE_OPENFONTRENDER 1
-#include <OpenFontRender.h>
+#ifdef CROSSPOINT_TTF_READER_DIRECT_FREETYPE
+#define CROSSPOINT_TTF_USE_DIRECT_FREETYPE 1
+#include <ft2build.h>
+#include FT_FREETYPE_H
+#include FT_MULTIPLE_MASTERS_H
 #endif
 
+#include <array>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -23,7 +27,7 @@ class TtfReaderMetrics final : public ReaderFontProvider {
 
   bool ensureLoadedFromSettings();
   bool ensureLoaded(const ReaderFontConfig& config) override;
-  bool ensureLoaded(const char* path, uint8_t pixelSize, uint32_t expectedFileSize = 0);
+  bool ensureLoaded(const char* path, uint8_t pixelSize, uint32_t expectedFileSize = 0, uint16_t weight = 400);
   const ReaderFontConfig& activeConfig() const override { return activeConfig_; }
   int fontId() const override { return loaded_ ? fontId_ : INVALID_FONT_ID; }
   bool flushPersistentCache() const override;
@@ -35,9 +39,10 @@ class TtfReaderMetrics final : public ReaderFontProvider {
   uint32_t fileSize() const { return fileSize_; }
   uint32_t identityHash() const { return identityHash_; }
   bool flushGlyphSidecarCache() const;
+  bool clearPersistentGlyphCache() const;
 #ifdef CROSSPOINT_TTF_PROBE
   bool probeLoadFromPath(const char* path, uint8_t pixelSize, uint32_t expectedFileSize = 0) {
-    return loadFromPath(path, pixelSize, expectedFileSize);
+    return loadFromPath(path, pixelSize, expectedFileSize, 400);
   }
   void probeRasterText(const char* text) const;
 #endif
@@ -62,6 +67,33 @@ class TtfReaderMetrics final : public ReaderFontProvider {
   };
 
   using PsramBuffer = std::unique_ptr<uint8_t, PsramFreeDeleter>;
+#ifdef CROSSPOINT_TTF_USE_DIRECT_FREETYPE
+  struct DirectFreeTypeStreamWindow {
+    PsramBuffer data;
+    uint64_t start = 0;
+    uint32_t length = 0;
+    uint32_t lastUsed = 0;
+  };
+
+  struct DirectFreeTypeStreamHandle {
+    HalFile file;
+    FT_StreamRec stream = {};
+    std::string path;
+    std::array<DirectFreeTypeStreamWindow, 8> cacheWindows;
+    uint32_t cacheClock = 0;
+    uint32_t cacheHits = 0;
+    uint32_t cacheMisses = 0;
+    uint32_t physicalReads = 0;
+    uint32_t physicalSeeks = 0;
+    uint64_t physicalBytes = 0;
+    uint32_t physicalReadUs = 0;
+    uint32_t readCalls = 0;
+    uint32_t shortReads = 0;
+    uint64_t requestedBytes = 0;
+    uint64_t readBytes = 0;
+    uint32_t streamReadUs = 0;
+  };
+#endif
   struct OwnedTable {
     PsramBuffer data;
     uint32_t length = 0;
@@ -99,13 +131,13 @@ class TtfReaderMetrics final : public ReaderFontProvider {
   };
 
  private:
-  bool loadFromPath(const char* path, uint8_t pixelSize, uint32_t expectedFileSize);
+  bool loadFromPath(const char* path, uint8_t pixelSize, uint32_t expectedFileSize, uint16_t weight);
   int advanceForCodepoint(uint32_t cp, EpdFontFamily::Style style) const;
   int lineHeightPx() const;
   int ascenderPx() const;
   const CachedGlyph* glyphForCodepoint(uint32_t cp, EpdFontFamily::Style style) const;
   const CachedGlyph* rasterizeAndCacheGlyph(uint32_t cp, EpdFontFamily::Style style) const;
-  const CachedGlyph* rasterizeAndCacheGlyphWithOpenFontRender(uint32_t cp, EpdFontFamily::Style style,
+  const CachedGlyph* rasterizeAndCacheGlyphWithDirectFreeType(uint32_t cp, EpdFontFamily::Style style,
                                                               const ttf::GlyphMetrics& metrics) const;
   const CachedGlyph* rasterizeAndCacheGlyphWithCustomRasterizer(uint32_t cp, EpdFontFamily::Style style,
                                                                 const ttf::GlyphMetrics& metrics) const;
@@ -118,25 +150,32 @@ class TtfReaderMetrics final : public ReaderFontProvider {
   void markGlyphSidecarDirty(size_t bytes) const;
   void clearGlyphCache() const;
   void logRenderStats(const char* label) const;
-#ifdef CROSSPOINT_TTF_USE_OPENFONTRENDER
-  void logOpenFontRenderMetricSamples() const;
+#ifdef CROSSPOINT_TTF_USE_DIRECT_FREETYPE
+  bool initializeDirectFreeType();
+  void unloadDirectFreeType();
+  bool setDirectFreeTypeWeight(uint16_t weight);
+  void warmDirectFreeType() const;
 #endif
-  static uint32_t computeIdentityHash(const char* path, uint8_t pixelSize, uint32_t fileSize);
+  static uint32_t computeIdentityHash(const char* path, uint8_t pixelSize, uint32_t fileSize, uint16_t weight);
 
   TableCache tables_;
   ttf::TtfRuntimeFont font_;
   ReaderFontConfig activeConfig_;
   std::string path_;
   uint8_t pixelSize_ = 0;
+  uint16_t weight_ = 400;
   uint32_t fileSize_ = 0;
   uint32_t identityHash_ = 0;
   uint32_t glyfTableOffset_ = 0;
   uint32_t glyfTableLength_ = 0;
   int fontId_ = INVALID_FONT_ID;
   bool loaded_ = false;
-#ifdef CROSSPOINT_TTF_USE_OPENFONTRENDER
-  mutable OpenFontRender openFontRender_;
-  bool openFontRenderLoaded_ = false;
+#ifdef CROSSPOINT_TTF_USE_DIRECT_FREETYPE
+  mutable FT_Library directFtLibrary_ = nullptr;
+  mutable FT_Face directFtFace_ = nullptr;
+  mutable DirectFreeTypeStreamHandle directFtStream_;
+  mutable bool directFreeTypeLoaded_ = false;
+  mutable bool directFreeTypeVariationOk_ = false;
 #endif
   mutable std::vector<CachedGlyph> glyphCache_;
   mutable size_t glyphCacheBytes_ = 0;

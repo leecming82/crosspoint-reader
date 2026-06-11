@@ -409,6 +409,23 @@ The likely practical compromise is lazy runtime caching. Rasterize glyphs on fir
 
    Note: lower-level `EpdFont` data structures and generated built-in bitmap fonts remain because system/UI text still uses them. Old cpfont identity constants remain only so stale cache records deserialize and compare as non-current.
 
+- [x] 18. Re-evaluate direct TrueType/FreeType provider for variable TTFs
+
+   Retry a direct TrueType/FreeType-backed reader provider so variable font axes, especially `wght`, can be handled on device without requiring pre-converted static TTF files. This is now the active M4 app prototype because OpenFontRender and standalone FreeType cannot be linked together: both export the same `FT_*` symbols.
+
+   Scope:
+
+   - [x] Build a contained probe first: find the largest `/TTF` file whose path contains `Variable`, set explicit variation coordinates such as `wght=400`, extract metrics, raster sample glyphs, and log heap/PSRAM/stack/IRAM impact.
+   - [x] Use a trimmed local FreeType 2.13.3 source library with GX variation support and a custom `HalFile`-backed `FT_StreamRec`; large Japanese TTFs stream from SD instead of being loaded into PSRAM.
+   - [x] Add an 8-window read-through stream cache in PSRAM. Probe results show stream-warm direct FreeType rasterization around 4-7 ms for default variable coordinates and roughly 5-14 ms for `wght=400`, with the first-glyph setup cost hidden by warmup.
+   - [x] Wire direct FreeType into the M4 reader raster path behind the existing `TtfReaderMetrics`/`ReaderFontProvider` boundary. Layout, indexing, cache identity, sidecar cache, and draw code continue to use the existing TTF provider contract.
+   - [x] Remove OpenFontRender from the M4 app build while direct FreeType is active, because the two FreeType copies cannot coexist at link time.
+   - [x] Confirm full-app device behavior: EPUB images/covers remain stable, sleep/resume works, selected variable Japanese TTF renders at `wght=400`, and tategaki/yokogaki punctuation still looks acceptable.
+   - [x] Encode `wght` in reader font identity, settings, EPUB overrides, and TTF glyph cache identity so size/weight changes invalidate layout and raster caches correctly.
+   - [x] Add user-facing weight selection in the shared reader font size screen. Global Reader settings and per-EPUB Reader Font settings can now adjust size and weight with the same live preview.
+
+   Exit criteria: direct FreeType renders variable Japanese TTFs on device, does not reproduce the prior image/display instability, has acceptable page-render performance with the existing CrossPoint glyph cache, and selected size/weight changes are reflected in preview, layout identity, and reader rendering.
+
 ## Open Questions
 
 - Which TTF directory should CrossPoint use: `/.mofei/fonts/`, `/fonts/`, or a CrossPoint-specific path?

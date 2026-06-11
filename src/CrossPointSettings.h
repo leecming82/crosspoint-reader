@@ -229,6 +229,7 @@ class CrossPointSettings {
   uint8_t readerFontMode = READER_FONT_TTF;
   char readerTtfPath[128] = "";
   uint8_t readerTtfSizePx = 36;
+  uint8_t readerTtfWeight = 40;
   uint32_t readerTtfFileSize = 0;
   uint32_t readerTtfHash = 0;
   uint8_t lineSpacing = NORMAL;
