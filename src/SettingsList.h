@@ -161,6 +161,14 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
             StrId::STR_TIME_TO_SLEEP, &CrossPointSettings::sleepTimeoutMinutes,
             {CrossPointSettings::MIN_SLEEP_TIMEOUT_MINUTES, CrossPointSettings::MAX_SLEEP_TIMEOUT_MINUTES, 1},
             "sleepTimeoutMinutes", StrId::STR_CAT_SYSTEM),
+        SettingInfo::Value(
+            StrId::STR_FRONTLIGHT_IDLE_DIM, &CrossPointSettings::frontlightIdleDimMinutes,
+            {CrossPointSettings::MIN_FRONTLIGHT_IDLE_MINUTES, CrossPointSettings::MAX_FRONTLIGHT_IDLE_MINUTES, 1},
+            "frontlightIdleDimMinutes", StrId::STR_CAT_SYSTEM),
+        SettingInfo::Value(
+            StrId::STR_FRONTLIGHT_IDLE_OFF, &CrossPointSettings::frontlightIdleOffMinutes,
+            {CrossPointSettings::MIN_FRONTLIGHT_IDLE_MINUTES, CrossPointSettings::MAX_FRONTLIGHT_IDLE_MINUTES, 1},
+            "frontlightIdleOffMinutes", StrId::STR_CAT_SYSTEM),
         SettingInfo::Toggle(StrId::STR_SHOW_HIDDEN_FILES, &CrossPointSettings::showHiddenFiles, "showHiddenFiles",
                             StrId::STR_CAT_SYSTEM),
         SettingInfo::Toggle(StrId::STR_REMOVE_READ_FROM_RECENTS, &CrossPointSettings::removeReadBooksFromRecents,

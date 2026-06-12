@@ -271,6 +271,10 @@ class CrossPointSettings {
   // Murphy M4 warm/cool frontlight PWM duties, 0 = off, 255 = maximum tested duty.
   uint8_t frontlightCoolDuty = 0;
   uint8_t frontlightWarmDuty = 0;
+  // Frontlight idle dim timeout in minutes (never: 0, default: 2)
+  uint8_t frontlightIdleDimMinutes = 2;
+  // Frontlight idle off timeout in minutes (never: 0, default: 5)
+  uint8_t frontlightIdleOffMinutes = 5;
   // Image rendering mode in EPUB reader
   uint8_t imageRendering = IMAGES_DISPLAY;
   // Tilt-based page turning (X3 only — requires QMI8658 IMU)
@@ -288,6 +292,9 @@ class CrossPointSettings {
   static constexpr uint8_t MIN_SLEEP_TIMEOUT_MINUTES = 1;
   static constexpr uint8_t SLEEP_TIMEOUT_NEVER_MINUTES = 31;
   static constexpr uint8_t MAX_SLEEP_TIMEOUT_MINUTES = SLEEP_TIMEOUT_NEVER_MINUTES;
+
+  static constexpr uint8_t MIN_FRONTLIGHT_IDLE_MINUTES = 0;
+  static constexpr uint8_t MAX_FRONTLIGHT_IDLE_MINUTES = 60;
 
   // Legacy resolver fields retained for settings/runtime ABI stability. No M4 reader path sets them.
   using SdFontIdResolver = int (*)(void* ctx, const char* familyName, uint8_t fontSize);
@@ -319,6 +326,8 @@ class CrossPointSettings {
  public:
   float getReaderLineCompression() const;
   unsigned long getSleepTimeoutMs() const;
+  unsigned long getFrontlightIdleDimMs() const;
+  unsigned long getFrontlightIdleOffMs() const;
   int getRefreshFrequency() const;
 };
 

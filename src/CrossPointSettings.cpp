@@ -319,6 +319,20 @@ unsigned long CrossPointSettings::getSleepTimeoutMs() const {
   return static_cast<unsigned long>(minutes) * 60UL * 1000UL;
 }
 
+unsigned long CrossPointSettings::getFrontlightIdleDimMs() const {
+  if (frontlightIdleDimMinutes == 0) return 0UL;
+  const uint8_t minutes =
+      std::clamp(frontlightIdleDimMinutes, MIN_FRONTLIGHT_IDLE_MINUTES, static_cast<uint8_t>(MAX_FRONTLIGHT_IDLE_MINUTES));
+  return static_cast<unsigned long>(minutes) * 60UL * 1000UL;
+}
+
+unsigned long CrossPointSettings::getFrontlightIdleOffMs() const {
+  if (frontlightIdleOffMinutes == 0) return 0UL;
+  const uint8_t minutes =
+      std::clamp(frontlightIdleOffMinutes, MIN_FRONTLIGHT_IDLE_MINUTES, static_cast<uint8_t>(MAX_FRONTLIGHT_IDLE_MINUTES));
+  return static_cast<unsigned long>(minutes) * 60UL * 1000UL;
+}
+
 int CrossPointSettings::getRefreshFrequency() const {
   switch (refreshFrequency) {
     case REFRESH_1:

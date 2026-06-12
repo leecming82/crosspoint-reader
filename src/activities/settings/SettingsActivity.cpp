@@ -446,6 +446,14 @@ void SettingsActivity::toggleCurrentSetting() {
     openSleepTimeoutPicker();
     return;
   }
+  if (setting.nameId == StrId::STR_FRONTLIGHT_IDLE_DIM) {
+    openFrontlightIdleDimPicker();
+    return;
+  }
+  if (setting.nameId == StrId::STR_FRONTLIGHT_IDLE_OFF) {
+    openFrontlightIdleOffPicker();
+    return;
+  }
   if (setting.valuePtr == &CrossPointSettings::readerTtfSizePx || setting.nameId == StrId::STR_FONT_WEIGHT) {
     openReaderFontSizePicker();
     return;
@@ -573,6 +581,38 @@ void SettingsActivity::openSleepTimeoutPicker() {
       });
 }
 
+void SettingsActivity::openFrontlightIdleDimPicker() {
+  startActivityForResult(
+      std::make_unique<IntervalSelectionActivity>(
+          renderer, mappedInput, "FrontlightIdleDimInterval", StrId::STR_FRONTLIGHT_IDLE_DIM,
+          StrId::STR_FRONTLIGHT_IDLE_DIM_STEP_HINT, SETTINGS.frontlightIdleDimMinutes,
+          CrossPointSettings::MIN_FRONTLIGHT_IDLE_MINUTES, CrossPointSettings::MAX_FRONTLIGHT_IDLE_MINUTES, 1, 5,
+          StrId::STR_SLEEP_TIMER_VALUE_FORMAT, false, true, StrId::STR_SLEEP_NEVER),
+      [this](const ActivityResult& result) {
+        if (!result.isCancelled) {
+          SETTINGS.frontlightIdleDimMinutes = static_cast<uint8_t>(std::get<IntervalResult>(result.data).value);
+          SETTINGS.saveToFile();
+        }
+        requestUpdate();
+      });
+}
+
+void SettingsActivity::openFrontlightIdleOffPicker() {
+  startActivityForResult(
+      std::make_unique<IntervalSelectionActivity>(
+          renderer, mappedInput, "FrontlightIdleOffInterval", StrId::STR_FRONTLIGHT_IDLE_OFF,
+          StrId::STR_FRONTLIGHT_IDLE_OFF_STEP_HINT, SETTINGS.frontlightIdleOffMinutes,
+          CrossPointSettings::MIN_FRONTLIGHT_IDLE_MINUTES, CrossPointSettings::MAX_FRONTLIGHT_IDLE_MINUTES, 1, 5,
+          StrId::STR_SLEEP_TIMER_VALUE_FORMAT, false, true, StrId::STR_SLEEP_NEVER),
+      [this](const ActivityResult& result) {
+        if (!result.isCancelled) {
+          SETTINGS.frontlightIdleOffMinutes = static_cast<uint8_t>(std::get<IntervalResult>(result.data).value);
+          SETTINGS.saveToFile();
+        }
+        requestUpdate();
+      });
+}
+
 void SettingsActivity::openReaderFontSizePicker() {
   const uint8_t previousTtfFontSize = SETTINGS.readerTtfSizePx;
   const uint8_t previousTtfWeight = SETTINGS.readerTtfWeight;
@@ -669,6 +709,17 @@ void SettingsActivity::render(RenderLock&&) {
                        static_cast<unsigned int>(SETTINGS.*(setting.valuePtr)));
               valueText = valueBuffer;
             }
+          } else if (setting.nameId == StrId::STR_FRONTLIGHT_IDLE_DIM ||
+                     setting.nameId == StrId::STR_FRONTLIGHT_IDLE_OFF) {
+            char valueBuffer[32];
+            const uint8_t val = SETTINGS.*(setting.valuePtr);
+            if (val == 0) {
+              valueText = tr(STR_SLEEP_NEVER);
+            } else {
+              snprintf(valueBuffer, sizeof(valueBuffer), tr(STR_SLEEP_TIMER_VALUE_FORMAT),
+                       static_cast<unsigned int>(val));
+              valueText = valueBuffer;
+            }
           } else {
             valueText = std::to_string(SETTINGS.*(setting.valuePtr));
           }
@@ -715,6 +766,17 @@ void SettingsActivity::render(RenderLock&&) {
                        static_cast<unsigned int>(SETTINGS.*(setting.valuePtr)));
               valueText = valueBuffer;
             }
+          } else if (setting.nameId == StrId::STR_FRONTLIGHT_IDLE_DIM ||
+                     setting.nameId == StrId::STR_FRONTLIGHT_IDLE_OFF) {
+            char valueBuffer[32];
+            const uint8_t val = SETTINGS.*(setting.valuePtr);
+            if (val == 0) {
+              valueText = tr(STR_SLEEP_NEVER);
+            } else {
+              snprintf(valueBuffer, sizeof(valueBuffer), tr(STR_SLEEP_TIMER_VALUE_FORMAT),
+                       static_cast<unsigned int>(val));
+              valueText = valueBuffer;
+            }
           } else {
             valueText = std::to_string(SETTINGS.*(setting.valuePtr));
           }
@@ -727,7 +789,9 @@ void SettingsActivity::render(RenderLock&&) {
   const auto confirmLabel =
       (selectedSettingIndex == 0)
           ? I18N.get(categoryNames[(selectedCategoryIndex + 1) % categoryCount])
-          : (selectedSettingIndex > 0 && (*currentSettings)[selectedSettingIndex - 1].nameId == StrId::STR_TIME_TO_SLEEP
+           : (selectedSettingIndex > 0 && ((*currentSettings)[selectedSettingIndex - 1].nameId == StrId::STR_TIME_TO_SLEEP ||
+                 (*currentSettings)[selectedSettingIndex - 1].nameId == StrId::STR_FRONTLIGHT_IDLE_DIM ||
+                 (*currentSettings)[selectedSettingIndex - 1].nameId == StrId::STR_FRONTLIGHT_IDLE_OFF)
                  ? tr(STR_SELECT)
                  : tr(STR_TOGGLE));
   const auto labels = mappedInput.mapLabels(tr(STR_BACK), confirmLabel, tr(STR_DIR_UP), tr(STR_DIR_DOWN));

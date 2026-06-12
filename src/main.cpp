@@ -215,8 +215,6 @@ void flushTtfGlyphCacheForSleep() {
 }  // namespace
 
 namespace {
-constexpr unsigned long FRONTLIGHT_IDLE_DIM_MS = 30UL * 1000UL;
-constexpr unsigned long FRONTLIGHT_IDLE_OFF_MS = 60UL * 1000UL;
 constexpr uint8_t FRONTLIGHT_LOWEST_BAR_DUTY = static_cast<uint8_t>((255 + 4) / 8);
 
 enum class FrontlightIdleStage : uint8_t {
@@ -256,7 +254,8 @@ void updateIdleFrontlight(const unsigned long idleMs, const bool blocked) {
     return;
   }
 
-  if (idleMs >= FRONTLIGHT_IDLE_OFF_MS) {
+  const unsigned long offMs = SETTINGS.getFrontlightIdleOffMs();
+  if (offMs > 0 && idleMs >= offMs) {
     if (frontlightIdleStage != FrontlightIdleStage::Off) {
       halFrontlight.off();
       frontlightIdleStage = FrontlightIdleStage::Off;
@@ -264,7 +263,8 @@ void updateIdleFrontlight(const unsigned long idleMs, const bool blocked) {
     return;
   }
 
-  if (idleMs >= FRONTLIGHT_IDLE_DIM_MS) {
+  const unsigned long dimMs = SETTINGS.getFrontlightIdleDimMs();
+  if (dimMs > 0 && idleMs >= dimMs) {
     if (frontlightIdleStage != FrontlightIdleStage::Dimmed) {
       const uint8_t maxDuty = std::max(SETTINGS.frontlightCoolDuty, SETTINGS.frontlightWarmDuty);
       halFrontlight.set(idleDimDuty(SETTINGS.frontlightCoolDuty, maxDuty),
