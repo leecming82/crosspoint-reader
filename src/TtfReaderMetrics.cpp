@@ -25,7 +25,7 @@ constexpr size_t TTF_GLYPH_CACHE_MAX_BYTES = 768 * 1024;
 constexpr uint32_t TTF_STATS_LOG_INTERVAL_MS = 3000;
 constexpr const char* TTF_GLYPH_CACHE_DIR = "/.crosspoint/ttf_cache";
 constexpr uint16_t TTF_GLYPH_SIDECAR_VERSION = 2;
-constexpr uint32_t TTF_GLYPH_SIDECAR_SAVE_INTERVAL_MS = 60000;
+constexpr uint32_t TTF_GLYPH_SIDECAR_SAVE_INTERVAL_MS = 30UL * 60UL * 1000UL;
 constexpr uint32_t TTF_GLYPH_SIDECAR_SAVE_DIRTY_GLYPHS = 128;
 constexpr size_t TTF_GLYPH_SIDECAR_SAVE_DIRTY_BYTES = 64 * 1024;
 constexpr uint8_t TTF_RASTER_SUPERSAMPLE = 2;
@@ -984,16 +984,52 @@ uint32_t TtfReaderMetrics::getVerticalSubstitution(const int, const uint32_t cp,
   return cp;
 }
 
+TtfReaderMetrics::CachedGlyph* TtfReaderMetrics::findCachedGlyph(const uint32_t cp) const {
+  const auto it = std::lower_bound(glyphCacheIndex_.begin(), glyphCacheIndex_.end(), cp,
+                                   [](const GlyphCacheIndexEntry& entry, const uint32_t codepoint) {
+                                     return entry.codepoint < codepoint;
+                                   });
+  if (it == glyphCacheIndex_.end() || it->codepoint != cp || it->cacheIndex >= glyphCache_.size()) {
+    return nullptr;
+  }
+  return &glyphCache_[it->cacheIndex];
+}
+
+void TtfReaderMetrics::rebuildGlyphCacheIndex() const {
+  glyphCacheIndex_.clear();
+  glyphCacheIndex_.reserve(glyphCache_.size());
+  for (size_t i = 0; i < glyphCache_.size() && i <= UINT16_MAX; ++i) {
+    glyphCacheIndex_.push_back({glyphCache_[i].codepoint, static_cast<uint16_t>(i)});
+  }
+  std::sort(glyphCacheIndex_.begin(), glyphCacheIndex_.end(),
+            [](const GlyphCacheIndexEntry& a, const GlyphCacheIndexEntry& b) {
+              if (a.codepoint != b.codepoint) return a.codepoint < b.codepoint;
+              return a.cacheIndex < b.cacheIndex;
+            });
+}
+
+void TtfReaderMetrics::insertGlyphCacheIndex(const uint32_t cp, const size_t cacheIndex) const {
+  if (cacheIndex > UINT16_MAX) {
+    rebuildGlyphCacheIndex();
+    return;
+  }
+
+  const GlyphCacheIndexEntry entry{cp, static_cast<uint16_t>(cacheIndex)};
+  const auto it = std::lower_bound(glyphCacheIndex_.begin(), glyphCacheIndex_.end(), cp,
+                                   [](const GlyphCacheIndexEntry& existing, const uint32_t codepoint) {
+                                     return existing.codepoint < codepoint;
+                                   });
+  glyphCacheIndex_.insert(it, entry);
+}
+
 const TtfReaderMetrics::CachedGlyph* TtfReaderMetrics::glyphForCodepoint(const uint32_t cp,
                                                                          const EpdFontFamily::Style style) const {
   if (!loaded_ || utf8IsCombiningMark(cp)) return nullptr;
 
-  for (auto& glyph : glyphCache_) {
-    if (glyph.codepoint == cp) {
-      ++cacheHits_;
-      glyph.lastUsed = ++glyphUseClock_;
-      return &glyph;
-    }
+  if (CachedGlyph* glyph = findCachedGlyph(cp)) {
+    ++cacheHits_;
+    glyph->lastUsed = ++glyphUseClock_;
+    return glyph;
   }
 
   ++cacheMisses_;
@@ -1030,6 +1066,7 @@ const TtfReaderMetrics::CachedGlyph* TtfReaderMetrics::rasterizeAndCacheGlyphWit
   if (metrics.glyphLength == 0) {
     cached.lastUsed = ++glyphUseClock_;
     glyphCache_.push_back(std::move(cached));
+    insertGlyphCacheIndex(cp, glyphCache_.size() - 1);
     markGlyphSidecarDirty(0);
     ++rasterOk_;
     return &glyphCache_.back();
@@ -1098,6 +1135,7 @@ const TtfReaderMetrics::CachedGlyph* TtfReaderMetrics::rasterizeAndCacheGlyphWit
   cached.lastUsed = ++glyphUseClock_;
   const size_t cachedBytes = cached.bitmapBytes;
   glyphCache_.push_back(std::move(cached));
+  insertGlyphCacheIndex(cp, glyphCache_.size() - 1);
   markGlyphSidecarDirty(cachedBytes);
   ++rasterOk_;
   return &glyphCache_.back();
@@ -1120,6 +1158,7 @@ const TtfReaderMetrics::CachedGlyph* TtfReaderMetrics::rasterizeAndCacheGlyphWit
   if (metrics.glyphLength == 0) {
     cached.lastUsed = ++glyphUseClock_;
     glyphCache_.push_back(std::move(cached));
+    insertGlyphCacheIndex(cp, glyphCache_.size() - 1);
     markGlyphSidecarDirty(0);
     ++rasterOk_;
     return &glyphCache_.back();
@@ -1190,6 +1229,7 @@ const TtfReaderMetrics::CachedGlyph* TtfReaderMetrics::rasterizeAndCacheGlyphWit
   cached.lastUsed = ++glyphUseClock_;
   const size_t cachedBytes = cached.bitmapBytes;
   glyphCache_.push_back(std::move(cached));
+  insertGlyphCacheIndex(cp, glyphCache_.size() - 1);
   markGlyphSidecarDirty(cachedBytes);
   ++rasterOk_;
   return &glyphCache_.back();
@@ -1331,6 +1371,7 @@ bool TtfReaderMetrics::reserveGlyphCacheBytes(const size_t incomingBytes) const 
   }
 
   if (evicted > 0) {
+    rebuildGlyphCacheIndex();
     cacheEvictions_ += evicted;
     LOG_INF("TTFR", "glyph cache evicted count=%lu bytes=%u cache=%u/%u glyphs=%u incoming=%u",
             static_cast<unsigned long>(evicted), static_cast<unsigned>(evictedBytes),
@@ -1441,6 +1482,7 @@ bool TtfReaderMetrics::loadGlyphSidecarCache() const {
 
   glyphCache_ = std::move(loadedGlyphs);
   glyphCacheBytes_ = loadedBytes;
+  rebuildGlyphCacheIndex();
   glyphSidecarDirty_ = false;
   glyphSidecarDirtyGlyphs_ = 0;
   glyphSidecarDirtyBytes_ = 0;
@@ -1541,6 +1583,7 @@ void TtfReaderMetrics::markGlyphSidecarDirty(const size_t bytes) const {
 
 void TtfReaderMetrics::clearGlyphCache() const {
   glyphCache_.clear();
+  glyphCacheIndex_.clear();
   glyphCacheBytes_ = 0;
   glyphUseClock_ = 0;
   cacheHits_ = 0;

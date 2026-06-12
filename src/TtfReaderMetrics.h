@@ -131,10 +131,18 @@ class TtfReaderMetrics final : public ReaderFontProvider {
   };
 
  private:
+  struct GlyphCacheIndexEntry {
+    uint32_t codepoint = 0;
+    uint16_t cacheIndex = 0;
+  };
+
   bool loadFromPath(const char* path, uint8_t pixelSize, uint32_t expectedFileSize, uint16_t weight);
   int advanceForCodepoint(uint32_t cp, EpdFontFamily::Style style) const;
   int lineHeightPx() const;
   int ascenderPx() const;
+  CachedGlyph* findCachedGlyph(uint32_t cp) const;
+  void rebuildGlyphCacheIndex() const;
+  void insertGlyphCacheIndex(uint32_t cp, size_t cacheIndex) const;
   const CachedGlyph* glyphForCodepoint(uint32_t cp, EpdFontFamily::Style style) const;
   const CachedGlyph* rasterizeAndCacheGlyph(uint32_t cp, EpdFontFamily::Style style) const;
   const CachedGlyph* rasterizeAndCacheGlyphWithDirectFreeType(uint32_t cp, EpdFontFamily::Style style,
@@ -178,6 +186,7 @@ class TtfReaderMetrics final : public ReaderFontProvider {
   mutable bool directFreeTypeVariationOk_ = false;
 #endif
   mutable std::vector<CachedGlyph> glyphCache_;
+  mutable std::vector<GlyphCacheIndexEntry> glyphCacheIndex_;
   mutable size_t glyphCacheBytes_ = 0;
   mutable uint32_t glyphUseClock_ = 0;
   mutable uint32_t cacheHits_ = 0;
