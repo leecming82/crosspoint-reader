@@ -306,6 +306,12 @@ T positiveDelta(const T current, const T previous) {
   return current >= previous ? current - previous : current;
 }
 
+struct PrewarmGlyphEntry {
+  uint32_t codepoint = 0;
+  bool present = false;
+  uint16_t glyphId = 0;
+};
+
 uint8_t coverageToPackedGrayValue(const uint8_t coverage) {
   // Match GfxRenderer's packed 2-bit font convention after inversion:
   // 0=black, 1=dark gray, 2=light gray, 3=white.
@@ -858,18 +864,22 @@ void TtfReaderMetrics::prewarmText(const int fontId, const char* utf8Text, const
   if (!handlesFontId(fontId) || !utf8Text || *utf8Text == '\0') return;
 
   const EpdFontFamily::Style style = firstStyleFromMask(styleMask);
-  std::vector<uint32_t> uniqueCodepoints;
-  uniqueCodepoints.reserve(128);
+  std::vector<PrewarmGlyphEntry> uniqueGlyphs;
+  uniqueGlyphs.reserve(128);
   uint32_t scannedGlyphs = 0;
   const char* cursor = utf8Text;
   while (uint32_t cp = utf8NextCodepoint(reinterpret_cast<const uint8_t**>(&cursor))) {
     if (utf8IsCombiningMark(cp)) continue;
     ++scannedGlyphs;
-    if (std::find(uniqueCodepoints.begin(), uniqueCodepoints.end(), cp) == uniqueCodepoints.end()) {
-      uniqueCodepoints.push_back(cp);
+    const auto duplicate = std::find_if(uniqueGlyphs.begin(), uniqueGlyphs.end(), [cp](const PrewarmGlyphEntry& entry) {
+      return entry.codepoint == cp;
+    });
+    if (duplicate == uniqueGlyphs.end()) {
+      const auto metrics = font_.metricsForCodepoint(cp);
+      uniqueGlyphs.push_back({cp, metrics.present, metrics.glyphId});
     }
   }
-  if (uniqueCodepoints.empty()) return;
+  if (uniqueGlyphs.empty()) return;
 
   const uint32_t startMs = millis();
   const size_t cacheStart = glyphCache_.size();
@@ -882,8 +892,14 @@ void TtfReaderMetrics::prewarmText(const int fontId, const char* utf8Text, const
   const uint32_t evictionsStart = cacheEvictions_;
   const uint64_t rasterUsStart = rasterTimeUs_;
 
-  for (const uint32_t cp : uniqueCodepoints) {
-    glyphForCodepoint(cp, style);
+  std::sort(uniqueGlyphs.begin(), uniqueGlyphs.end(), [](const PrewarmGlyphEntry& a, const PrewarmGlyphEntry& b) {
+    if (a.present != b.present) return a.present;
+    if (a.glyphId != b.glyphId) return a.glyphId < b.glyphId;
+    return a.codepoint < b.codepoint;
+  });
+
+  for (const auto& glyph : uniqueGlyphs) {
+    glyphForCodepoint(glyph.codepoint, style);
     yield();
   }
 
@@ -898,7 +914,7 @@ void TtfReaderMetrics::prewarmText(const int fontId, const char* utf8Text, const
           "hits_delta=%lu misses_delta=%lu raster_delta=%lu raster_fail_delta=%lu missing_delta=%lu "
           "evict_delta=%lu evictions=%lu raster_us=%llu avg_raster_us=%lu sidecar_saved=%d "
           "sidecar_dirty=%lu sidecar_dirty_bytes=%u elapsed_ms=%lu",
-          fontId_, static_cast<unsigned long>(scannedGlyphs), static_cast<unsigned>(uniqueCodepoints.size()),
+          fontId_, static_cast<unsigned long>(scannedGlyphs), static_cast<unsigned>(uniqueGlyphs.size()),
           static_cast<unsigned>(cacheStart), static_cast<unsigned>(glyphCache_.size()),
           static_cast<unsigned>(cacheBytesStart), static_cast<unsigned>(glyphCacheBytes_),
           static_cast<unsigned>(TTF_GLYPH_CACHE_MAX_BYTES), static_cast<unsigned long>(cachePct),
@@ -1011,7 +1027,15 @@ const TtfReaderMetrics::CachedGlyph* TtfReaderMetrics::rasterizeAndCacheGlyphWit
   cached.glyphId = metrics.glyphId;
   cached.advancePx = advanceForCodepoint(cp, style);
 
-  const FT_UInt glyphIndex = FT_Get_Char_Index(directFtFace_, cp);
+  if (metrics.glyphLength == 0) {
+    cached.lastUsed = ++glyphUseClock_;
+    glyphCache_.push_back(std::move(cached));
+    markGlyphSidecarDirty(0);
+    ++rasterOk_;
+    return &glyphCache_.back();
+  }
+
+  const FT_UInt glyphIndex = metrics.glyphId;
   if (glyphIndex == 0) {
     ++missingGlyphs_;
     return nullptr;

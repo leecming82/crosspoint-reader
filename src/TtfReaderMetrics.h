@@ -79,7 +79,7 @@ class TtfReaderMetrics final : public ReaderFontProvider {
     HalFile file;
     FT_StreamRec stream = {};
     std::string path;
-    std::array<DirectFreeTypeStreamWindow, 8> cacheWindows;
+    std::array<DirectFreeTypeStreamWindow, 12> cacheWindows;
     uint32_t cacheClock = 0;
     uint32_t cacheHits = 0;
     uint32_t cacheMisses = 0;

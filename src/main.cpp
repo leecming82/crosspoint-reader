@@ -187,6 +187,29 @@ void appendMurphyBatteryLogIfDue() {
 
   appendMurphyBatteryLog("periodic");
 }
+
+void flushTtfGlyphCacheForSleep() {
+  const ReaderFontCacheStats before = TTF_READER_METRICS.cacheStats();
+  if (before.glyphCount == 0) return;
+
+  const uint32_t startMs = millis();
+  const bool saved = TTF_READER_METRICS.flushPersistentCache();
+  const ReaderFontCacheStats after = TTF_READER_METRICS.cacheStats();
+
+  if (before.persistentDirty) {
+    if (saved) {
+      LOG_INF("SLP", "TTF glyph cache flushed before sleep glyphs=%u bytes=%u elapsed_ms=%lu",
+              static_cast<unsigned>(after.glyphCount), static_cast<unsigned>(after.bytes),
+              static_cast<unsigned long>(millis() - startMs));
+    } else {
+      LOG_ERR("SLP", "TTF glyph cache flush before sleep failed glyphs=%u bytes=%u dirty=1",
+              static_cast<unsigned>(before.glyphCount), static_cast<unsigned>(before.bytes));
+    }
+  } else {
+    LOG_DBG("SLP", "TTF glyph cache already clean before sleep glyphs=%u bytes=%u",
+            static_cast<unsigned>(before.glyphCount), static_cast<unsigned>(before.bytes));
+  }
+}
 #endif
 
 }  // namespace
@@ -326,7 +349,6 @@ void enterDeepSleep(bool fromTimeout = false) {
 
 #ifdef CROSSPOINT_BOARD_MURPHY_M4
   appendMurphyBatteryLog("sleep");
-  TTF_READER_METRICS.flushPersistentCache();
 #endif
 
   // Commit to sleeping before goToSleep() runs the outgoing activity's onExit():
@@ -337,6 +359,10 @@ void enterDeepSleep(bool fromTimeout = false) {
   if (isQuickResumeSleep) {
     saveSleepFrameBuffer();
   }
+
+#ifdef CROSSPOINT_BOARD_MURPHY_M4
+  flushTtfGlyphCacheForSleep();
+#endif
 
   // Tear down WiFi so the modem power domain isn't held alive across deep sleep.
   // Wake from deep sleep is effectively a chip reset, so no state needs to survive.

@@ -44,8 +44,8 @@ constexpr uint16_t METRICS_PIXEL_SIZE = 24;
 constexpr size_t RASTER_SCRATCH_BYTES = 64 * 1024;
 constexpr size_t GLYF_SLICE_SAFETY_MARGIN = 512 * 1024;
 constexpr uint32_t DIRECT_FT_DELAY_MS = 20000;
-constexpr size_t DIRECT_FT_STREAM_CACHE_WINDOW_BYTES = 8 * 1024;
-constexpr size_t DIRECT_FT_STREAM_CACHE_WINDOWS = 8;
+constexpr size_t DIRECT_FT_STREAM_CACHE_MAX_WINDOW_BYTES = 16 * 1024;
+constexpr size_t DIRECT_FT_STREAM_CACHE_MAX_WINDOWS = 12;
 
 struct ProbeStatus {
   bool displayInitialized = false;
@@ -145,6 +145,12 @@ TtfSelection deferredDirectFreeTypeSelection;
 bool deferredDirectFreeTypeProbePending = false;
 bool deferredDirectFreeTypeProbeDone = false;
 
+struct DirectFreeTypeCacheConfig {
+  const char* label = "";
+  size_t windows = 0;
+  size_t windowBytes = 0;
+};
+
 struct DirectFreeTypeStreamWindow {
   std::unique_ptr<uint8_t, PsramFreeDeleter> data;
   uint64_t start = 0;
@@ -156,7 +162,10 @@ struct DirectFreeTypeStreamHandle {
   HalFile file;
   FT_StreamRec stream = {};
   std::string path;
-  std::array<DirectFreeTypeStreamWindow, DIRECT_FT_STREAM_CACHE_WINDOWS> cacheWindows;
+  const char* cacheLabel = "";
+  size_t activeWindows = 0;
+  size_t activeWindowBytes = 0;
+  std::array<DirectFreeTypeStreamWindow, DIRECT_FT_STREAM_CACHE_MAX_WINDOWS> cacheWindows;
   uint32_t cacheClock = 0;
   uint32_t cacheHits = 0;
   uint32_t cacheMisses = 0;
@@ -643,7 +652,8 @@ unsigned long directFreeTypeStreamRead(FT_Stream stream, const unsigned long off
   while (total < count) {
     const uint64_t currentOffset = static_cast<uint64_t>(offset) + total;
     DirectFreeTypeStreamWindow* hitWindow = nullptr;
-    for (auto& window : handle->cacheWindows) {
+    for (size_t i = 0; i < handle->activeWindows; ++i) {
+      auto& window = handle->cacheWindows[i];
       if (window.data && currentOffset >= window.start && currentOffset < window.start + window.length) {
         hitWindow = &window;
         break;
@@ -663,14 +673,16 @@ unsigned long directFreeTypeStreamRead(FT_Stream stream, const unsigned long off
 
     ++handle->cacheMisses;
     DirectFreeTypeStreamWindow* fillWindow = nullptr;
-    for (auto& window : handle->cacheWindows) {
+    for (size_t i = 0; i < handle->activeWindows; ++i) {
+      auto& window = handle->cacheWindows[i];
       if (window.data && window.length == 0) {
         fillWindow = &window;
         break;
       }
     }
     if (!fillWindow) {
-      for (auto& window : handle->cacheWindows) {
+      for (size_t i = 0; i < handle->activeWindows; ++i) {
+        auto& window = handle->cacheWindows[i];
         if (!window.data) continue;
         if (!fillWindow || window.lastUsed < fillWindow->lastUsed) {
           fillWindow = &window;
@@ -679,10 +691,8 @@ unsigned long directFreeTypeStreamRead(FT_Stream stream, const unsigned long off
     }
 
     const bool useCache = fillWindow && fillWindow->data;
-    const uint64_t alignedOffset = useCache
-                                       ? (currentOffset / DIRECT_FT_STREAM_CACHE_WINDOW_BYTES) *
-                                             DIRECT_FT_STREAM_CACHE_WINDOW_BYTES
-                                       : currentOffset;
+    const uint64_t alignedOffset =
+        useCache ? (currentOffset / handle->activeWindowBytes) * handle->activeWindowBytes : currentOffset;
     const uint64_t streamSize = stream->size;
     if (alignedOffset >= streamSize) {
       ++handle->shortReads;
@@ -690,8 +700,7 @@ unsigned long directFreeTypeStreamRead(FT_Stream stream, const unsigned long off
     }
     const uint32_t fillSize = useCache
                                   ? static_cast<uint32_t>(
-                                        std::min<uint64_t>(DIRECT_FT_STREAM_CACHE_WINDOW_BYTES,
-                                                           streamSize - alignedOffset))
+                                        std::min<uint64_t>(handle->activeWindowBytes, streamSize - alignedOffset))
                                   : static_cast<uint32_t>(count - total);
     if (fillSize == 0 || !handle->file.seek64(alignedOffset)) {
       ++handle->shortReads;
@@ -732,14 +741,23 @@ void directFreeTypeStreamClose(FT_Stream stream) {
   if (!stream || !stream->descriptor.pointer) return;
   auto* handle = static_cast<DirectFreeTypeStreamHandle*>(stream->descriptor.pointer);
   if (handle->file) handle->file.close();
-  for (auto& window : handle->cacheWindows) {
+  for (size_t i = 0; i < handle->activeWindows; ++i) {
+    auto& window = handle->cacheWindows[i];
     window.data.reset();
     window.length = 0;
   }
 }
 
-bool openDirectFreeTypeStream(const TtfSelection& selection, DirectFreeTypeStreamHandle& handle) {
+bool openDirectFreeTypeStream(const TtfSelection& selection, DirectFreeTypeStreamHandle& handle,
+                              const DirectFreeTypeCacheConfig& cacheConfig) {
   handle.path = selection.path;
+  handle.cacheLabel = cacheConfig.label;
+  handle.activeWindows = std::min(cacheConfig.windows, DIRECT_FT_STREAM_CACHE_MAX_WINDOWS);
+  handle.activeWindowBytes = std::min(cacheConfig.windowBytes, DIRECT_FT_STREAM_CACHE_MAX_WINDOW_BYTES);
+  if (handle.activeWindows == 0 || handle.activeWindowBytes == 0) {
+    handle.activeWindows = 0;
+    handle.activeWindowBytes = 0;
+  }
   handle.cacheClock = 0;
   handle.cacheHits = 0;
   handle.cacheMisses = 0;
@@ -760,8 +778,12 @@ bool openDirectFreeTypeStream(const TtfSelection& selection, DirectFreeTypeStrea
     window.start = 0;
     window.length = 0;
     window.lastUsed = 0;
+    window.data.reset();
+  }
+  for (size_t i = 0; i < handle.activeWindows; ++i) {
+    auto& window = handle.cacheWindows[i];
     uint8_t* cacheRaw = static_cast<uint8_t*>(
-        heap_caps_malloc(DIRECT_FT_STREAM_CACHE_WINDOW_BYTES, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+        heap_caps_malloc(handle.activeWindowBytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
     if (cacheRaw) {
       window.data.reset(cacheRaw);
       ++allocatedWindows;
@@ -770,13 +792,14 @@ bool openDirectFreeTypeStream(const TtfSelection& selection, DirectFreeTypeStrea
     }
   }
   if (allocatedWindows == 0) {
-    LOG_ERR("TTFP", "direct FreeType stream cache allocation failed windows=%lu bytes_each=%lu; using uncached stream",
-            static_cast<unsigned long>(DIRECT_FT_STREAM_CACHE_WINDOWS),
-            static_cast<unsigned long>(DIRECT_FT_STREAM_CACHE_WINDOW_BYTES));
+    LOG_ERR("TTFP", "direct FreeType stream cache allocation failed label=%s windows=%lu bytes_each=%lu; using uncached stream",
+            handle.cacheLabel, static_cast<unsigned long>(handle.activeWindows),
+            static_cast<unsigned long>(handle.activeWindowBytes));
   } else {
-    LOG_INF("TTFP", "direct FreeType stream cache windows=%lu bytes_each=%lu",
-            static_cast<unsigned long>(allocatedWindows),
-            static_cast<unsigned long>(DIRECT_FT_STREAM_CACHE_WINDOW_BYTES));
+    handle.activeWindows = allocatedWindows;
+    LOG_INF("TTFP", "direct FreeType stream cache label=%s windows=%lu bytes_each=%lu",
+            handle.cacheLabel, static_cast<unsigned long>(handle.activeWindows),
+            static_cast<unsigned long>(handle.activeWindowBytes));
   }
   handle.file = Storage.open(selection.path.c_str(), O_RDONLY);
   if (!handle.file) {
@@ -806,21 +829,53 @@ long fixedToRoundedLong(const FT_Fixed value) {
   return -static_cast<long>((-value + 0x8000L) >> 16);
 }
 
+struct DirectFreeTypeStreamSnapshot {
+  uint32_t readCalls = 0;
+  uint32_t seekCalls = 0;
+  uint32_t shortReads = 0;
+  uint64_t requestedBytes = 0;
+  uint64_t readBytes = 0;
+  uint32_t streamReadUs = 0;
+  uint32_t cacheHits = 0;
+  uint32_t cacheMisses = 0;
+  uint32_t physicalReads = 0;
+  uint32_t physicalSeeks = 0;
+  uint64_t physicalBytes = 0;
+  uint32_t physicalReadUs = 0;
+};
+
+DirectFreeTypeStreamSnapshot snapshotDirectFreeTypeStream(const DirectFreeTypeStreamHandle& handle) {
+  return {handle.readCalls,     handle.seekCalls,      handle.shortReads,    handle.requestedBytes,
+          handle.readBytes,     handle.streamReadUs,   handle.cacheHits,     handle.cacheMisses,
+          handle.physicalReads, handle.physicalSeeks,  handle.physicalBytes, handle.physicalReadUs};
+}
+
+void logDirectFreeTypeStreamDelta(const char* metricLabel, const char* passLabel, const char* glyphLabel,
+                                  const DirectFreeTypeStreamHandle& streamHandle,
+                                  const DirectFreeTypeStreamSnapshot& before) {
+  LOG_INF("TTFP", "%s pass=%s %s cache=%s reads=%lu seeks=%lu short=%lu req=%llu bytes=%llu max_req=%lu us=%lu",
+          metricLabel, passLabel, glyphLabel, streamHandle.cacheLabel,
+          static_cast<unsigned long>(streamHandle.readCalls - before.readCalls),
+          static_cast<unsigned long>(streamHandle.seekCalls - before.seekCalls),
+          static_cast<unsigned long>(streamHandle.shortReads - before.shortReads),
+          static_cast<unsigned long long>(streamHandle.requestedBytes - before.requestedBytes),
+          static_cast<unsigned long long>(streamHandle.readBytes - before.readBytes),
+          static_cast<unsigned long>(streamHandle.glyphMaxReadRequest),
+          static_cast<unsigned long>(streamHandle.streamReadUs - before.streamReadUs));
+  LOG_INF("TTFP", "%s_cache pass=%s %s cache=%s hits=%lu misses=%lu sd_reads=%lu sd_seeks=%lu sd_bytes=%llu sd_us=%lu",
+          metricLabel, passLabel, glyphLabel, streamHandle.cacheLabel,
+          static_cast<unsigned long>(streamHandle.cacheHits - before.cacheHits),
+          static_cast<unsigned long>(streamHandle.cacheMisses - before.cacheMisses),
+          static_cast<unsigned long>(streamHandle.physicalReads - before.physicalReads),
+          static_cast<unsigned long>(streamHandle.physicalSeeks - before.physicalSeeks),
+          static_cast<unsigned long long>(streamHandle.physicalBytes - before.physicalBytes),
+          static_cast<unsigned long>(streamHandle.physicalReadUs - before.physicalReadUs));
+}
+
 void logDirectFreeTypeGlyph(FT_Face face, DirectFreeTypeStreamHandle& streamHandle, const uint32_t cp,
-                            const char* label, const char* passLabel) {
+                            const char* label, const char* passLabel, const FT_Int32 loadFlags = FT_LOAD_DEFAULT) {
   ++probeStatus.sdTtfDirectFreeTypeQueries;
-  const uint32_t readsBefore = streamHandle.readCalls;
-  const uint32_t seeksBefore = streamHandle.seekCalls;
-  const uint32_t shortsBefore = streamHandle.shortReads;
-  const uint64_t requestedBefore = streamHandle.requestedBytes;
-  const uint64_t bytesBefore = streamHandle.readBytes;
-  const uint32_t streamUsBefore = streamHandle.streamReadUs;
-  const uint32_t cacheHitsBefore = streamHandle.cacheHits;
-  const uint32_t cacheMissesBefore = streamHandle.cacheMisses;
-  const uint32_t physicalReadsBefore = streamHandle.physicalReads;
-  const uint32_t physicalSeeksBefore = streamHandle.physicalSeeks;
-  const uint64_t physicalBytesBefore = streamHandle.physicalBytes;
-  const uint32_t physicalUsBefore = streamHandle.physicalReadUs;
+  const DirectFreeTypeStreamSnapshot before = snapshotDirectFreeTypeStream(streamHandle);
   streamHandle.glyphMaxReadRequest = 0;
   const uint32_t totalStartUs = micros();
   const FT_UInt glyphIndex = FT_Get_Char_Index(face, cp);
@@ -829,26 +884,12 @@ void logDirectFreeTypeGlyph(FT_Face face, DirectFreeTypeStreamHandle& streamHand
     LOG_INF("TTFP",
             "raster_ft_direct pass=%s %s cp=U+%04lX ok=0 glyph=0 us=%lu error=missing glyph",
             passLabel, label, static_cast<unsigned long>(cp), static_cast<unsigned long>(totalUs));
-    LOG_INF("TTFP", "ft_stream pass=%s %s reads=%lu seeks=%lu short=%lu req=%llu bytes=%llu max_req=%lu us=%lu",
-            passLabel, label, static_cast<unsigned long>(streamHandle.readCalls - readsBefore),
-            static_cast<unsigned long>(streamHandle.seekCalls - seeksBefore),
-            static_cast<unsigned long>(streamHandle.shortReads - shortsBefore),
-            static_cast<unsigned long long>(streamHandle.requestedBytes - requestedBefore),
-            static_cast<unsigned long long>(streamHandle.readBytes - bytesBefore),
-            static_cast<unsigned long>(streamHandle.glyphMaxReadRequest),
-            static_cast<unsigned long>(streamHandle.streamReadUs - streamUsBefore));
-    LOG_INF("TTFP", "ft_cache pass=%s %s hits=%lu misses=%lu sd_reads=%lu sd_seeks=%lu sd_bytes=%llu sd_us=%lu",
-            passLabel, label, static_cast<unsigned long>(streamHandle.cacheHits - cacheHitsBefore),
-            static_cast<unsigned long>(streamHandle.cacheMisses - cacheMissesBefore),
-            static_cast<unsigned long>(streamHandle.physicalReads - physicalReadsBefore),
-            static_cast<unsigned long>(streamHandle.physicalSeeks - physicalSeeksBefore),
-            static_cast<unsigned long long>(streamHandle.physicalBytes - physicalBytesBefore),
-            static_cast<unsigned long>(streamHandle.physicalReadUs - physicalUsBefore));
+    logDirectFreeTypeStreamDelta("ft_stream", passLabel, label, streamHandle, before);
     return;
   }
 
   const uint32_t loadStartUs = micros();
-  FT_Error error = FT_Load_Glyph(face, glyphIndex, FT_LOAD_DEFAULT);
+  FT_Error error = FT_Load_Glyph(face, glyphIndex, loadFlags);
   const uint32_t loadUs = micros() - loadStartUs;
   if (error != 0) {
     const uint32_t totalUs = micros() - totalStartUs;
@@ -857,22 +898,8 @@ void logDirectFreeTypeGlyph(FT_Face face, DirectFreeTypeStreamHandle& streamHand
             "stream_us=%lu",
             passLabel, label, static_cast<unsigned long>(cp), static_cast<unsigned long>(glyphIndex),
             static_cast<long>(error), static_cast<unsigned long>(loadUs), static_cast<unsigned long>(totalUs),
-            static_cast<unsigned long>(streamHandle.streamReadUs - streamUsBefore));
-    LOG_INF("TTFP", "ft_stream pass=%s %s reads=%lu seeks=%lu short=%lu req=%llu bytes=%llu max_req=%lu us=%lu",
-            passLabel, label, static_cast<unsigned long>(streamHandle.readCalls - readsBefore),
-            static_cast<unsigned long>(streamHandle.seekCalls - seeksBefore),
-            static_cast<unsigned long>(streamHandle.shortReads - shortsBefore),
-            static_cast<unsigned long long>(streamHandle.requestedBytes - requestedBefore),
-            static_cast<unsigned long long>(streamHandle.readBytes - bytesBefore),
-            static_cast<unsigned long>(streamHandle.glyphMaxReadRequest),
-            static_cast<unsigned long>(streamHandle.streamReadUs - streamUsBefore));
-    LOG_INF("TTFP", "ft_cache pass=%s %s hits=%lu misses=%lu sd_reads=%lu sd_seeks=%lu sd_bytes=%llu sd_us=%lu",
-            passLabel, label, static_cast<unsigned long>(streamHandle.cacheHits - cacheHitsBefore),
-            static_cast<unsigned long>(streamHandle.cacheMisses - cacheMissesBefore),
-            static_cast<unsigned long>(streamHandle.physicalReads - physicalReadsBefore),
-            static_cast<unsigned long>(streamHandle.physicalSeeks - physicalSeeksBefore),
-            static_cast<unsigned long long>(streamHandle.physicalBytes - physicalBytesBefore),
-            static_cast<unsigned long>(streamHandle.physicalReadUs - physicalUsBefore));
+            static_cast<unsigned long>(streamHandle.streamReadUs - before.streamReadUs));
+    logDirectFreeTypeStreamDelta("ft_stream", passLabel, label, streamHandle, before);
     return;
   }
 
@@ -886,22 +913,8 @@ void logDirectFreeTypeGlyph(FT_Face face, DirectFreeTypeStreamHandle& streamHand
             "total_us=%lu stream_us=%lu",
             passLabel, label, static_cast<unsigned long>(cp), static_cast<unsigned long>(glyphIndex),
             static_cast<long>(error), static_cast<unsigned long>(loadUs), static_cast<unsigned long>(renderUs),
-            static_cast<unsigned long>(totalUs), static_cast<unsigned long>(streamHandle.streamReadUs - streamUsBefore));
-    LOG_INF("TTFP", "ft_stream pass=%s %s reads=%lu seeks=%lu short=%lu req=%llu bytes=%llu max_req=%lu us=%lu",
-            passLabel, label, static_cast<unsigned long>(streamHandle.readCalls - readsBefore),
-            static_cast<unsigned long>(streamHandle.seekCalls - seeksBefore),
-            static_cast<unsigned long>(streamHandle.shortReads - shortsBefore),
-            static_cast<unsigned long long>(streamHandle.requestedBytes - requestedBefore),
-            static_cast<unsigned long long>(streamHandle.readBytes - bytesBefore),
-            static_cast<unsigned long>(streamHandle.glyphMaxReadRequest),
-            static_cast<unsigned long>(streamHandle.streamReadUs - streamUsBefore));
-    LOG_INF("TTFP", "ft_cache pass=%s %s hits=%lu misses=%lu sd_reads=%lu sd_seeks=%lu sd_bytes=%llu sd_us=%lu",
-            passLabel, label, static_cast<unsigned long>(streamHandle.cacheHits - cacheHitsBefore),
-            static_cast<unsigned long>(streamHandle.cacheMisses - cacheMissesBefore),
-            static_cast<unsigned long>(streamHandle.physicalReads - physicalReadsBefore),
-            static_cast<unsigned long>(streamHandle.physicalSeeks - physicalSeeksBefore),
-            static_cast<unsigned long long>(streamHandle.physicalBytes - physicalBytesBefore),
-            static_cast<unsigned long>(streamHandle.physicalReadUs - physicalUsBefore));
+            static_cast<unsigned long>(totalUs), static_cast<unsigned long>(streamHandle.streamReadUs - before.streamReadUs));
+    logDirectFreeTypeStreamDelta("ft_stream", passLabel, label, streamHandle, before);
     return;
   }
 
@@ -937,45 +950,34 @@ void logDirectFreeTypeGlyph(FT_Face face, DirectFreeTypeStreamHandle& streamHand
           static_cast<long>(face->glyph->advance.x >> 6), static_cast<unsigned long>(ink),
           static_cast<unsigned long>(weak), static_cast<unsigned long long>(coverage), static_cast<unsigned long>(loadUs),
           static_cast<unsigned long>(renderUs), static_cast<unsigned long>(scanUs), static_cast<unsigned long>(totalUs),
-          static_cast<unsigned long>(streamHandle.streamReadUs - streamUsBefore),
+          static_cast<unsigned long>(streamHandle.streamReadUs - before.streamReadUs),
           static_cast<unsigned long>(uxTaskGetStackHighWaterMark(nullptr) * sizeof(StackType_t)));
-  LOG_INF("TTFP", "ft_stream pass=%s %s reads=%lu seeks=%lu short=%lu req=%llu bytes=%llu max_req=%lu us=%lu",
-          passLabel, label, static_cast<unsigned long>(streamHandle.readCalls - readsBefore),
-          static_cast<unsigned long>(streamHandle.seekCalls - seeksBefore),
-          static_cast<unsigned long>(streamHandle.shortReads - shortsBefore),
-          static_cast<unsigned long long>(streamHandle.requestedBytes - requestedBefore),
-          static_cast<unsigned long long>(streamHandle.readBytes - bytesBefore),
-          static_cast<unsigned long>(streamHandle.glyphMaxReadRequest),
-          static_cast<unsigned long>(streamHandle.streamReadUs - streamUsBefore));
-  LOG_INF("TTFP", "ft_cache pass=%s %s hits=%lu misses=%lu sd_reads=%lu sd_seeks=%lu sd_bytes=%llu sd_us=%lu",
-          passLabel, label, static_cast<unsigned long>(streamHandle.cacheHits - cacheHitsBefore),
-          static_cast<unsigned long>(streamHandle.cacheMisses - cacheMissesBefore),
-          static_cast<unsigned long>(streamHandle.physicalReads - physicalReadsBefore),
-          static_cast<unsigned long>(streamHandle.physicalSeeks - physicalSeeksBefore),
-          static_cast<unsigned long long>(streamHandle.physicalBytes - physicalBytesBefore),
-          static_cast<unsigned long>(streamHandle.physicalReadUs - physicalUsBefore));
+  logDirectFreeTypeStreamDelta("ft_stream", passLabel, label, streamHandle, before);
 }
 
-void logDirectFreeTypeGlyphSet(FT_Face face, DirectFreeTypeStreamHandle& streamHandle, const char* passLabel) {
-  logDirectFreeTypeGlyph(face, streamHandle, 0x0041, "ascii_A", passLabel);
-  logDirectFreeTypeGlyph(face, streamHandle, 0x3042, "kana_a", passLabel);
-  logDirectFreeTypeGlyph(face, streamHandle, 0x65E5, "kanji_day", passLabel);
-  logDirectFreeTypeGlyph(face, streamHandle, 0x3001, "fullwidth_punct", passLabel);
-  logDirectFreeTypeGlyph(face, streamHandle, 0x10FFFF, "missing_probe", passLabel);
+void logDirectFreeTypeGlyphSet(FT_Face face, DirectFreeTypeStreamHandle& streamHandle, const char* passLabel,
+                               const FT_Int32 loadFlags = FT_LOAD_DEFAULT) {
+  logDirectFreeTypeGlyph(face, streamHandle, 0x0041, "ascii_A", passLabel, loadFlags);
+  logDirectFreeTypeGlyph(face, streamHandle, 0x3042, "kana_a", passLabel, loadFlags);
+  logDirectFreeTypeGlyph(face, streamHandle, 0x65E5, "kanji_day", passLabel, loadFlags);
+  logDirectFreeTypeGlyph(face, streamHandle, 0x3001, "fullwidth_punct", passLabel, loadFlags);
+  logDirectFreeTypeGlyph(face, streamHandle, 0x10FFFF, "missing_probe", passLabel, loadFlags);
 }
 
-void runDirectFreeTypeProbePass(const TtfSelection& selection, const bool applyWeight400, const char* variantLabel) {
+void runDirectFreeTypeProbePass(const TtfSelection& selection, const bool applyWeight400, const char* variantLabel,
+                                const DirectFreeTypeCacheConfig& cacheConfig,
+                                const FT_Int32 loadFlags = FT_LOAD_DEFAULT) {
   if (selection.path.empty()) {
     LOG_INF("TTFP", "direct FreeType probe skipped: no Variable TTF selected");
     return;
   }
 
-  LOG_INF("TTFP", "direct FreeType probe variant=%s selected path=%s size=%llu variable_name=%d", variantLabel,
-          selection.path.c_str(), static_cast<unsigned long long>(selection.size),
+  LOG_INF("TTFP", "direct FreeType probe variant=%s cache=%s selected path=%s size=%llu variable_name=%d", variantLabel,
+          cacheConfig.label, selection.path.c_str(), static_cast<unsigned long long>(selection.size),
           looksVariableFontName(selection.path) ? 1 : 0);
   logMemory("before direct FreeType probe pass");
-  LOG_INF("TTFP", "direct FreeType variant=%s stack high_water_before=%lu bytes", variantLabel,
-          static_cast<unsigned long>(uxTaskGetStackHighWaterMark(nullptr) * sizeof(StackType_t)));
+  LOG_INF("TTFP", "direct FreeType variant=%s cache=%s stack high_water_before=%lu bytes", variantLabel,
+          cacheConfig.label, static_cast<unsigned long>(uxTaskGetStackHighWaterMark(nullptr) * sizeof(StackType_t)));
 
   FT_Library library = nullptr;
   FT_Face face = nullptr;
@@ -993,7 +995,7 @@ void runDirectFreeTypeProbePass(const TtfSelection& selection, const bool applyW
   LOG_INF("TTFP", "direct FreeType variant=%s standalone stream probe expects GX var support", variantLabel);
 
   DirectFreeTypeStreamHandle streamHandle;
-  if (!openDirectFreeTypeStream(selection, streamHandle)) {
+  if (!openDirectFreeTypeStream(selection, streamHandle, cacheConfig)) {
     FT_Done_FreeType(library);
     logMemory("after direct FreeType probe stream failure");
     return;
@@ -1060,20 +1062,37 @@ void runDirectFreeTypeProbePass(const TtfSelection& selection, const bool applyW
   char repeatLabel[32];
   std::snprintf(coldLabel, sizeof(coldLabel), "%s_cold", variantLabel);
   std::snprintf(repeatLabel, sizeof(repeatLabel), "%s_repeat", variantLabel);
-  logDirectFreeTypeGlyphSet(face, streamHandle, coldLabel);
-  logDirectFreeTypeGlyphSet(face, streamHandle, repeatLabel);
+  const DirectFreeTypeStreamSnapshot glyphsBefore = snapshotDirectFreeTypeStream(streamHandle);
+  const uint32_t glyphsStartUs = micros();
+  logDirectFreeTypeGlyphSet(face, streamHandle, coldLabel, loadFlags);
+  logDirectFreeTypeGlyphSet(face, streamHandle, repeatLabel, loadFlags);
+  const uint32_t glyphsElapsedUs = micros() - glyphsStartUs;
+  logDirectFreeTypeStreamDelta("ft_stream_summary", variantLabel, "glyph_set", streamHandle, glyphsBefore);
+  LOG_INF("TTFP", "direct FreeType summary variant=%s cache=%s glyph_set_us=%lu",
+          variantLabel, streamHandle.cacheLabel, static_cast<unsigned long>(glyphsElapsedUs));
 
   FT_Done_Face(face);
   FT_Done_FreeType(library);
-  LOG_INF("TTFP", "direct FreeType variant=%s stack high_water_after=%lu bytes", variantLabel,
-          static_cast<unsigned long>(uxTaskGetStackHighWaterMark(nullptr) * sizeof(StackType_t)));
+  LOG_INF("TTFP", "direct FreeType variant=%s cache=%s stack high_water_after=%lu bytes", variantLabel,
+          cacheConfig.label, static_cast<unsigned long>(uxTaskGetStackHighWaterMark(nullptr) * sizeof(StackType_t)));
   logMemory("after direct FreeType probe pass");
 }
 
 void runDirectFreeTypeProbe(const TtfSelection& selection) {
-  runDirectFreeTypeProbePass(selection, false, "default");
+  constexpr std::array<DirectFreeTypeCacheConfig, 4> cacheConfigs = {
+      DirectFreeTypeCacheConfig{"4k_x8", 8, 4 * 1024},
+      DirectFreeTypeCacheConfig{"8k_x8", 8, 8 * 1024},
+      DirectFreeTypeCacheConfig{"16k_x8", 8, 16 * 1024},
+      DirectFreeTypeCacheConfig{"8k_x12", 12, 8 * 1024},
+  };
+  runDirectFreeTypeProbePass(selection, false, "default", cacheConfigs[1]);
   if (looksVariableFontName(selection.path)) {
-    runDirectFreeTypeProbePass(selection, true, "w400");
+    for (const auto& config : cacheConfigs) {
+      runDirectFreeTypeProbePass(selection, true, "w400", config);
+      yield();
+    }
+    runDirectFreeTypeProbePass(selection, true, "w400_nohint", cacheConfigs[3],
+                               FT_LOAD_NO_HINTING | FT_LOAD_NO_AUTOHINT);
   }
 }
 #endif
