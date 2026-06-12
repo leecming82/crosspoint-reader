@@ -215,9 +215,66 @@ void flushTtfGlyphCacheForSleep() {
 }  // namespace
 
 namespace {
+constexpr unsigned long FRONTLIGHT_IDLE_DIM_MS = 30UL * 1000UL;
+constexpr unsigned long FRONTLIGHT_IDLE_OFF_MS = 60UL * 1000UL;
+constexpr uint8_t FRONTLIGHT_LOWEST_BAR_DUTY = static_cast<uint8_t>((255 + 4) / 8);
+
+enum class FrontlightIdleStage : uint8_t {
+  Active,
+  Dimmed,
+  Off,
+};
+
+FrontlightIdleStage frontlightIdleStage = FrontlightIdleStage::Active;
+
 void applyFrontlightSettings() {
   if (!gpio.deviceIsMurphyM4() || !halFrontlight.isAvailable()) return;
   halFrontlight.set(SETTINGS.frontlightCoolDuty, SETTINGS.frontlightWarmDuty);
+  frontlightIdleStage = FrontlightIdleStage::Active;
+}
+
+bool frontlightConfiguredOn() {
+  return SETTINGS.frontlightCoolDuty > 0 || SETTINGS.frontlightWarmDuty > 0;
+}
+
+uint8_t idleDimDuty(const uint8_t duty, const uint8_t maxDuty) {
+  if (duty == 0 || maxDuty == 0 || maxDuty <= FRONTLIGHT_LOWEST_BAR_DUTY) return duty;
+  const uint16_t scaled = (static_cast<uint16_t>(duty) * FRONTLIGHT_LOWEST_BAR_DUTY + maxDuty / 2) / maxDuty;
+  return static_cast<uint8_t>(std::max<uint16_t>(1, std::min<uint16_t>(scaled, FRONTLIGHT_LOWEST_BAR_DUTY)));
+}
+
+void restoreFrontlightFromIdle() {
+  if (frontlightIdleStage == FrontlightIdleStage::Active) return;
+  applyFrontlightSettings();
+}
+
+void updateIdleFrontlight(const unsigned long idleMs, const bool blocked) {
+  if (!gpio.deviceIsMurphyM4() || !halFrontlight.isAvailable()) return;
+
+  if (blocked || !frontlightConfiguredOn()) {
+    restoreFrontlightFromIdle();
+    return;
+  }
+
+  if (idleMs >= FRONTLIGHT_IDLE_OFF_MS) {
+    if (frontlightIdleStage != FrontlightIdleStage::Off) {
+      halFrontlight.off();
+      frontlightIdleStage = FrontlightIdleStage::Off;
+    }
+    return;
+  }
+
+  if (idleMs >= FRONTLIGHT_IDLE_DIM_MS) {
+    if (frontlightIdleStage != FrontlightIdleStage::Dimmed) {
+      const uint8_t maxDuty = std::max(SETTINGS.frontlightCoolDuty, SETTINGS.frontlightWarmDuty);
+      halFrontlight.set(idleDimDuty(SETTINGS.frontlightCoolDuty, maxDuty),
+                        idleDimDuty(SETTINGS.frontlightWarmDuty, maxDuty));
+      frontlightIdleStage = FrontlightIdleStage::Dimmed;
+    }
+    return;
+  }
+
+  restoreFrontlightFromIdle();
 }
 
 bool handleFrontlightOverlayInput() {
@@ -616,9 +673,17 @@ void loop() {
     return;
   }
 
+  static unsigned long lastActivityTime = millis();
+
   mappedInputManager.setTouchLogicalSize(renderer.getScreenWidth(), renderer.getScreenHeight());
   halTouch.setLogicalOrientation(static_cast<uint8_t>(renderer.getOrientation()));
   mappedInputManager.update();
+  const bool userActivity =
+      gpio.wasAnyPressed() || gpio.wasAnyReleased() || mappedInputManager.hadTouchActivity() || halTiltSensor.hadActivity();
+  if (userActivity) {
+    lastActivityTime = millis();
+    restoreFrontlightFromIdle();
+  }
   if (handleFrontlightOverlayInput()) {
     return;
   }
@@ -672,9 +737,7 @@ void loop() {
   }
 
   // Check for any user activity (button press or release) or active background work
-  static unsigned long lastActivityTime = millis();
-  if (gpio.wasAnyPressed() || gpio.wasAnyReleased() || mappedInputManager.hadTouchActivity() || halTiltSensor.hadActivity() ||
-      activityManager.preventAutoSleep()) {
+  if (userActivity || activityManager.preventAutoSleep()) {
     lastActivityTime = millis();         // Reset inactivity timer
     powerManager.setPowerSaving(false);  // Restore normal CPU frequency on user activity
   }
@@ -742,6 +805,9 @@ void loop() {
   if (gpio.wasUsbStateChanged()) {
     activityManager.requestUpdate();
   }
+
+  updateIdleFrontlight(millis() - lastActivityTime,
+                       activityManager.preventAutoSleep() || activityManager.skipLoopDelay() || RenderLock::peek());
 
 #ifdef CROSSPOINT_BOARD_MURPHY_M4
   appendMurphyBatteryLogIfDue();
