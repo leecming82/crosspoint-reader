@@ -17,6 +17,8 @@
 #include "fontIds.h"
 #include "util/BookCacheUtils.h"
 #include "util/StringUtils.h"
+#include "util/TouchList.h"
+#include "util/TouchUi.h"
 
 namespace {
 constexpr unsigned long GO_HOME_MS = 1000;
@@ -159,10 +161,17 @@ int FileBrowserActivity::listIndexForPoint(const MappedInputManager::TouchPoint 
   }
 
   const int visibleRows = std::max(1, rect.height / rowHeight);
+#ifdef CROSSPOINT_BOARD_MURPHY_M4
+  const auto layout =
+      TouchList::calculatePageLayout(static_cast<int>(selectorIndex), static_cast<int>(files.size()), visibleRows);
+  const int visibleRow = (point.y - rect.y) / rowHeight;
+  return TouchList::visibleRowToItemIndex(layout, visibleRow);
+#else
   const int pageStartIndex = (static_cast<int>(selectorIndex) / visibleRows) * visibleRows;
   const int row = (point.y - rect.y) / rowHeight;
   const int index = pageStartIndex + row;
   return index < static_cast<int>(files.size()) ? index : -1;
+#endif
 }
 
 // To avoid traversing directories twice (once for cache clearing, once for deletion),
@@ -353,6 +362,37 @@ bool FileBrowserActivity::handleTouch() {
     goBack();
     return true;
   }
+
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  const Rect bounds = listRect();
+  const int listRows = std::max(1, bounds.height / metrics.listRowHeight);
+  const int listSize = static_cast<int>(files.size());
+  const auto layout = TouchList::calculatePageLayout(static_cast<int>(selectorIndex), listSize, listRows);
+  const int visibleRow =
+      TouchNavigator::tappedListIndex(mappedInput, bounds, TouchList::visibleRowCount(layout), 0,
+                                      metrics.listRowHeight, 0);
+  if (visibleRow >= 0) {
+    if (TouchList::isPreviousPageRow(layout, visibleRow)) {
+      selectorIndex = static_cast<size_t>(TouchList::calculatePageLayout(std::max(0, layout.start - 1), listSize,
+                                                                         listRows)
+                                             .start);
+      requestUpdate();
+      return true;
+    }
+
+    if (TouchList::isNextPageRow(layout, visibleRow)) {
+      selectorIndex = static_cast<size_t>(std::min(listSize - 1, layout.start + layout.itemCount));
+      requestUpdate();
+      return true;
+    }
+
+    const int itemIndex = TouchList::visibleRowToItemIndex(layout, visibleRow);
+    if (itemIndex >= 0) {
+      selectorIndex = static_cast<size_t>(itemIndex);
+      activateSelectedEntry(false);
+      return true;
+    }
+  }
 #else
   const int footerIndex = TouchNavigator::tappedActionIndex(mappedInput, footerHintsRect(), 4);
   if (footerIndex == 0) {
@@ -375,7 +415,6 @@ bool FileBrowserActivity::handleTouch() {
     requestUpdate();
     return true;
   }
-#endif
 
   const int tappedIndex = TouchNavigator::tappedListIndex(mappedInput, listRect(), static_cast<int>(files.size()),
                                                           static_cast<int>(selectorIndex),
@@ -385,6 +424,7 @@ bool FileBrowserActivity::handleTouch() {
     activateSelectedEntry(false);
     return true;
   }
+#endif
 
   return true;
 }
@@ -516,11 +556,41 @@ void FileBrowserActivity::render(RenderLock&&) {
     const char* emptyMsg = (mode == Mode::PickFirmware) ? tr(STR_NO_BIN_FILES) : tr(STR_NO_FILES_FOUND);
     renderer.drawText(UI_10_FONT_ID, metrics.contentSidePadding, contentTop + 20, emptyMsg);
   } else {
+#ifdef CROSSPOINT_BOARD_MURPHY_M4
+    const Rect listBounds{0, contentTop, pageWidth, contentHeight};
+    const int listRows = std::max(1, listBounds.height / metrics.listRowHeight);
+    const auto layout =
+        TouchList::calculatePageLayout(static_cast<int>(selectorIndex), static_cast<int>(files.size()), listRows);
+    const int visibleSelected = (layout.previous ? 1 : 0) + static_cast<int>(selectorIndex) - layout.start;
+    GUI.drawList(
+        renderer, listBounds, TouchList::visibleRowCount(layout), visibleSelected,
+        [this, layout](int visibleRow) {
+          if (TouchList::isPreviousPageRow(layout, visibleRow)) return std::string(tr(STR_PREV_PAGE));
+          if (TouchList::isNextPageRow(layout, visibleRow)) return std::string(tr(STR_NEXT_PAGE));
+          const int index = TouchList::visibleRowToItemIndex(layout, visibleRow);
+          return index >= 0 ? getFileName(files[index]) : std::string();
+        },
+        nullptr,
+        [this, layout](int visibleRow) {
+          const int index = TouchList::visibleRowToItemIndex(layout, visibleRow);
+          return index >= 0 ? UITheme::getFileIcon(files[index]) : UIIcon::None;
+        },
+        [this, layout](int visibleRow) {
+          const int index = TouchList::visibleRowToItemIndex(layout, visibleRow);
+          return index >= 0 ? getFileExtension(files[index]) : std::string();
+        },
+        false);
+    if (layout.previous) TouchUi::drawCenteredPagerRow(renderer, listBounds, 0, tr(STR_PREV_PAGE));
+    if (layout.next) {
+      TouchUi::drawCenteredPagerRow(renderer, listBounds, TouchList::visibleRowCount(layout) - 1, tr(STR_NEXT_PAGE));
+    }
+#else
     GUI.drawList(
         renderer, Rect{0, contentTop, pageWidth, contentHeight}, files.size(), selectorIndex,
         [this](int index) { return getFileName(files[index]); }, nullptr,
         [this](int index) { return UITheme::getFileIcon(files[index]); },
         [this](int index) { return getFileExtension(files[index]); }, false);
+#endif
   }
 
   // Full path display
