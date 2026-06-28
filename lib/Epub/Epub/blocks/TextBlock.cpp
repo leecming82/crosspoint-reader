@@ -140,6 +140,8 @@ void TextBlock::render(const GfxRenderer& renderer, const int fontId, const int 
       const std::string& word = words[i];
       const uint32_t firstCp = firstCodepoint(word);
       const size_t cpCount = utf8CodepointCount(word);
+      const int nextWordY = (i + 1 < wordYpos.size()) ? wordYpos[i + 1] : wordYpos[i] + columnWidth;
+      const int verticalCellAdvance = nextWordY > wordYpos[i] ? std::max(1, nextWordY - wordYpos[i]) : columnWidth;
 
       const bool forceTateChuYoko = (style & EpdFontFamily::TATE_CHU_YOKO) != 0;
       if (forceTateChuYoko || (isAsciiDigitString(word) && cpCount <= 2)) {
@@ -148,8 +150,16 @@ void TextBlock::render(const GfxRenderer& renderer, const int fontId, const int 
         renderer.drawTextSideways(fontId, wordX, wordY, word.c_str(), true, style, columnWidth);
       } else if (cpCount == 1) {
         const uint32_t verticalCp = renderer.getVerticalSubstitution(fontId, firstCp, style);
-        const std::string verticalGlyph = verticalCp != firstCp ? utf8FromCodepoint(verticalCp) : word;
-        renderer.drawText(fontId, wordX + verticalUprightXOffset, wordY, verticalGlyph.c_str(), true, style);
+        if (verticalCp == firstCp && VerticalTextUtils::shouldRotateInVerticalWhenNoSubstitution(firstCp)) {
+          const int glyphAdvance = std::max(1, renderer.getTextAdvanceX(fontId, word.c_str(), style));
+          const int centeredY =
+              wordY + std::max(0, (verticalCellAdvance - glyphAdvance) / 2) + std::max(1, verticalCellAdvance / 4);
+          const int rotatedX = wordX + verticalUprightXOffset - renderer.getFontAscenderSize(fontId) / 4;
+          renderer.drawTextRotated90CW(fontId, rotatedX, centeredY + glyphAdvance, word.c_str(), true, style);
+        } else {
+          const std::string verticalGlyph = verticalCp != firstCp ? utf8FromCodepoint(verticalCp) : word;
+          renderer.drawText(fontId, wordX + verticalUprightXOffset, wordY, verticalGlyph.c_str(), true, style);
+        }
       } else {
         renderer.drawTextVertical(fontId, wordX, wordY, word.c_str(), true, style, 0);
       }

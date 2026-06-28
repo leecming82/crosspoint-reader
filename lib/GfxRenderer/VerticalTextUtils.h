@@ -44,6 +44,15 @@ inline bool isUprightInVertical(const uint32_t cp) {
   }
 }
 
+inline bool shouldRotateInVerticalWhenNoSubstitution(const uint32_t cp) {
+  switch (cp) {
+    case 0x30A0:  // katakana-hiragana double hyphen
+      return true;
+    default:
+      return false;
+  }
+}
+
 inline bool isKinsokuHead(const uint32_t cp) {
   switch (cp) {
     case 0x0021:
