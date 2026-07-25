@@ -301,6 +301,13 @@ bool ActivityManager::handleScreenshotRequest() {
   return false;
 }
 
+bool ActivityManager::handleForceRefreshRequest() {
+  if (currentActivity) {
+    return currentActivity->handleForceRefreshRequest();
+  }
+  return false;
+}
+
 ScreenshotInfo ActivityManager::getScreenshotInfo() const {
   if (currentActivity) {
     return currentActivity->getScreenshotInfo();

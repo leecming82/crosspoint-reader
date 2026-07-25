@@ -796,8 +796,13 @@ void loop() {
   if (SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::FORCE_REFRESH &&
       mappedInputManager.wasReleased(MappedInputManager::Button::Power)) {
     LOG_DBG("MAIN", "Manual screen refresh triggered");
-    RenderLock lock;
-    renderer.displayBuffer(HalDisplay::HALF_REFRESH);
+    // Activities that composite extra passes on top of the BW frame (reader
+    // grayscale AA) must repaint themselves; re-pushing the framebuffer alone
+    // would flatten the gray plane back to pure black/white.
+    if (!activityManager.handleForceRefreshRequest()) {
+      RenderLock lock;
+      renderer.displayBuffer(HalDisplay::HALF_REFRESH);
+    }
   }
 
   // Refresh the battery icon when USB is plugged or unplugged.

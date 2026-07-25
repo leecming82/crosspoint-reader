@@ -46,6 +46,11 @@ class Activity {
   virtual bool isReaderActivity() const { return false; }
   virtual bool allowsGlobalTouchBack() const { return true; }
   virtual bool handleScreenshotRequest() { return false; }
+  // Manual screen refresh (power button short press with FORCE_REFRESH).
+  // Return true to claim it: the activity is responsible for repainting.
+  // Default false lets the caller push the current framebuffer with a
+  // HALF_REFRESH, which is correct for anything drawn in a single BW pass.
+  virtual bool handleForceRefreshRequest() { return false; }
   virtual ScreenshotInfo getScreenshotInfo() const { return {}; }
 
   // Start a new activity without destroying the current one

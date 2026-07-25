@@ -114,6 +114,7 @@ class ActivityManager {
   bool isCurrentActivity(const char* activityName) const;
   bool skipLoopDelay() const;
   bool handleScreenshotRequest();
+  bool handleForceRefreshRequest();
   ScreenshotInfo getScreenshotInfo() const;
 
   // If immediate is true, the update will be triggered immediately.

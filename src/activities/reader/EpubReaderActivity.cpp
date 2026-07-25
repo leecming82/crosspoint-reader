@@ -2851,6 +2851,34 @@ bool EpubReaderActivity::handleScreenshotRequest() {
   return true;
 }
 
+bool EpubReaderActivity::handleForceRefreshRequest() {
+  // Re-pushing the framebuffer would drive every pixel to its BW value and
+  // flatten the grayscale AA overlay, so the page has to be rendered again.
+
+  // A render already in flight repaints (with AA) on its own, and owns the
+  // state read below. Claim the request and let it land.
+  if (RenderLock::peek()) {
+    return true;
+  }
+
+  // Only claim the refresh when render() will repaint a real page. The kanji
+  // popup is painted outside render(), and the end-of-book / empty-chapter /
+  // out-of-bounds branches display with a plain FAST_REFRESH that ignores
+  // pagesUntilFullRefresh. Both are better served by the caller's HALF_REFRESH.
+  if (!epub || kanjiPopupActive || !section || currentSpineIndex >= epub->getSpineItemsCount() ||
+      section->pageCount == 0 || section->currentPage < 0 || section->currentPage >= section->pageCount) {
+    return false;
+  }
+
+  // A queued overlay repaint would take the FAST_REFRESH branch and swallow the refresh.
+  kanjiOverlayFastRefreshPending = false;
+  // Force displayWithRefreshCycle() onto the HALF_REFRESH ghost-cleanup path;
+  // a fast diff against identical content would be a no-op.
+  pagesUntilFullRefresh = 1;
+  requestUpdate();
+  return true;
+}
+
 CrossPointPosition EpubReaderActivity::getCurrentPosition() const {
   const int currentPage = section ? section->currentPage : nextPageNumber;
   const int totalPages = section ? section->pageCount : cachedChapterTotalPageCount;
