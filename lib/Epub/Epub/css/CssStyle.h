@@ -60,6 +60,12 @@ enum class CssDisplay : uint8_t { Block = 0, None = 1 };
 enum class CssWritingMode : uint8_t { HorizontalTb = 0, VerticalRl = 1, VerticalLr = 2 };
 enum class CssTextCombine : uint8_t { None = 0, Horizontal = 1 };
 
+// Japanese emphasis marks (傍点/圏点), from text-emphasis-style. CSS defines ten
+// mark shapes (filled/open x dot/circle/double-circle/sesame/triangle); all of them
+// mean the same thing -- "this text is emphasized" -- and the shape is stylistic.
+// We render one mark for all of them, so only presence is tracked here.
+enum class CssTextEmphasis : uint8_t { None = 0, Mark = 1 };
+
 // Vertical alignment options for inline elements (e.g. superscript/subscript)
 enum class CssVerticalAlign : uint8_t { Baseline = 0, Super = 1, Sub = 2 };
 
@@ -85,6 +91,7 @@ struct CssPropertyFlags {
   uint32_t textCombine : 1;
   uint32_t direction : 1;
   uint32_t verticalAlign : 1;
+  uint32_t textEmphasis : 1;
 
   CssPropertyFlags()
       : textAlign(0),
@@ -106,12 +113,13 @@ struct CssPropertyFlags {
         writingMode(0),
         textCombine(0),
         direction(0),
-        verticalAlign(0) {}
+        verticalAlign(0),
+        textEmphasis(0) {}
 
   [[nodiscard]] bool anySet() const {
     return textAlign || fontStyle || fontWeight || textDecoration || textIndent || marginTop || marginBottom ||
            marginLeft || marginRight || paddingTop || paddingBottom || paddingLeft || paddingRight || imageHeight ||
-           imageWidth || display || writingMode || textCombine || direction || verticalAlign;
+           imageWidth || display || writingMode || textCombine || direction || verticalAlign || textEmphasis;
   }
 
   void clearAll() {
@@ -119,10 +127,11 @@ struct CssPropertyFlags {
     marginTop = marginBottom = marginLeft = marginRight = 0;
     paddingTop = paddingBottom = paddingLeft = paddingRight = 0;
     imageHeight = imageWidth = display = writingMode = textCombine = direction = verticalAlign = 0;
+    textEmphasis = 0;
   }
 };
 
-// Cache serializes defined flags as uint32_t with bit indices 0..19.
+// Cache serializes defined flags as uint32_t with bit indices 0..20.
 static_assert(sizeof(CssPropertyFlags) <= sizeof(uint32_t),
               "CssPropertyFlags exceeds 32 bits; update cache read/write in CssParser.cpp");
 
@@ -151,6 +160,7 @@ struct CssStyle {
   CssWritingMode writingMode = CssWritingMode::HorizontalTb;
   CssTextCombine textCombine = CssTextCombine::None;
   CssVerticalAlign verticalAlign = CssVerticalAlign::Baseline;  // vertical-align (super/sub positioning)
+  CssTextEmphasis textEmphasis = CssTextEmphasis::None;         // 傍点 marks (text-emphasis-style)
 
   CssPropertyFlags defined;  // Tracks which properties were explicitly set
 
@@ -237,6 +247,10 @@ struct CssStyle {
       verticalAlign = base.verticalAlign;
       defined.verticalAlign = 1;
     }
+    if (base.hasTextEmphasis()) {
+      textEmphasis = base.textEmphasis;
+      defined.textEmphasis = 1;
+    }
   }
 
   [[nodiscard]] bool hasTextAlign() const { return defined.textAlign; }
@@ -259,6 +273,7 @@ struct CssStyle {
   [[nodiscard]] bool hasTextCombine() const { return defined.textCombine; }
   [[nodiscard]] bool hasDirection() const { return defined.direction; }
   [[nodiscard]] bool hasVerticalAlign() const { return defined.verticalAlign; }
+  [[nodiscard]] bool hasTextEmphasis() const { return defined.textEmphasis; }
 
   void reset() {
     textAlign = CssTextAlign::Left;
@@ -274,6 +289,7 @@ struct CssStyle {
     writingMode = CssWritingMode::HorizontalTb;
     textCombine = CssTextCombine::None;
     verticalAlign = CssVerticalAlign::Baseline;
+    textEmphasis = CssTextEmphasis::None;
     defined.clearAll();
   }
 };

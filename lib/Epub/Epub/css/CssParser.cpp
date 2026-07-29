@@ -185,7 +185,16 @@ void filterStyleForDebugMode(CssStyle& style) {
 CssTextCombine interpretTextCombine(std::string_view value) {
   const std::string_view stripped = stripTrailingImportant(value);
   return (iequalsAscii(stripped, "horizontal") || iequalsAscii(stripped, "all")) ? CssTextCombine::Horizontal
-                                                                                : CssTextCombine::None;
+                                                                                 : CssTextCombine::None;
+}
+
+// text-emphasis-style is "fill shape" in either order ("filled sesame", "open dot"),
+// optionally with a colour in the text-emphasis shorthand. Only "none" turns the mark
+// off; every other value -- including a bare "filled", a string mark, or a shape we
+// don't distinguish -- emphasizes.
+CssTextEmphasis interpretTextEmphasis(std::string_view value) {
+  const std::string_view stripped = stripTrailingImportant(value);
+  return icontainsAscii(stripped, "none") ? CssTextEmphasis::None : CssTextEmphasis::Mark;
 }
 
 }  // anonymous namespace
@@ -441,6 +450,14 @@ void CssParser::parseDeclarationIntoStyle(std::string_view decl, CssStyle& style
     }
     style.textCombine = interpretTextCombine(value);
     style.defined.textCombine = 1;
+  } else if (iequalsAscii(name, "text-emphasis-style") || iequalsAscii(name, "text-emphasis") ||
+             iequalsAscii(name, "-epub-text-emphasis-style") || iequalsAscii(name, "-webkit-text-emphasis-style") ||
+             iequalsAscii(name, "-epub-text-emphasis") || iequalsAscii(name, "-webkit-text-emphasis")) {
+    if (iequalsAscii(stripTrailingImportant(value), "inherit")) {
+      return;
+    }
+    style.textEmphasis = interpretTextEmphasis(value);
+    style.defined.textEmphasis = 1;
   } else if (iequalsAscii(name, "direction")) {
     const std::string_view directionValue = stripTrailingImportant(value);
     if (iequalsAscii(directionValue, "rtl")) {
@@ -830,6 +847,7 @@ bool CssParser::saveToCache() const {
     writeLength(style.imageWidth);
     file.write(static_cast<uint8_t>(style.display));
     file.write(static_cast<uint8_t>(style.verticalAlign));
+    file.write(static_cast<uint8_t>(style.textEmphasis));
 
     // Write defined flags as uint32_t
     uint32_t definedBits = 0;
@@ -853,6 +871,7 @@ bool CssParser::saveToCache() const {
     if (style.defined.textCombine) definedBits |= 1UL << 17;
     if (style.defined.direction) definedBits |= 1UL << 18;
     if (style.defined.verticalAlign) definedBits |= 1UL << 19;
+    if (style.defined.textEmphasis) definedBits |= 1UL << 20;
     file.write(reinterpret_cast<const uint8_t*>(&definedBits), sizeof(definedBits));
   }
 
@@ -903,7 +922,7 @@ bool CssParser::loadFromCache() {
   constexpr size_t CSS_LENGTH_FIELD_COUNT = 11;
   constexpr size_t CSS_LENGTH_BYTES = sizeof(float) + sizeof(uint8_t);
   constexpr size_t CSS_FIXED_STYLE_BYTES =
-      9 * sizeof(uint8_t) + (CSS_LENGTH_FIELD_COUNT * CSS_LENGTH_BYTES) + sizeof(uint32_t);
+      10 * sizeof(uint8_t) + (CSS_LENGTH_FIELD_COUNT * CSS_LENGTH_BYTES) + sizeof(uint32_t);
 
   // Read each rule
   for (uint16_t i = 0; i < ruleCount; ++i) {
@@ -1020,6 +1039,14 @@ bool CssParser::loadFromCache() {
     }
     style.verticalAlign = static_cast<CssVerticalAlign>(verticalAlignVal);
 
+    // Read textEmphasis value
+    uint8_t textEmphasisVal;
+    if (file.read(&textEmphasisVal, 1) != 1) {
+      rulesBySelector_.clear();
+      return false;
+    }
+    style.textEmphasis = static_cast<CssTextEmphasis>(textEmphasisVal);
+
     // Read defined flags
     uint32_t definedBits = 0;
     if (file.read(&definedBits, sizeof(definedBits)) != sizeof(definedBits)) {
@@ -1046,6 +1073,7 @@ bool CssParser::loadFromCache() {
     style.defined.textCombine = (definedBits & 1UL << 17) != 0;
     style.defined.direction = (definedBits & 1UL << 18) != 0;
     style.defined.verticalAlign = (definedBits & 1UL << 19) != 0;
+    style.defined.textEmphasis = (definedBits & 1UL << 20) != 0;
 
     filterStyleForDebugMode(style);
     rulesBySelector_[selector] = style;

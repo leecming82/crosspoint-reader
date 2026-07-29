@@ -136,6 +136,13 @@ void ChapterHtmlSlimParser::applyDirectionToEntry(StyleStackEntry& entry, const 
   }
 }
 
+void ChapterHtmlSlimParser::applyEmphasisToEntry(StyleStackEntry& entry, const CssStyle& css) {
+  if (css.hasTextEmphasis()) {
+    entry.hasEmphasis = true;
+    entry.emphasis = css.textEmphasis == CssTextEmphasis::Mark;
+  }
+}
+
 // Update effective bold/italic/underline based on block style and inline style stack
 void ChapterHtmlSlimParser::updateEffectiveInlineStyle() {
   // Start with block-level styles
@@ -148,6 +155,7 @@ void ChapterHtmlSlimParser::updateEffectiveInlineStyle() {
   effectiveDirection = currentCssStyle.direction;
   effectiveSup = false;
   effectiveSub = false;
+  effectiveEmphasis = currentCssStyle.hasTextEmphasis() && currentCssStyle.textEmphasis == CssTextEmphasis::Mark;
   if (currentCssStyle.hasVerticalAlign()) {
     effectiveSup = currentCssStyle.verticalAlign == CssVerticalAlign::Super;
     effectiveSub = currentCssStyle.verticalAlign == CssVerticalAlign::Sub;
@@ -178,6 +186,9 @@ void ChapterHtmlSlimParser::updateEffectiveInlineStyle() {
     if (entry.hasSub) {
       effectiveSub = entry.sub;
       if (entry.sub) effectiveSup = false;
+    }
+    if (entry.hasEmphasis) {
+      effectiveEmphasis = entry.emphasis;
     }
   }
 
@@ -245,9 +256,51 @@ void ChapterHtmlSlimParser::flushPartWordBuffer() {
 
   // flush the buffer
   partWordBuffer[partWordBufferIndex] = '\0';
-  currentTextBlock->addWord(partWordBuffer, fontStyle, false, nextWordContinues, effectiveTextCombine);
+  if (effectiveEmphasis && partWordBufferIndex > 0) {
+    emitEmphasizedWord(fontStyle);
+  } else {
+    currentTextBlock->addWord(partWordBuffer, fontStyle, false, nextWordContinues, effectiveTextCombine);
+  }
   partWordBufferIndex = 0;
   nextWordContinues = false;
+}
+
+// 傍点 (bouten): one mark per base glyph, emitted as synthetic ruby.
+//
+// Each character becomes its own ruby word so the mark centres over exactly one
+// glyph. Emitting the whole run as a single ruby word would centre the marks as a
+// group over the run, bunching them in the middle -- ruby is drawn at a much
+// smaller size than the base text, so the mismatch is visible even on short runs.
+//
+// The mark reuses the ruby path entirely: it is sliced per line, reordered, split
+// across vertical columns and serialized by the machinery that already carries
+// furigana, and costs no extra line height because ruby is drawn inside the
+// existing line box. A real <rt> on the same word wins -- furigana beats bouten.
+void ChapterHtmlSlimParser::emitEmphasizedWord(const EpdFontFamily::Style fontStyle) {
+  // U+30FB KATAKANA MIDDLE DOT. All ten CSS mark shapes collapse to this one glyph:
+  // they are stylistic variants of a single meaning, and it is the only full-width
+  // dot present in the built-in CJK set the ruby font draws from. Full-width matters
+  // -- it lines the mark up with full-width CJK bases.
+  static constexpr char BOUTEN_MARK[] = "\xe3\x83\xbb";
+
+  const char* cursor = partWordBuffer;
+  bool attach = nextWordContinues;
+  while (*cursor != '\0') {
+    // Advance one UTF-8 codepoint: skip the lead byte, then all continuation bytes.
+    const char* glyphStart = cursor;
+    do {
+      cursor++;
+    } while ((static_cast<unsigned char>(*cursor) & 0xC0) == 0x80);
+
+    currentTextBlock->addRubyWord(std::string(glyphStart, static_cast<size_t>(cursor - glyphStart)), BOUTEN_MARK,
+                                  fontStyle, false, attach);
+    // Mark every glyph after the first as a continuation so no inter-word space is
+    // inserted between them -- getSpaceAdvance() has no CJK suppression, so without
+    // this a run would be spaced out one gap per character. This does not glue the
+    // run together: the CJK layout path allows a break before any CJK unit whatever
+    // the continuation flag says, so emphasized text still wraps normally.
+    attach = true;
+  }
 }
 
 void ChapterHtmlSlimParser::commitPendingAnchor() { flushPendingAnchor(); }
@@ -897,6 +950,7 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
       entry.hasUnderline = true;
       entry.underline = true;
       ChapterHtmlSlimParser::applyDirectionToEntry(entry, cssStyle);
+      ChapterHtmlSlimParser::applyEmphasisToEntry(entry, cssStyle);
       self->inlineStyleStack.push_back(entry);
       self->updateEffectiveInlineStyle();
 
@@ -995,6 +1049,7 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
       }
     }
     ChapterHtmlSlimParser::applyDirectionToEntry(entry, cssStyle);
+    ChapterHtmlSlimParser::applyEmphasisToEntry(entry, cssStyle);
     self->inlineStyleStack.push_back(entry);
     self->updateEffectiveInlineStyle();
   } else if (matches(name, BOLD_TAGS, std::size(BOLD_TAGS))) {
@@ -1031,6 +1086,7 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
       }
     }
     ChapterHtmlSlimParser::applyDirectionToEntry(entry, cssStyle);
+    ChapterHtmlSlimParser::applyEmphasisToEntry(entry, cssStyle);
     self->inlineStyleStack.push_back(entry);
     self->updateEffectiveInlineStyle();
   } else if (matches(name, ITALIC_TAGS, std::size(ITALIC_TAGS))) {
@@ -1067,6 +1123,7 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
       }
     }
     ChapterHtmlSlimParser::applyDirectionToEntry(entry, cssStyle);
+    ChapterHtmlSlimParser::applyEmphasisToEntry(entry, cssStyle);
     self->inlineStyleStack.push_back(entry);
     self->updateEffectiveInlineStyle();
   } else if (strcmp(name, "sup") == 0 || strcmp(name, "sub") == 0) {
@@ -1088,7 +1145,8 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
   } else if (strcmp(name, "span") == 0 || !isHeaderOrBlock(name)) {
     // Handle span and other inline elements for CSS styling
     if (cssStyle.hasFontWeight() || cssStyle.hasFontStyle() || cssStyle.hasTextDecoration() ||
-        cssStyle.hasTextCombine() || cssStyle.hasDirection() || cssStyle.hasVerticalAlign()) {
+        cssStyle.hasTextCombine() || cssStyle.hasDirection() || cssStyle.hasVerticalAlign() ||
+        cssStyle.hasTextEmphasis()) {
       // Flush buffer before style change so preceding text gets current style
       if (self->partWordBufferIndex > 0) {
         self->flushPartWordBuffer();
@@ -1113,6 +1171,7 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
         entry.textCombine = cssStyle.textCombine == CssTextCombine::Horizontal;
       }
       ChapterHtmlSlimParser::applyDirectionToEntry(entry, cssStyle);
+      ChapterHtmlSlimParser::applyEmphasisToEntry(entry, cssStyle);
       if (cssStyle.hasVerticalAlign()) {
         if (cssStyle.verticalAlign == CssVerticalAlign::Super) {
           entry.hasSup = true;

@@ -78,6 +78,7 @@ class ChapterHtmlSlimParser {
     CssTextDirection direction = CssTextDirection::Ltr;
     bool hasSup = false, sup = false;
     bool hasSub = false, sub = false;
+    bool hasEmphasis = false, emphasis = false;
   };
   std::vector<StyleStackEntry> inlineStyleStack;
   std::vector<BlockStyle> blockStyleStack;  // accumulated block styles from open ancestor elements
@@ -90,6 +91,7 @@ class ChapterHtmlSlimParser {
   CssTextDirection effectiveDirection = CssTextDirection::Ltr;
   bool effectiveSup = false;
   bool effectiveSub = false;
+  bool effectiveEmphasis = false;  // 傍点 active: marks emitted as per-glyph ruby
   int tableDepth = 0;
   int tableRowIndex = 0;
   int tableColIndex = 0;
@@ -130,6 +132,8 @@ class ChapterHtmlSlimParser {
   void addColumnToPage(std::shared_ptr<TextBlock> column);
   bool isVerticalWritingMode() const { return writingMode != EpubWritingMode::HorizontalTb; }
   static void applyDirectionToEntry(StyleStackEntry& entry, const CssStyle& css);
+  static void applyEmphasisToEntry(StyleStackEntry& entry, const CssStyle& css);
+  void emitEmphasizedWord(EpdFontFamily::Style fontStyle);
   void emitHorizontalRule(const BlockStyle& blockStyle);
   // XML callbacks
   static void XMLCALL startElement(void* userData, const XML_Char* name, const XML_Char** atts);

@@ -21,10 +21,11 @@
 #include "parsers/ChapterHtmlSlimParser.h"
 
 namespace {
-constexpr uint8_t SECTION_FILE_VERSION = 46;
-constexpr uint32_t READER_FONT_IDENTITY_SIZE = sizeof(uint16_t) + sizeof(uint8_t) + sizeof(uint8_t) +
-                                               sizeof(uint8_t) + sizeof(uint8_t) + sizeof(uint16_t) +
-                                               sizeof(uint32_t) + sizeof(uint32_t) + sizeof(uint32_t) + sizeof(int);
+// v47: text-emphasis (傍点) emitted as per-glyph synthetic ruby
+constexpr uint8_t SECTION_FILE_VERSION = 47;
+constexpr uint32_t READER_FONT_IDENTITY_SIZE = sizeof(uint16_t) + sizeof(uint8_t) + sizeof(uint8_t) + sizeof(uint8_t) +
+                                               sizeof(uint8_t) + sizeof(uint16_t) + sizeof(uint32_t) +
+                                               sizeof(uint32_t) + sizeof(uint32_t) + sizeof(int);
 constexpr uint32_t HEADER_SIZE = sizeof(uint8_t) + sizeof(int) + READER_FONT_IDENTITY_SIZE + sizeof(float) +
                                  sizeof(bool) + sizeof(uint8_t) + sizeof(uint16_t) + sizeof(uint16_t) +
                                  sizeof(uint16_t) + sizeof(bool) + sizeof(bool) + sizeof(uint8_t) + sizeof(bool) +
@@ -307,8 +308,7 @@ bool Section::loadSectionFile(const int fontId, const ReaderFontIdentity& fontId
                               const bool extraParagraphSpacing, const uint8_t paragraphAlignment,
                               const uint16_t viewportWidth, const uint16_t viewportHeight,
                               const bool hyphenationEnabled, const bool embeddedStyle, const uint8_t imageRendering,
-                              const bool focusReadingEnabled, const uint8_t readingLayout,
-                              const uint8_t writingMode) {
+                              const bool focusReadingEnabled, const uint8_t readingLayout, const uint8_t writingMode) {
   if (!Storage.openFileForRead("SCT", filePath, file)) {
     return false;
   }
@@ -391,11 +391,10 @@ bool Section::clearCache() const {
   return true;
 }
 
-bool Section::createSectionFile(const int fontId, const ReaderFontIdentity& fontIdentity,
-                                const float lineCompression, const bool extraParagraphSpacing,
-                                const uint8_t paragraphAlignment, const uint16_t viewportWidth,
-                                const uint16_t viewportHeight, const bool hyphenationEnabled,
-                                const bool embeddedStyle, const uint8_t imageRendering,
+bool Section::createSectionFile(const int fontId, const ReaderFontIdentity& fontIdentity, const float lineCompression,
+                                const bool extraParagraphSpacing, const uint8_t paragraphAlignment,
+                                const uint16_t viewportWidth, const uint16_t viewportHeight,
+                                const bool hyphenationEnabled, const bool embeddedStyle, const uint8_t imageRendering,
                                 const bool focusReadingEnabled, const uint8_t readingLayout, const uint8_t writingMode,
                                 const std::function<void(size_t, size_t)>& progressFn) {
   const auto spineItem = epub->getSpineItem(spineIndex);
@@ -499,9 +498,9 @@ bool Section::createSectionFile(const int fontId, const ReaderFontIdentity& font
     Storage.remove(getGlyphPackPath().c_str());
     return false;
   }
-  writeSectionFileHeader(fontId, fontIdentity, lineCompression, extraParagraphSpacing, paragraphAlignment, viewportWidth,
-                         viewportHeight, hyphenationEnabled, embeddedStyle, imageRendering, focusReadingEnabled,
-                         readingLayout, writingMode);
+  writeSectionFileHeader(fontId, fontIdentity, lineCompression, extraParagraphSpacing, paragraphAlignment,
+                         viewportWidth, viewportHeight, hyphenationEnabled, embeddedStyle, imageRendering,
+                         focusReadingEnabled, readingLayout, writingMode);
   std::vector<PageLutEntry> lut = {};
 
   // Derive the content base directory and image cache path prefix for the parser
