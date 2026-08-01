@@ -45,13 +45,24 @@ struct DirectPixelWriter {
     const int phyW = renderer.getDisplayWidth();
     const int phyH = renderer.getDisplayHeight();
 
+    // Must stay in lockstep with GfxRenderer::rotateCoordinates(), which carries the same
+    // flag. This writer duplicates the transform deliberately (it precomputes a linear
+    // form so the per-pixel path avoids a call), so a panel difference has to be applied
+    // in both places -- HZ5.2 images rendered in misplaced bands until it was added here.
+#ifdef CROSSPOINT_BOARD_HZ52
+    constexpr bool kPanelInvertsPortraitAxis = false;  // pure transpose
+#else
+    constexpr bool kPanelInvertsPortraitAxis = true;
+#endif
+
     switch (renderer.getOrientation()) {
       case GfxRenderer::Portrait:
-        // phyX = y, phyY = (phyH-1) - x
+        // X4/X3/M4: phyX = y, phyY = (phyH-1) - x
+        // HZ5.2:    phyX = y, phyY = x
         phyXBase = 0;
-        phyYBase = phyH - 1;
+        phyYBase = kPanelInvertsPortraitAxis ? phyH - 1 : 0;
         phyXStepX = 0;
-        phyYStepX = -1;
+        phyYStepX = kPanelInvertsPortraitAxis ? -1 : 1;
         phyXStepY = 1;
         phyYStepY = 0;
         break;
@@ -65,11 +76,12 @@ struct DirectPixelWriter {
         phyYStepY = -1;
         break;
       case GfxRenderer::PortraitInverted:
-        // phyX = (phyW-1) - y, phyY = x
+        // X4/X3/M4: phyX = (phyW-1) - y, phyY = x
+        // HZ5.2:    phyX = (phyW-1) - y, phyY = (phyH-1) - x
         phyXBase = phyW - 1;
-        phyYBase = 0;
+        phyYBase = kPanelInvertsPortraitAxis ? 0 : phyH - 1;
         phyXStepX = 0;
-        phyYStepX = 1;
+        phyYStepX = kPanelInvertsPortraitAxis ? 1 : -1;
         phyXStepY = -1;
         phyYStepY = 0;
         break;

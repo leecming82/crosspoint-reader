@@ -1009,7 +1009,37 @@ void GfxRenderer::fillRoundedRect(const int x, const int y, const int width, con
   }
 }
 
+#ifdef CROSSPOINT_BOARD_HZ52
+namespace {
+// HalDisplay::drawImage on the SSD1677 boards is a byte-aligned row copy in *physical*
+// framebuffer coordinates, and GfxRenderer rotates only the origin, not the bitmap
+// contents (see the "TODO: Rotate bits" below). On HZ5.2 the panel is transposed, so that
+// path would draw every icon rotated 90 degrees -- and it has no framebuffer of its own to
+// copy into, which is what produced "ERROR: Frame buffer not allocated!" at boot.
+//
+// Going through drawPixel() instead costs a per-pixel loop on icon-sized bitmaps but
+// applies the orientation transform properly, so no separate bit rotation is needed.
+// Bitmap polarity matches the framebuffer: 0 = black, MSB = leftmost.
+void drawBitmapPixels(const GfxRenderer& renderer, const uint8_t bitmap[], int x, int y, int width, int height,
+                      bool transparent) {
+  const int widthBytes = (width + 7) / 8;
+  for (int row = 0; row < height; row++) {
+    for (int col = 0; col < width; col++) {
+      const uint8_t byte = bitmap[row * widthBytes + (col >> 3)];
+      const bool black = ((byte >> (7 - (col & 7))) & 1) == 0;
+      if (transparent && !black) continue;  // leave white pixels untouched
+      renderer.drawPixel(x + col, y + row, black);
+    }
+  }
+}
+}  // namespace
+#endif
+
 void GfxRenderer::drawImage(const uint8_t bitmap[], const int x, const int y, const int width, const int height) const {
+#ifdef CROSSPOINT_BOARD_HZ52
+  drawBitmapPixels(*this, bitmap, x, y, width, height, false);
+  return;
+#endif
   int rotatedX = 0;
   int rotatedY = 0;
   rotateCoordinates(orientation, x, y, &rotatedX, &rotatedY, panelWidth, panelHeight);
@@ -1033,6 +1063,12 @@ void GfxRenderer::drawImage(const uint8_t bitmap[], const int x, const int y, co
 }
 
 void GfxRenderer::drawIcon(const uint8_t bitmap[], const int x, const int y, const int width, const int height) const {
+#ifdef CROSSPOINT_BOARD_HZ52
+  // The argument shuffle below is a hand-rolled 90-degree placement fix for the SSD1677
+  // boards. HZ5.2 gets the transform from drawPixel() instead, so pass through unchanged.
+  drawBitmapPixels(*this, bitmap, x, y, width, height, true);
+  return;
+#endif
   display.drawImageTransparent(bitmap, y, getScreenWidth() - width - x, height, width);
 }
 
