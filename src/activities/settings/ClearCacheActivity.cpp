@@ -12,7 +12,7 @@
 #include "util/TouchNavigator.h"
 #include "util/TouchUi.h"
 
-#ifdef CROSSPOINT_BOARD_MURPHY_M4
+#ifdef CROSSPOINT_TTF_READER_DIRECT_FREETYPE
 #include "TtfReaderMetrics.h"
 #endif
 
@@ -146,7 +146,7 @@ void ClearCacheActivity::clearCache() {
   clearedCount = 0;
   failedCount = 0;
 
-#ifdef CROSSPOINT_BOARD_MURPHY_M4
+#ifdef CROSSPOINT_TTF_READER_DIRECT_FREETYPE
   const bool hadTtfGlyphCache = Storage.exists("/.crosspoint/ttf_cache");
   if (TTF_READER_METRICS.clearPersistentGlyphCache()) {
     if (hadTtfGlyphCache) clearedCount++;

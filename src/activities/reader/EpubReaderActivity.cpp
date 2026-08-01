@@ -42,7 +42,7 @@
 #include "ReaderFontProvider.h"
 #include "ReaderUtils.h"
 #include "RecentBooksStore.h"
-#ifdef CROSSPOINT_BOARD_MURPHY_M4
+#ifdef CROSSPOINT_TTF_READER_DIRECT_FREETYPE
 #include "TtfReaderMetrics.h"
 #include "activities/settings/FontSelectionActivity.h"
 #include "activities/settings/ReaderFontSizeActivity.h"
@@ -64,7 +64,7 @@ constexpr uint32_t SHORT_SECTION_MAX_BYTES = 8 * 1024;
 constexpr uint32_t SHORT_SECTION_BATCH_MAX_BYTES = 64 * 1024;
 constexpr int SHORT_SECTION_BATCH_MAX_COUNT = 8;
 
-#ifdef CROSSPOINT_BOARD_MURPHY_M4
+#ifdef CROSSPOINT_TTF_READER_DIRECT_FREETYPE
 uint32_t fileSizeForPath(const std::string& path) {
   if (path.empty()) return 0;
   HalFile file = Storage.open(path.c_str(), O_RDONLY);
@@ -1045,7 +1045,9 @@ void EpubReaderActivity::onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction 
           progressChangeResultHandler);
       break;
     }
-#ifdef CROSSPOINT_BOARD_MURPHY_M4
+// Guarded on the feature, not the board: any board with the runtime FreeType reader can
+// carry a per-book font override, and needs the UI to change or clear it.
+#ifdef CROSSPOINT_TTF_READER_DIRECT_FREETYPE
     case EpubReaderMenuActivity::MenuAction::EPUB_FONT: {
       startActivityForResult(
           std::make_unique<FontSelectionActivity>(renderer, mappedInput, nullptr, true, epubFontOverride.path),
@@ -1107,7 +1109,10 @@ void EpubReaderActivity::onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction 
     case EpubReaderMenuActivity::MenuAction::ROTATE_SCREEN:
     case EpubReaderMenuActivity::MenuAction::WRITING_MODE:
     case EpubReaderMenuActivity::MenuAction::AUTO_PAGE_TURN:
-#ifndef CROSSPOINT_BOARD_MURPHY_M4
+// Boards without the FreeType reader have no per-book override, so these actions fall
+// through to a no-op. Must mirror the guard above or the menu entries silently do
+// nothing and drop straight back to the book.
+#ifndef CROSSPOINT_TTF_READER_DIRECT_FREETYPE
     case EpubReaderMenuActivity::MenuAction::EPUB_FONT:
     case EpubReaderMenuActivity::MenuAction::EPUB_FONT_SIZE:
     case EpubReaderMenuActivity::MenuAction::EPUB_FONT_GLOBAL:
@@ -1666,7 +1671,7 @@ bool EpubReaderActivity::saveProgress(int spineIndex, int currentPage, int pageC
   return EpubReaderUtils::saveProgress(*epub, spineIndex, currentPage, pageCount);
 }
 
-#ifdef CROSSPOINT_BOARD_MURPHY_M4
+#ifdef CROSSPOINT_TTF_READER_DIRECT_FREETYPE
 void EpubReaderActivity::reloadEpubFontOverride() {
   epubFontOverride = EpubReaderUtils::EpubFontOverride{};
   readerFontConfig = ReaderFontResolver::resolveForEpub(epub.get());
@@ -1785,7 +1790,7 @@ uint8_t EpubReaderActivity::effectiveReaderFontSize() const {
 }
 
 bool EpubReaderActivity::useTtfReaderFont() const {
-#ifdef CROSSPOINT_BOARD_MURPHY_M4
+#ifdef CROSSPOINT_TTF_READER_DIRECT_FREETYPE
   return readerFontConfig.isTtf();
 #else
   return false;
@@ -1793,7 +1798,7 @@ bool EpubReaderActivity::useTtfReaderFont() const {
 }
 
 bool EpubReaderActivity::ensureEffectiveTtfLoaded() const {
-#ifdef CROSSPOINT_BOARD_MURPHY_M4
+#ifdef CROSSPOINT_TTF_READER_DIRECT_FREETYPE
   ReaderFontProvider* provider = ReaderFontProviders::providerForConfig(readerFontConfig);
   return provider && provider->ensureLoaded(readerFontConfig);
 #endif
@@ -1801,7 +1806,7 @@ bool EpubReaderActivity::ensureEffectiveTtfLoaded() const {
 }
 
 int EpubReaderActivity::effectiveReaderRenderFontId() const {
-#ifdef CROSSPOINT_BOARD_MURPHY_M4
+#ifdef CROSSPOINT_TTF_READER_DIRECT_FREETYPE
   if (useTtfReaderFont()) {
     if (ensureEffectiveTtfLoaded()) {
       ReaderFontProvider* provider = ReaderFontProviders::providerForConfig(readerFontConfig);
@@ -1817,7 +1822,7 @@ int EpubReaderActivity::effectiveReaderRenderFontId() const {
 int EpubReaderActivity::effectiveReaderFontId() const { return effectiveReaderRenderFontId(); }
 
 int EpubReaderActivity::effectiveReaderLayoutFontId() const {
-#ifdef CROSSPOINT_BOARD_MURPHY_M4
+#ifdef CROSSPOINT_TTF_READER_DIRECT_FREETYPE
   if (useTtfReaderFont()) {
     if (ensureEffectiveTtfLoaded()) {
       ReaderFontProvider* provider = ReaderFontProviders::providerForConfig(readerFontConfig);
@@ -1856,7 +1861,12 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
     tPrewarm = millis();
   }
 
-  bool renderTextAntiAliasing = SETTINGS.textAntiAliasing;
+  // Gate on the board's actual capability, not just the setting. Text AA is built from
+  // two 2-bit greyscale planes; a board that can only show 1bpp has nowhere to put them,
+  // and the passes clear the shared framebuffer to black before rendering plane data into
+  // it. HZ5.2 reports displayGrayscaleBits = 1, so this keeps the whole path switched off
+  // until a native 4bpp epdiy path exists (milestone 9).
+  bool renderTextAntiAliasing = SETTINGS.textAntiAliasing && gpio.getBoardProfile().displayGrayscaleBits > 1;
 
   // Force special handling for pages with images when anti-aliasing is on
   const bool pageHasImages = page->hasImages();

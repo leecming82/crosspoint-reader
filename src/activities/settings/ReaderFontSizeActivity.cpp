@@ -162,6 +162,16 @@ void ReaderFontSizeActivity::loop() {
     return;
   }
 
+  // Boards with no Left/Right cannot reach font size at all here, which is the one control
+  // on this screen that matters. Give them size on Up/Down and drop weight, rather than
+  // binding both pairs to the same buttons -- that would adjust size and weight together on
+  // every press. Weight needs its own gesture in the three-button UX pass (milestone 8).
+  if (gpio.getBoardProfile().inputButtonCount <= 3 && !gpio.getBoardProfile().inputHasTouch) {
+    buttonNavigator_.onPressAndContinuous({MappedInputManager::Button::Up}, [this] { adjustValue(SMALL_STEP); });
+    buttonNavigator_.onPressAndContinuous({MappedInputManager::Button::Down}, [this] { adjustValue(-SMALL_STEP); });
+    return;
+  }
+
   buttonNavigator_.onPressAndContinuous({MappedInputManager::Button::Left}, [this] { adjustValue(-SMALL_STEP); });
   buttonNavigator_.onPressAndContinuous({MappedInputManager::Button::Right}, [this] { adjustValue(SMALL_STEP); });
   buttonNavigator_.onPressAndContinuous({MappedInputManager::Button::Up}, [this] { adjustWeight(WEIGHT_STEP); });

@@ -113,7 +113,7 @@ EpubReaderMenuActivity::EpubReaderMenuActivity(GfxRenderer& renderer, MappedInpu
 
 std::vector<EpubReaderMenuActivity::MenuItem> EpubReaderMenuActivity::buildMenuItems(bool hasFootnotes) {
   std::vector<MenuItem> items;
-  items.reserve(13);
+  items.reserve(16);
   items.push_back({MenuAction::SELECT_CHAPTER, StrId::STR_SELECT_CHAPTER});
   if (hasFootnotes) {
     items.push_back({MenuAction::FOOTNOTES, StrId::STR_FOOTNOTES});
@@ -122,6 +122,18 @@ std::vector<EpubReaderMenuActivity::MenuItem> EpubReaderMenuActivity::buildMenuI
   items.push_back({MenuAction::BOOKMARKS, StrId::STR_BOOKMARKS});
   items.push_back({MenuAction::ROTATE_SCREEN, StrId::STR_ORIENTATION});
   items.push_back({MenuAction::WRITING_MODE, StrId::STR_READING_LAYOUT});
+#ifdef CROSSPOINT_TTF_READER_DIRECT_FREETYPE
+  // Per-book font override. Previously only reachable from the tabbed menu, which
+  // activeMenuItems() gates on CROSSPOINT_BOARD_MURPHY_M4 -- so any other board running the
+  // runtime FreeType reader could have a book carrying an override (a book copied from an
+  // M4 card, say) with no UI to inspect or clear it. Because the override wins over
+  // SETTINGS.readerTtfSizePx, changing the global font size then appears to do nothing.
+  // Guarded on the feature, not the board: these actions are handled board-independently
+  // in EpubReaderActivity, and the value renderer above already covers them.
+  items.push_back({MenuAction::EPUB_FONT, StrId::STR_FONT_FAMILY});
+  items.push_back({MenuAction::EPUB_FONT_SIZE, StrId::STR_FONT_SIZE});
+  items.push_back({MenuAction::EPUB_FONT_GLOBAL, StrId::STR_DEFAULT_VALUE});
+#endif
   items.push_back({MenuAction::RUBY_OFFSET, StrId::STR_RUBY_OFFSET});
   items.push_back({MenuAction::AUTO_PAGE_TURN, StrId::STR_AUTO_TURN_PAGES_PER_MIN});
   items.push_back({MenuAction::GO_TO_PERCENT, StrId::STR_GO_TO_PERCENT});

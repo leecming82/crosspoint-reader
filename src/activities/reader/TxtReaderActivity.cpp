@@ -15,7 +15,7 @@
 #include "ReaderFontProvider.h"
 #include "ReaderUtils.h"
 #include "RecentBooksStore.h"
-#ifdef CROSSPOINT_BOARD_MURPHY_M4
+#ifdef CROSSPOINT_TTF_READER_DIRECT_FREETYPE
 #include "TtfReaderMetrics.h"
 #endif
 #include "components/UITheme.h"
@@ -244,7 +244,7 @@ void TxtReaderActivity::initializeReader() {
 }
 
 int TxtReaderActivity::effectiveRenderFontId() const {
-#ifdef CROSSPOINT_BOARD_MURPHY_M4
+#ifdef CROSSPOINT_TTF_READER_DIRECT_FREETYPE
   if (readerFontConfig.isTtf()) {
     ReaderFontProvider* provider = ReaderFontProviders::providerForConfig(readerFontConfig);
     if (provider && provider->ensureLoaded(readerFontConfig)) {
@@ -258,7 +258,7 @@ int TxtReaderActivity::effectiveRenderFontId() const {
 }
 
 int TxtReaderActivity::effectiveLayoutFontId() const {
-#ifdef CROSSPOINT_BOARD_MURPHY_M4
+#ifdef CROSSPOINT_TTF_READER_DIRECT_FREETYPE
   if (readerFontConfig.isTtf()) {
     ReaderFontProvider* provider = ReaderFontProviders::providerForConfig(readerFontConfig);
     if (provider && provider->ensureLoaded(readerFontConfig)) {
@@ -607,7 +607,8 @@ void TxtReaderActivity::renderPage() {
 
   ReaderUtils::displayWithRefreshCycle(renderer, pagesUntilFullRefresh);
 
-  bool renderTextAntiAliasing = SETTINGS.textAntiAliasing;
+  // See EpubReaderActivity: AA needs >1bpp of greyscale to land in.
+  bool renderTextAntiAliasing = SETTINGS.textAntiAliasing && gpio.getBoardProfile().displayGrayscaleBits > 1;
   if (renderTextAntiAliasing) {
     ReaderUtils::renderAntiAliased(renderer, [&renderLines]() { renderLines(); });
   }

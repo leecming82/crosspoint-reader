@@ -32,7 +32,7 @@
 #include "OpdsServerStore.h"
 #include "RecentBooksStore.h"
 #include "SilentRestart.h"
-#ifdef CROSSPOINT_BOARD_MURPHY_M4
+#ifdef CROSSPOINT_TTF_READER_DIRECT_FREETYPE
 #include "TtfReaderMetrics.h"
 #endif
 #include "activities/Activity.h"
@@ -71,7 +71,6 @@ unsigned long t2 = 0;
 RTC_NOINIT_ATTR uint32_t silentRebootMagic;
 RTC_NOINIT_ATTR uint32_t silentRebootTarget;
 
-bool bootDiagnosticsOnly = false;
 constexpr uint32_t SILENT_REBOOT_MAGIC = 0xC1EAB007;
 constexpr uint32_t SILENT_REBOOT_TARGET_HOME = 0;
 constexpr uint32_t SILENT_REBOOT_TARGET_READER = 1;
@@ -188,6 +187,9 @@ void appendMurphyBatteryLogIfDue() {
   appendMurphyBatteryLog("periodic");
 }
 
+#endif  // CROSSPOINT_BOARD_MURPHY_M4 (battery logger above is Murphy hardware)
+
+#ifdef CROSSPOINT_TTF_READER_DIRECT_FREETYPE
 void flushTtfGlyphCacheForSleep() {
   const ReaderFontCacheStats before = TTF_READER_METRICS.cacheStats();
   if (before.glyphCount == 0) return;
@@ -417,7 +419,7 @@ void enterDeepSleep(bool fromTimeout = false) {
     saveSleepFrameBuffer();
   }
 
-#ifdef CROSSPOINT_BOARD_MURPHY_M4
+#ifdef CROSSPOINT_TTF_READER_DIRECT_FREETYPE
   flushTtfGlyphCacheForSleep();
 #endif
 
@@ -439,33 +441,6 @@ void enterDeepSleep(bool fromTimeout = false) {
 // it through IDF's driver for VCOM and panel temperature, and claiming it first makes
 // epd_board_init() fail its i2c assert and abort the firmware.
 
-// Storage verification: root listing plus a create / read-back / delete round-trip,
-// reported over serial. Bring-up scaffolding -- remove once activities render through the
-// normal path and can show storage state on screen.
-void hz52StorageSanity(bool storageReady) {
-  if (!storageReady) {
-    LOG_ERR("DIAG", "SD sanity skipped: storage not ready");
-    return;
-  }
-
-  const auto entries = Storage.listFiles("/", 20);
-  LOG_INF("DIAG", "SD root listing: %u entries (max 20 shown)", static_cast<unsigned>(entries.size()));
-  for (const auto& entry : entries) {
-    LOG_INF("DIAG", "  %s", entry.c_str());
-  }
-
-  static constexpr char kPath[] = "/hz52_sanity.txt";
-  static constexpr char kBody[] = "hz52 storage sanity";
-  if (!Storage.writeFile(kPath, kBody)) {
-    LOG_ERR("DIAG", "SD sanity: write failed");
-    return;
-  }
-  const String readBack = Storage.readFile(kPath);
-  const bool matched = (readBack == kBody);
-  const bool removed = Storage.remove(kPath);
-  LOG_INF("DIAG", "SD sanity: wrote=%u readBack=%u match=%d removed=%d stillExists=%d", (unsigned)sizeof(kBody) - 1,
-          readBack.length(), matched, removed, Storage.exists(kPath));
-}
 #endif
 
 void setupDisplayAndFonts(bool seamless = false) {
@@ -546,22 +521,6 @@ void setup() {
   const bool storageReady = Storage.begin();
   HalSystem::logStorageDiagnostics(storageReady);
 
-#ifdef CROSSPOINT_BOARD_HZ52
-  // HZ5.2 bring-up guard. The panel now renders through HalDisplay/GfxRenderer, so the
-  // display is no longer the blocker; two things still are, and both abort or strand the
-  // boot rather than degrade gracefully:
-  //   1. HalEnvSensor::begin() calls Wire.begin(ENV_SDA, ENV_SCL) unconditionally. epdiy
-  //      owns SDA=39/SCL=40 through IDF for VCOM and panel temperature, and claiming the
-  //      bus with Arduino Wire makes epd_board_init() fail its i2c assert and abort.
-  //   2. Input is not wired: HalGPIO::begin() bypasses InputManager on this board (it
-  //      assumes POWER_BUTTON_PIN=3 and an ADC ladder on GPIO1/2), so the three buttons
-  //      reach no activity and the UI would render but not navigate.
-  // Lift once both are addressed -- see milestone 5 in the migration doc.
-  hz52StorageSanity(storageReady);
-  LOG_INF("MAIN", "HZ5.2 bring-up: storage=%d, diagnostics only (input and I2C ownership pending)", storageReady);
-  bootDiagnosticsOnly = true;
-  return;
-#endif
   if (!storageReady) {
     LOG_ERR("MAIN", "SD card initialization failed");
     setupDisplayAndFonts(isSilentReboot);
@@ -715,15 +674,6 @@ void loop() {
   const unsigned long loopStartTime = millis();
   static unsigned long lastMemPrint = 0;
 
-  if (bootDiagnosticsOnly) {
-    if (millis() - lastMemPrint >= 5000) {
-      LOG_INF("DIAG", "Heartbeat uptime=%lu storage=%d heap=%u psramFree=%u", millis(), Storage.ready(), ESP.getFreeHeap(),
-              ESP.getFreePsram());
-      lastMemPrint = millis();
-    }
-    delay(50);
-    return;
-  }
 
   static unsigned long lastActivityTime = millis();
 
