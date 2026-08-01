@@ -473,6 +473,52 @@ allowed to run — both abort or strand the boot rather than degrade:
 
 **8. Three-button UX conversion — not started.** Jump menus replacing `Left`/`Right`, hint layout, `ButtonRemapActivity` hidden, keyboard-entry strategy decided.
 
+**Ghosting investigation (2026-08-02) — unresolved; one hypothesis left standing.**
+
+Page turns leave a faint shadow of the previous page wherever it had ink — on tategaki pages, a boxy
+residue per character cell. Only pixels that *had to move* are affected, which is the signature of
+transitions not completing.
+
+Ruled out, each by measurement rather than reasoning:
+
+| Hypothesis | Test | Result |
+| --- | --- | --- |
+| Too few drive frames | `MODE_DU` (5) → `*_TO_GL16` (15) | 3× slower, **no visual change** |
+| 1bpp cannot run a waveform | rewrote to 4bpp/`epd_hl` | real waveforms now, ghosting unchanged |
+| Wrong waveform family | swapped `ED097TC2` → `ED047TC2` | no change |
+| Wrong temperature band | PMIC reads 32 °C (die, not glass); applied −10 °C | no change |
+| DU inherently ghosts | switched page turns to `MODE_GL16` | **no change**, +1.1 s, visible shifting |
+| Wrong drive voltage | read TPS65185 registers | VCOM −2.70 V as set; `PG=0xFA`, all rails good |
+
+Static analysis of the vendor firmware (`test/*.bin`) closed off the remaining "they must have something
+we don't" theories:
+
+- **The waveform tables are byte-identical to upstream epdiy.** Both are compiled in — `ED097TC2` GC16 LUT
+  at `0x452844`, `ED047TC2` GC16 at `0x45737C`. There is no bespoke ED052TC4 table to find.
+- **Same board definition**: `epd_board_v7_raw` (3/3 log strings present), `pca9555.c` absent.
+- **Stock's normal mode is a greyscale refresh, not DU** — its menu reads `切换到8级灰刷新 (默认波形)`
+  ("switch to 8-level grey refresh, default waveform"), with `(ED047波形)` as the 16-level option.
+- **Stock runs the panel at 22 MHz; we run at 11.** Its descriptor carries `bus_speed = 22`, and all three
+  of epdiy's clock-halving log strings are *absent* from both vendor builds while present in ours. That
+  branch gates on a compile-time constant, so the compiler strips it when the cache line is 64 B —
+  the binary is telling us stock built with `CONFIG_ESP32S3_DATA_CACHE_LINE_SIZE=64`.
+
+**The one hypothesis left: waveform phase timing.** epdiy halves the pixel clock (22 → 11 MHz) because
+Arduino's prebuilt libs ship a 32-byte data cache line and DMA from PSRAM cannot stay coherent at full
+rate (`lcd_driver.c: check_cache_configuration`). An e-ink waveform is time-calibrated, so at half the
+clock **every phase is applied for twice its designed duration** — a systematic over-drive on every
+transition. This is the only measurable difference from stock left, and it explains why no waveform
+change helped: DU, GL16, ED047 and the temperature bands are all mis-timed by the same factor.
+
+**Do not try to force the clock with a build flag.** Patching out the halving
+(`EPDIY_FORCE_FULL_PIXEL_CLOCK`) was tried: the device boot-loops with visible artifacting. The guard is
+load-bearing — a 32-byte cache line genuinely cannot sustain the DMA. epdiy's own source has a dead end
+there (`// fixme: this would be nice, but doesn't work :( Cache_Suspend_DCache()`).
+
+The hypothesis is therefore **untested**, and testing it requires the real fix: build Arduino as an
+ESP-IDF component with a 64-byte data cache line, which is what epdiy's error message instructs and what
+stock evidently did. Expected side effect: page turns ~265 ms → ~130 ms.
+
 **9. 16-level greyscale — not started.** Native 4bpp reader rendering (model (b)). Validate the ED047-waveform mode does not ghost or stress the panel over long runs.
 
 **10. Fully functional Japanese EPUB — not started.** Horizontal and vertical, ruby/furigana through parse/cache/layout/render, dictionary cursor geometry, SD fonts, bookmarks, TOC, footnotes, percent/chapter nav, orientation, progress save/resume.
