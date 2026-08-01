@@ -10,6 +10,10 @@
 #define CROSSPOINT_HAS_SD_MMC_BACKEND 1
 #endif
 
+#ifdef CROSSPOINT_BOARD_HZ52
+#include <HalGPIO.h>  // HZ52_SD_CS_PIN
+#endif
+
 #include <cassert>
 #include <cstring>
 
@@ -20,7 +24,9 @@ HalStorage HalStorage::instance;
 namespace {
 
 const BoardCapabilityProfile& activeBoardProfile() {
-#ifdef CROSSPOINT_BOARD_MURPHY_M4
+#if defined(CROSSPOINT_BOARD_HZ52)
+  return boardProfileFor(BoardModel::HZ52);
+#elif defined(CROSSPOINT_BOARD_MURPHY_M4)
   return boardProfileFor(BoardModel::MurphyM4);
 #else
   return boardProfileFor(BoardModel::X4);
@@ -78,7 +84,14 @@ HalStorage::HalStorage() {
 
 bool HalStorage::begin() {
   if (!useSdMmcBackend()) {
+#ifdef CROSSPOINT_BOARD_HZ52
+    // SD is SPI-attached here but chip-select is GPIO44, not the X3/X4 default. The
+    // peripheral power rail (GPIO46) is asserted in HalGPIO::begin(); without it the
+    // card does not respond on any chip-select.
+    initialized = SDCard.begin(HZ52_SD_CS_PIN);
+#else
     initialized = SDCard.begin();
+#endif
     return initialized;
   }
 
