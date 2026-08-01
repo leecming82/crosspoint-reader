@@ -114,9 +114,21 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
                             StrId::STR_CAT_DISPLAY),
 
         // --- Reader ---
+// Same feature guard as the definitions above. Boards without the runtime FreeType
+// reader keep the built-in bitmap font settings they have always had.
+#ifdef CROSSPOINT_TTF_READER_DIRECT_FREETYPE
         buildTtfFontFamilySetting(),
         buildTtfFontSizeSetting(),
         buildTtfFontWeightSetting(),
+#else
+        // Built-in font-family entry. Replaced per-call with a registry-aware
+        // version when SD fonts are installed.
+        SettingInfo::Enum(StrId::STR_FONT_FAMILY, &CrossPointSettings::fontFamily,
+                          {StrId::STR_NOTO_SERIF, StrId::STR_NOTO_SANS}, "fontFamily", StrId::STR_CAT_READER),
+        SettingInfo::Enum(StrId::STR_FONT_SIZE, &CrossPointSettings::fontSize,
+                          {StrId::STR_SMALL, StrId::STR_MEDIUM, StrId::STR_LARGE, StrId::STR_X_LARGE}, "fontSize",
+                          StrId::STR_CAT_READER),
+#endif
         SettingInfo::Enum(StrId::STR_LINE_SPACING, &CrossPointSettings::lineSpacing,
                           {StrId::STR_TIGHT, StrId::STR_NORMAL, StrId::STR_WIDE}, "lineSpacing", StrId::STR_CAT_READER),
         SettingInfo::Value(StrId::STR_SCREEN_MARGIN, &CrossPointSettings::screenMargin, {5, 40, 5}, "screenMargin",
