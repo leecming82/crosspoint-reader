@@ -1,6 +1,53 @@
 # HZ5.2 Japanese Port Plan
 
-Date: 2026-07-27
+Date: 2026-07-27 (last worked 2026-08-02)
+
+---
+
+## RESUME HERE (2026-08-02)
+
+**Done:** milestones 1–5. Device boots to the normal CrossPoint UI, renders through
+`HalDisplay`/`GfxRenderer`, navigates with its three buttons, and runs the TTF reader.
+Panel driver is now 4bpp via epdiy's `epd_hl_*` (real frame-indexed waveforms). All work is
+committed on branch `hz52`; **nothing is pushed** — the submodule branch `hz52-sd-cs`
+(commit `3e50170`) must be pushed before the parent, or the parent references a commit
+nobody can fetch.
+
+**Open problem:** ghosting on page turns — a faint shadow of the previous page wherever it
+had ink. Six hypotheses tested and eliminated; see
+[Ghosting investigation](#ghosting-investigation-2026-08-02unresolved-one-hypothesis-left-standing)
+in the Milestones section for the full table. Do not re-test those.
+
+**The one hypothesis left:** we drive the panel at **11 MHz, stock drives it at 22**. epdiy
+halves the pixel clock because Arduino's prebuilt libs ship a 32-byte data cache line
+(`lcd_driver.c: check_cache_configuration`). E-ink waveforms are time-calibrated, so every
+phase runs for twice its designed duration — which would mis-time DU, GL16, ED047 and every
+temperature band identically, matching the observation that no waveform change helped.
+Confirmed from the vendor binaries: their `bus_speed = 22` and epdiy's clock-halving log
+strings are *absent* from both stock builds but present in ours, so stock was compiled with
+a 64-byte cache line.
+
+**Next task:** rebuild Arduino with `CONFIG_ESP32S3_DATA_CACHE_LINE_SIZE=64`. Two routes,
+check the cheaper one first:
+
+1. `custom_sdkconfig` — pioarduino reads this project option
+   (`~/.platformio/platforms/espressif32/builder/frameworks/arduino.py:550-553`, and
+   `espidf.custom_sdkconfig` from the board at :534). **Unverified whether it triggers a
+   rebuild of the prebuilt libs** — if it does, this is a two-line fix.
+2. `framework = arduino, espidf` — Arduino as an IDF component, supported at
+   `arduino.py:884`. Correct but changes how the whole firmware builds.
+
+Expected side effect either way: page turns ~265 ms → ~130 ms.
+
+**Do not** force the clock with a build flag. Patching out the halving was tried and
+boot-loops the device with visible artifacting; the guard is load-bearing.
+
+**Also open (lower priority):** UI is legible but small at 283 ppi (milestone 7); many
+screens still assume touch and are hard to use with three buttons (milestone 8); `default`/X4
+env does not build on this branch (`FontSelectionActivity`, `ReaderFontSizeActivity` need
+non-TTF fallbacks).
+
+---
 
 Status: **milestones 1–2 complete.** Hardware fully characterised (pin map, panel identity, VCOM, buttons — all recovered read-only over JTAG), and a board profile now builds and boots on the device in diagnostics-only mode. The display and storage paths are deliberately not initialised yet; that is milestones 3–4.
 
