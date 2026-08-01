@@ -152,7 +152,12 @@ HalGPIO::DeviceType nvsToDeviceType(NvsDeviceValue value) {
 }
 
 HalGPIO::DeviceType detectDeviceTypeWithFingerprint() {
-#ifdef CROSSPOINT_BOARD_MURPHY_M4
+#if defined(CROSSPOINT_BOARD_HZ52)
+  // HZ5.2 has no shared-bus fingerprint to probe for: the X3 probe drives C3 pins
+  // that are the parallel display bus here, so it must never run on this board.
+  LOG_INF("HW", "Board profile forced by build: HZ5.2");
+  return HalGPIO::DeviceType::HZ52;
+#elif defined(CROSSPOINT_BOARD_MURPHY_M4)
   LOG_INF("HW", "Board profile forced by build: Murphy M4");
   return HalGPIO::DeviceType::MurphyM4;
 #else
@@ -231,7 +236,9 @@ uint8_t murphyLongPressButton(uint8_t physicalButton) {
 }  // namespace
 
 void HalGPIO::begin() {
-  SPI.begin(EPD_SCLK, SPI_MISO, EPD_MOSI, EPD_CS);
+  // SPI_BUS_* aliases the display pins on the shared-bus boards (X3/X4/Murphy) and
+  // resolves to the SD-only FSPI pins on HZ5.2, whose panel is parallel, not SPI.
+  SPI.begin(SPI_BUS_SCLK, SPI_BUS_MISO, SPI_BUS_MOSI, EPD_CS);
 
   _deviceType = detectDeviceTypeWithFingerprint();
 
@@ -245,6 +252,31 @@ void HalGPIO::begin() {
     murphyPhysicalState = murphyRawState;
     lastUsbConnected = isUsbConnected();
     LOG_INF("GPIO", "Murphy M4 buttons: top=GPIO1, middle=GPIO2, bottom=GPIO0");
+    return;
+  }
+
+  if (deviceIsHz52()) {
+    // Bring up the peripheral power rail before anything tries to talk to a peripheral.
+    // Stock firmware holds GPIO46 HIGH persistently -- in both idle and active JTAG
+    // snapshots -- and with it low the SD card does not respond at all. This is a board
+    // rail rather than a storage detail, so it belongs here in board init.
+    const auto& hz52 = boardProfileFor(DeviceType::HZ52);
+    if (hz52.sdEnablePin >= 0) {
+      pinMode(hz52.sdEnablePin, OUTPUT);
+      digitalWrite(hz52.sdEnablePin, hz52.sdEnableActiveLow ? LOW : HIGH);
+    }
+    LOG_INF("GPIO", "HZ5.2 SD power gate asserted (GPIO%d)", hz52.sdEnablePin);
+
+    // Bypass InputManager for the same reason the Murphy path does: it assumes the
+    // C3/X4 map, where POWER_BUTTON_PIN=3 and the button ladder is an ADC on GPIO1/2.
+    // On HZ5.2 those pads are the SD SPI clock, the battery divider and SD MISO.
+    // Claiming GPIO3 as a button input re-routes it away from FSPICLK, which leaves
+    // the SD clock dead and hangs the first transfer forever in spiTransferByteNL().
+    pinMode(HZ52_BTN_ISOLATED, INPUT_PULLUP);
+    pinMode(HZ52_BTN_PAIR_UPPER, INPUT_PULLUP);
+    pinMode(HZ52_BTN_PAIR_LOWER, INPUT_PULLUP);
+    LOG_INF("GPIO", "HZ5.2 buttons: isolated=GPIO%d upper=GPIO%d lower=GPIO%d (InputManager bypassed)",
+            HZ52_BTN_ISOLATED, HZ52_BTN_PAIR_UPPER, HZ52_BTN_PAIR_LOWER);
     return;
   }
 

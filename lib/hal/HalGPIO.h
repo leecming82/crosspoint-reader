@@ -5,7 +5,19 @@
 #include <BoardProfile.h>
 
 // Display SPI pins (custom pins for XteinkX4/Murphy, not hardware SPI defaults)
-#ifdef CROSSPOINT_BOARD_MURPHY_M4
+#if defined(CROSSPOINT_BOARD_HZ52)
+// HZ5.2 has no display SPI at all: the panel is an 8-bit parallel bus driven by
+// epdiy. Every EPD_* pin is therefore unmapped, and driving the inherited X4
+// values here would land on the parallel data bus, a TPS65185 control line and a
+// button. See docs/hz52-device-migration-comparison.md.
+#define EPD_SCLK -1
+#define EPD_MOSI -1
+#define EPD_CS -1
+#define EPD_DC -1
+#define EPD_RST -1
+#define EPD_BUSY -1
+#define SPI_MISO -1
+#elif defined(CROSSPOINT_BOARD_MURPHY_M4)
 #define EPD_SCLK 4   // SPI Clock
 #define EPD_MOSI 3   // SPI MOSI / panel DIN
 #define EPD_CS 5     // Chip Select
@@ -22,6 +34,30 @@
 #define EPD_BUSY 6   // Busy
 #define SPI_MISO 7   // SPI MISO, shared between SD card and display (Master In Slave Out)
 #endif
+
+// Shared SPI bus pins. On X3/X4/Murphy the e-paper panel and the SD card sit on one
+// bus, so these alias the display pins. HZ5.2 has no display SPI; its only SPI
+// peripheral is the SD card, on FSPI.
+#if defined(CROSSPOINT_BOARD_HZ52)
+#define SPI_BUS_SCLK 3
+#define SPI_BUS_MISO 2
+#define SPI_BUS_MOSI 43
+#else
+#define SPI_BUS_SCLK EPD_SCLK
+#define SPI_BUS_MISO SPI_MISO
+#define SPI_BUS_MOSI EPD_MOSI
+#endif
+
+// HZ5.2 buttons, confirmed by press-delta test. Right edge, arranged one/gap/two.
+#define HZ52_BTN_ISOLATED 38    // single button above the gap
+#define HZ52_BTN_PAIR_UPPER 0   // upper of the pair; also the ESP32-S3 boot strap
+#define HZ52_BTN_PAIR_LOWER 21  // lower of the pair
+#define HZ52_BATTERY_ADC_PIN 1  // analog signature; ADC1, consistent with stock firmware
+#define HZ52_SD_POWER_EN 46     // SD power gate, active HIGH (confirmed: card loses state when toggled)
+#define HZ52_PMIC_WAKEUP 14     // TPS65185 WAKEUP; the PMIC will not ACK on I2C until asserted
+#define HZ52_SD_CS_PIN 44       // SD chip-select, confirmed by successful mount
+#define HZ52_I2C_SDA 39         // I2CEXT0_SDA, confirmed by JTAG register read
+#define HZ52_I2C_SCL 40         // I2CEXT0_SCL, confirmed by JTAG register read
 
 #define BAT_GPIO0 0  // Battery voltage
 
@@ -91,6 +127,7 @@ class HalGPIO {
   inline bool deviceIsX3() const { return _deviceType == DeviceType::X3; }
   inline bool deviceIsX4() const { return _deviceType == DeviceType::X4; }
   inline bool deviceIsMurphyM4() const { return _deviceType == DeviceType::MurphyM4; }
+  inline bool deviceIsHz52() const { return _deviceType == DeviceType::HZ52; }
   inline const BoardCapabilityProfile& getBoardProfile() const { return boardProfileFor(_deviceType); }
 
   // Start button GPIO and setup SPI for screen and SD card
