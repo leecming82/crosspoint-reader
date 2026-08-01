@@ -10,6 +10,25 @@ void MappedInputManager::update() const {
 bool MappedInputManager::mapButton(const Button button, bool (HalGPIO::*fn)(uint8_t) const) const {
   const auto sideLayout = SETTINGS.sideButtonLayout;
 
+  if (gpio.deviceIsHz52()) {
+    // Three fixed buttons with nothing to remap. The frontButton* settings describe front
+    // hardware this board does not have, so honouring them would redirect Back/Confirm
+    // onto buttons that never fire. HalGPIO already emits Back/Confirm directly from long
+    // presses. Up/Down/Power/Page* fall through to the shared handling below.
+    switch (button) {
+      case Button::Back:
+        return (gpio.*fn)(HalGPIO::BTN_BACK);
+      case Button::Confirm:
+        return (gpio.*fn)(HalGPIO::BTN_CONFIRM);
+      case Button::Left:
+      case Button::Right:
+        // No binding yet -- three buttons cannot cover Left/Right too. Milestone 8.
+        return false;
+      default:
+        break;
+    }
+  }
+
   switch (button) {
     case Button::Back:
       // Logical Back maps to user-configured front button.

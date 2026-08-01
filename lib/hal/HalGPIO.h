@@ -114,6 +114,31 @@ class HalGPIO {
   bool murphyScreenshotEvent = false;
   bool murphySleepEvent = false;
 
+  // HZ5.2 three-button input. Deliberately independent of the Murphy path above: the two
+  // boards share a button *count*, not a design. Murphy reserves long-press for frontlight
+  // and screenshot and puts power on its bottom button, neither of which applies here --
+  // HZ5.2 has no frontlight and no touchscreen, so all four navigation actions plus power
+  // must come from three buttons.
+  //
+  // No latched logical state: isPressed() is derived from the debounced physical mask, and
+  // every emitted press is paired with a release in the same edge. Sharing Murphy's latched
+  // machine produced a Power press that never released and stuck isPressed(BTN_POWER) true.
+  static constexpr unsigned long HZ52_LONG_PRESS_MS = 700;
+  static constexpr unsigned long HZ52_DEBOUNCE_MS = 5;
+
+  uint8_t hz52RawState = 0;         // debounced physical mask
+  uint8_t hz52LastRawState = 0;     // last sampled mask, for debounce timing
+  uint8_t hz52PhysicalState = 0;    // mask latched when the press began
+  uint8_t hz52PressedEvents = 0;    // logical buttons pressed since last update()
+  uint8_t hz52ReleasedEvents = 0;   // logical buttons released since last update()
+  unsigned long hz52LastDebounceMs = 0;
+  unsigned long hz52PressStart = 0;
+  unsigned long hz52PressFinish = 0;
+  unsigned long hz52PowerPressStart = 0;
+  unsigned long hz52PowerPressFinish = 0;
+
+  void hz52Update();
+
  public:
   using DeviceType = BoardModel;
 

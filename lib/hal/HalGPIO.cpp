@@ -233,6 +233,51 @@ uint8_t murphyLongPressButton(uint8_t physicalButton) {
   return physicalButton == MURPHY_BTN_BOTTOM ? HalGPIO::BTN_POWER : 0xFF;
 }
 
+// --- HZ5.2 three-button input -------------------------------------------------------
+// Right edge, top to bottom: isolated (GPIO38), gap, pair upper (GPIO0), pair lower
+// (GPIO21). The isolated button's physical separation reads as "power".
+constexpr uint8_t HZ52_BTN_ISO = 1 << 0;
+constexpr uint8_t HZ52_BTN_UP = 1 << 1;
+constexpr uint8_t HZ52_BTN_LOW = 1 << 2;
+
+uint8_t hz52ReadPhysicalButtons() {
+  uint8_t state = 0;
+  if (digitalRead(HZ52_BTN_ISOLATED) == LOW) {
+    state |= HZ52_BTN_ISO;
+  }
+  if (digitalRead(HZ52_BTN_PAIR_UPPER) == LOW) {
+    state |= HZ52_BTN_UP;
+  }
+  if (digitalRead(HZ52_BTN_PAIR_LOWER) == LOW) {
+    state |= HZ52_BTN_LOW;
+  }
+  return state;
+}
+
+// HZ5.2 mapping (milestone 5). Long press lives ONLY on the isolated button, which is not
+// in ButtonNavigator's navigation set. Up/Down deliberately have no long action:
+// auto-repeat starts at 500 ms (ButtonNavigator::continuousStartMs) and the long-press
+// threshold is 700 ms, so any long action on a navigation button fires a scroll first --
+// holding Down in a menu moved the selection and *then* activated it.
+//
+// Holding Up/Down is therefore reserved for auto-repeat scrolling, and a hold longer than
+// the threshold emits nothing on release (0xFF): the repeat already did the work.
+//
+// There is no Power button. Sleep is left to the auto-sleep timeout; wake is the lower
+// button, which the hardware forces (see HalPowerManager::startDeepSleep). Revisit in
+// milestone 8 along with the on-screen hints.
+uint8_t hz52ShortPressButton(uint8_t physicalButton) {
+  if (physicalButton == HZ52_BTN_ISO) return HalGPIO::BTN_CONFIRM;
+  if (physicalButton == HZ52_BTN_UP) return HalGPIO::BTN_UP;
+  if (physicalButton == HZ52_BTN_LOW) return HalGPIO::BTN_DOWN;
+  return 0xFF;
+}
+
+uint8_t hz52LongPressButton(uint8_t physicalButton) {
+  if (physicalButton == HZ52_BTN_ISO) return HalGPIO::BTN_BACK;
+  return 0xFF;  // navigation buttons: see above
+}
+
 }  // namespace
 
 void HalGPIO::begin() {
@@ -275,8 +320,18 @@ void HalGPIO::begin() {
     pinMode(HZ52_BTN_ISOLATED, INPUT_PULLUP);
     pinMode(HZ52_BTN_PAIR_UPPER, INPUT_PULLUP);
     pinMode(HZ52_BTN_PAIR_LOWER, INPUT_PULLUP);
-    LOG_INF("GPIO", "HZ5.2 buttons: isolated=GPIO%d upper=GPIO%d lower=GPIO%d (InputManager bypassed)",
-            HZ52_BTN_ISOLATED, HZ52_BTN_PAIR_UPPER, HZ52_BTN_PAIR_LOWER);
+
+    // Seed the state machine so a button already held at boot is not reported as a fresh
+    // press on the first update(). GPIO0 doubles as the ESP32-S3 boot strap: held LOW
+    // across reset the chip enters download mode instead of booting, so this pad must
+    // never be driven and a stuck-low button prevents a normal boot.
+    hz52RawState = hz52ReadPhysicalButtons();
+    hz52LastRawState = hz52RawState;
+    hz52PhysicalState = hz52RawState;
+    lastUsbConnected = isUsbConnected();
+    LOG_INF("GPIO",
+            "HZ5.2 buttons: GPIO%d confirm/back(hold) GPIO%d up GPIO%d down; no power button, wake=GPIO%d",
+            HZ52_BTN_ISOLATED, HZ52_BTN_PAIR_UPPER, HZ52_BTN_PAIR_LOWER, HZ52_BTN_PAIR_LOWER);
     return;
   }
 
@@ -288,7 +343,62 @@ void HalGPIO::begin() {
   }
 }
 
+// Resolves the logical button only at the release edge, once the held duration is known,
+// and emits its press and release together. Nothing is latched across updates, so a button
+// can never be left logically down.
+void HalGPIO::hz52Update() {
+  const unsigned long now = millis();
+  const uint8_t rawState = hz52ReadPhysicalButtons();
+  hz52PressedEvents = 0;
+  hz52ReleasedEvents = 0;
+
+  if (rawState != hz52LastRawState) {
+    hz52LastDebounceMs = now;
+    hz52LastRawState = rawState;
+  }
+
+  if ((now - hz52LastDebounceMs) <= HZ52_DEBOUNCE_MS || rawState == hz52RawState) {
+    return;
+  }
+
+  const uint8_t previousState = hz52RawState;
+  hz52RawState = rawState;
+
+  if (previousState == 0 && rawState != 0) {
+    hz52PhysicalState = rawState;
+    hz52PressStart = now;
+    return;
+  }
+
+  if (previousState == 0 || rawState != 0) {
+    return;  // mid-chord change; wait for full release
+  }
+
+  const unsigned long heldTime = now - hz52PressStart;
+  const uint8_t logicalButton =
+      heldTime >= HZ52_LONG_PRESS_MS ? hz52LongPressButton(hz52PhysicalState) : hz52ShortPressButton(hz52PhysicalState);
+
+  // 0xFF means "no action": a navigation button held past the threshold, where auto-repeat
+  // has already applied the movement and a release event would double-count it.
+  if (logicalButton <= BTN_POWER) {
+    const uint8_t mask = 1 << logicalButton;
+    hz52PressedEvents |= mask;
+    hz52ReleasedEvents |= mask;
+  }
+
+  hz52PressFinish = now;
+  hz52PhysicalState = 0;
+}
+
 void HalGPIO::update() {
+  if (deviceIsHz52()) {
+    hz52Update();
+    const bool connected = isUsbConnected();
+    usbStateChanged = (connected != lastUsbConnected);
+    lastUsbConnected = connected;
+    return;
+  }
+
   if (deviceIsMurphyM4()) {
     const unsigned long now = millis();
     const uint8_t rawState = murphyReadPhysicalButtons();
@@ -375,6 +485,27 @@ void HalGPIO::update() {
 bool HalGPIO::wasUsbStateChanged() const { return usbStateChanged; }
 
 bool HalGPIO::isPressed(uint8_t buttonIndex) const {
+  if (deviceIsHz52()) {
+    // Derived, never stored. Reports the button's *current* identity: its short-press
+    // meaning until the long-press threshold passes, then its long-press meaning.
+    //
+    // Tracking the switch matters because callers combine isPressed() with getHeldTime()
+    // to build their own longer gestures -- the reader opens the file browser on
+    // isPressed(Back) held >= 1s. Reporting only the short identity made that unreachable,
+    // so holding the upper button past 1s did nothing and the only way out of a book was a
+    // 300 ms release window between our 700 ms threshold and the reader's 1 s one.
+    if (hz52RawState == 0) return false;
+    const uint8_t longMapping = hz52LongPressButton(hz52RawState);
+    const bool longHeld = (millis() - hz52PressStart) >= HZ52_LONG_PRESS_MS;
+    if (longHeld && longMapping != 0xFF) {
+      // Isolated button past the threshold: it *is* Back now, which is what lets the
+      // reader's "hold Back >= 1 s -> file browser" gesture become reachable.
+      return longMapping == buttonIndex;
+    }
+    // Navigation buttons keep their short identity for as long as they are held, so
+    // ButtonNavigator's auto-repeat sees a continuously-pressed Up/Down.
+    return hz52ShortPressButton(hz52RawState) == buttonIndex;
+  }
   if (deviceIsMurphyM4()) {
     return buttonIndex <= BTN_POWER && (murphyCurrentState & (1 << buttonIndex));
   }
@@ -382,6 +513,9 @@ bool HalGPIO::isPressed(uint8_t buttonIndex) const {
 }
 
 bool HalGPIO::wasPressed(uint8_t buttonIndex) const {
+  if (deviceIsHz52()) {
+    return buttonIndex <= BTN_POWER && (hz52PressedEvents & (1 << buttonIndex));
+  }
   if (deviceIsMurphyM4()) {
     return buttonIndex <= BTN_POWER && (murphyPressedEvents & (1 << buttonIndex));
   }
@@ -389,6 +523,9 @@ bool HalGPIO::wasPressed(uint8_t buttonIndex) const {
 }
 
 bool HalGPIO::wasAnyPressed() const {
+  if (deviceIsHz52()) {
+    return hz52PressedEvents > 0;
+  }
   if (deviceIsMurphyM4()) {
     return murphyPressedEvents > 0;
   }
@@ -396,6 +533,9 @@ bool HalGPIO::wasAnyPressed() const {
 }
 
 bool HalGPIO::wasReleased(uint8_t buttonIndex) const {
+  if (deviceIsHz52()) {
+    return buttonIndex <= BTN_POWER && (hz52ReleasedEvents & (1 << buttonIndex));
+  }
   if (deviceIsMurphyM4()) {
     return buttonIndex <= BTN_POWER && (murphyReleasedEvents & (1 << buttonIndex));
   }
@@ -403,6 +543,9 @@ bool HalGPIO::wasReleased(uint8_t buttonIndex) const {
 }
 
 bool HalGPIO::wasAnyReleased() const {
+  if (deviceIsHz52()) {
+    return hz52ReleasedEvents > 0;
+  }
   if (deviceIsMurphyM4()) {
     return murphyReleasedEvents > 0 || murphyFrontlightEvent || murphyScreenshotEvent || murphySleepEvent;
   }
@@ -422,6 +565,9 @@ bool HalGPIO::wasSleepButtonReleased() const {
 }
 
 unsigned long HalGPIO::getHeldTime() const {
+  if (deviceIsHz52()) {
+    return hz52RawState != 0 ? millis() - hz52PressStart : hz52PressFinish - hz52PressStart;
+  }
   if (deviceIsMurphyM4()) {
     if (murphyRawState != 0) {
       return millis() - murphyPressStart;
@@ -432,6 +578,11 @@ unsigned long HalGPIO::getHeldTime() const {
 }
 
 unsigned long HalGPIO::getPowerButtonHeldTime() const {
+  if (deviceIsHz52()) {
+    // No Power button on this board (sleep is the auto-timeout); nothing ever emits
+    // BTN_POWER, so there is no hold to report.
+    return 0;
+  }
   if (deviceIsMurphyM4()) {
     if (isPressed(BTN_POWER)) {
       return millis() - murphyPowerPressStart;
@@ -444,6 +595,15 @@ unsigned long HalGPIO::getPowerButtonHeldTime() const {
 void HalGPIO::startDeepSleep() {
   if (deviceIsMurphyM4()) {
     LOG_INF("GPIO", "Deep sleep skipped on Murphy M4: power wake GPIO is not identified yet");
+    return;
+  }
+
+  if (deviceIsHz52()) {
+    // Wake needs an RTC-capable pad (GPIO0-21 on the S3). Of the three buttons only
+    // GPIO0 and GPIO21 qualify and GPIO0 is the boot strap, so the power button (GPIO38)
+    // cannot wake the device. Skipping beats arming a wake source that would leave it
+    // unwakeable by its own power button; revisit with the milestone 8 mapping.
+    LOG_INF("GPIO", "Deep sleep skipped on HZ5.2: power button GPIO%d is not RTC-capable", HZ52_BTN_ISOLATED);
     return;
   }
 
@@ -463,6 +623,12 @@ void HalGPIO::startDeepSleep() {
 }
 
 void HalGPIO::verifyPowerButtonWakeup(uint16_t requiredDurationMs, bool shortPressAllowed) {
+  if (deviceIsMurphyM4() || deviceIsHz52()) {
+    // Drives InputManager directly, which neither board initialises. Unreachable today
+    // (getWakeupReason() never returns PowerButton for them), but guard it so a future
+    // caller cannot spin on an uninitialised InputManager.
+    return;
+  }
   if (shortPressAllowed) {
     // Fast path - no duration check needed
     return;
@@ -511,12 +677,20 @@ bool HalGPIO::isUsbConnected() const {
     }
     return false;
   }
+  if (deviceIsHz52()) {
+    // No characterised USB-present signal. GPIO20 (the X4 U0RXD trick) is not in the
+    // recovered pin map at all, so reading it returns a floating value. GPIO47 is the
+    // leading candidate but may be TPS65185 PWRGOOD/INT. Report false until measured.
+    return false;
+  }
   // U0RXD/GPIO20 reads HIGH when USB is connected
   return digitalRead(UART0_RXD) == HIGH;
 }
 
 HalGPIO::WakeupReason HalGPIO::getWakeupReason() const {
-  if (deviceIsMurphyM4()) {
+  if (deviceIsMurphyM4() || deviceIsHz52()) {
+    // The reset-reason heuristics below are calibrated against X3/X4 and depend on a
+    // trustworthy isUsbConnected(), which neither board has.
     return WakeupReason::Other;
   }
 
