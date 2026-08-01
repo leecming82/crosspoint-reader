@@ -8,27 +8,40 @@
 //   OE=9  MODE=10  PWRUP=11  VCOM_CTRL=12  WAKEUP=14  PWRGOOD=47  INT=13
 //   I2C SCL=40 SDA=39 (TPS65185 @ 0x68)
 //
-// Deliberately uses the low-level epd_draw_base() rather than the epd_hl_* API: the
-// high-level state allocates 1.84 MB of PSRAM for its front/back diff pair, while a 1bpp
-// buffer is 115,200 bytes.
+// Uses epdiy's high-level API (epd_hl_*), which keeps front/back framebuffers and diffs
+// them per pixel to drive a real waveform.
 //
-// MODE_PACKING_8PPB shares CrossPoint's polarity (0 = black, 1 = white) but NOT its bit
-// order within a byte. CrossPoint packs MSB = leftmost pixel; epdiy's 8ppB LUT walks the
-// byte the other way (lut_8ppB_start_at_white[0x01] alters the low output slot and [0x80]
-// the high one, and the panel shifts that run out in the opposite sense). Handing the
-// buffer over unconverted mirrors every 8-pixel run.
+// The first implementation used the low-level epd_draw_base() with MODE_PACKING_8PPB and a
+// 1bpp buffer -- 115 KB instead of 1.84 MB. That worked, but 1bpp has nowhere to record a
+// pixel's *current* state, so epdiy has to be told PREVIOUSLY_WHITE/BLACK as a single
+// blanket assumption for the whole screen, and its 8ppB LUT builder ignores the frame index
+// entirely (lut.c: build_8ppB_lut_256b_from_white memcpy's one fixed table). The result was
+// a constant DC push rather than a waveform: no reset phase, so ghosting was structural.
+// Raising the frame count (MODE_DU 5 -> *_TO_GL16 15) tripled the duration and changed
+// nothing visually, which is the signature of that problem.
 //
-// That is invisible on solid fills, which is why the border and rules looked crisp, but it
-// wrecks glyphs -- and because the panel is transposed (phyX is *logical y*), an 8-pixel
-// run is vertical on screen, so glyph rows appeared displaced up/down in 8-pixel groups.
-// Converting here keeps CrossPoint's MSB-first convention intact everywhere else.
+// At 4bpp (MODE_PACKING_2PPB) each pixel carries 16 levels and epdiy's difference buffer
+// holds the packed (from, to) pair, so build_2ppB_lut_64k_static_from() can index
+// phases->luts + 16*4*frame -- a genuine frame-varying waveform with the reset phases that
+// actually clear particle history. That is what the earlier SSD1677 boards got for free
+// from their display controller's own RAM, and what a controller-less panel has to hold
+// itself.
 #ifdef CROSSPOINT_BOARD_HZ52
 
 #include "hz52_display.h"
 
 #include <Arduino.h>
 #include <Logging.h>
+#include <epd_highlevel.h>
 #include <epdiy.h>
+
+// Internal epdiy headers: the only route to the PMIC, since epdiy owns the I2C bus through
+// IDF and Arduino Wire must never touch it. These are plain C headers with no extern "C"
+// guard of their own, unlike epdiy.h, so wrap them or the symbols mangle and fail to link.
+extern "C" {
+#include "board/epd_board_i2c.h"
+#include "board/tps65185.h"
+}
 #include <esp_heap_caps.h>
 
 #include <cstring>
@@ -40,40 +53,117 @@ namespace {
 // refresh -- a wrong value degrades the panel over time, not just contrast.
 constexpr int VCOM_MV = 2700;
 
-// The default waveform's temperature bands do not cover the ~31 C this board reports, and
-// a value outside them makes epd_draw_base() return EPD_DRAW_NO_PHASES_AVAILABLE. epdiy's
-// own docs say the default waveforms ignore this and it should be room temperature.
-constexpr int DRAW_TEMPERATURE_C = 25;
+// Fallback only. epdiy_ED047TC2 carries 14 temperature bands spanning 0-48 C, so the real
+// panel temperature is used when the PMIC gives one; this stands in if that read fails.
+constexpr int FALLBACK_TEMPERATURE_C = 25;
 
-uint8_t* panelBuffer = nullptr;
+// epd_ambient_temperature() reads a sensor on the TPS65185 *die*, not on the glass. The
+// PMIC dissipates real power generating the +-15 V/+22 V rails, so it runs well above the
+// panel -- it reports ~32 C on a room-temperature device. Selecting a hotter band than
+// reality picks a shorter waveform (ED047TC2 DU: 15 phases at 30-33 C vs 22 at 21-24 C),
+// which under-drives every transition: particles stop short of the electrode and land grey
+// rather than white, leaving a shadow wherever the previous page had ink.
+//
+// Under-drive leaves residue; over-drive mostly costs time. So bias cold.
+constexpr int PMIC_TO_PANEL_OFFSET_C = -10;
+
+// Cached panel temperature. Reading it hits the TPS65185 over I2C, which is not worth doing
+// on every page turn, and it only matters at band granularity (3 C steps) anyway.
+constexpr uint32_t TEMP_REFRESH_MS = 60000;
+int cachedTemperatureC = FALLBACK_TEMPERATURE_C;
+uint32_t temperatureReadAt = 0;
+
+// Must be called with the rails already up: epd_ambient_temperature() reads a TPS65185
+// register and the PMIC does not ACK until WAKEUP is asserted.
+int panelTemperature() {
+  const uint32_t now = millis();
+  if (temperatureReadAt != 0 && (now - temperatureReadAt) < TEMP_REFRESH_MS) {
+    return cachedTemperatureC;
+  }
+  const float raw = epd_ambient_temperature();
+  // Guard against an implausible read rather than feeding it to the waveform lookup.
+  if (raw > -20.0f && raw < 60.0f) {
+    cachedTemperatureC = static_cast<int>(raw + 0.5f) + PMIC_TO_PANEL_OFFSET_C;
+    LOG_INF("EPD", "Panel temp: pmic=%dC offset=%dC used=%dC", static_cast<int>(raw + 0.5f),
+            PMIC_TO_PANEL_OFFSET_C, cachedTemperatureC);
+  }
+  temperatureReadAt = now;
+  return cachedTemperatureC;
+}
+
+// ED052TC4 with HORIZONTAL_MIRRORED cleared. epd_hl honours that flag (highlevel.c:58)
+// while the low-level path ignored it, and GfxRenderer already applies orientation, so
+// leaving it set would mirror the image twice.
+constexpr EpdDisplay_t HZ52_PANEL = {
+    .width = 1280,
+    .height = 720,
+    .bus_width = 8,
+    .bus_speed = 22,
+    // Matches stock. Static analysis of the vendor firmware shows both epdiy waveform
+    // tables compiled in *byte-identically* to upstream (ED097TC2 GC16 LUT found at
+    // 0x452844, ED047TC2 GC16 at 0x45737C), and its menu offers "16-level grey (ED047
+    // waveform)" as an option over the default. So there is no bespoke ED052TC4 table to
+    // find, and the default is what stock actually runs.
+    //
+    // ED047TC2's GL16 is 38-57 phases against ED097TC2's flat 30, so this is also the
+    // faster of the two. Its single temperature band spans 20-30 C, which the offset
+    // applied below keeps us inside.
+    .default_waveform = &epdiy_ED097TC2,
+    .display_type = DISPLAY_TYPE_GENERIC,
+};
+
+// Page turns use MODE_DU.
+//
+// MODE_GL16 was tried and rejected on hardware: despite carrying the reset stage described
+// below it left ghosting *unchanged* while costing 1.4 s (30 phases vs DU's 5) and adding a
+// visible shifting artefact on every refresh. That is a useful negative result -- if a full
+// reset waveform does not clear the residue, the cause is not waveform timing, and the
+// remaining suspects are drive voltage (VCOM/rails) or epdiy's belief about the glass
+// diverging from reality.
+//
+// DU is a two-level mode whose waveform is a flat one-directional push (ED097TC2 DU is
+// literally { 1000,1000,1000,1000,1000 }). It moves particles that are already free but
+// cannot unstick lodged ones, and never reverses, so residue accumulates in the shape of
+// whatever was previously inked -- the boxy shadows behind tategaki columns.
+//
+// GL16 carries a reset stage. Its 30 phases are exactly WHITE_TO_GL16's 15 followed by
+// BLACK_TO_GL16's 15: drive every pixel in the region toward a known rail regardless of
+// target, then drive from that known state to the target. That reset is applied to
+// unchanged pixels too, which is what erases history rather than just the visible diff.
+// GL16 is the non-flashing variant, so it does this without a visible inversion.
+constexpr enum EpdDrawMode PAGE_MODE = MODE_DU;
+constexpr enum EpdDrawMode FULL_MODE = MODE_GC16;
+
+uint8_t* panelBuffer = nullptr;  // 1bpp surface GfxRenderer draws into
 size_t panelBufferBytes = 0;
 bool initialised = false;
 bool panelIsWhite = false;
 
-// Differential-update working set, all PSRAM, all one allocation each for the life of the
-// device. 3 x 115,200 = ~346 KB against ~8 MB free -- versus the 1.84 MB epd_hl_init()
-// would need for its front/back/difference trio, which would also re-open the display_type
-// mirroring question (highlevel.c:58 honours HORIZONTAL_MIRRORED; the low-level path does
-// not). panelBuffer itself stays untouched in CrossPoint's convention.
-uint8_t* prevBuffer = nullptr;        // what we believe is physically on the glass
-uint8_t* passBlackBuffer = nullptr;   // PREVIOUSLY_WHITE pass: drives white -> black
-uint8_t* passWhiteBuffer = nullptr;   // PREVIOUSLY_BLACK pass: drives black -> white
+EpdiyHighlevelState hlState;
 
-// Flash-resident reverse-bits-in-a-byte table: static const, so it stays out of DRAM.
-constexpr uint8_t reverseByte(uint8_t v) {
-  uint8_t r = 0;
-  for (int i = 0; i < 8; i++) r = static_cast<uint8_t>((r << 1) | ((v >> i) & 1));
-  return r;
-}
-struct ReverseTable {
-  uint8_t v[256];
+// 1bpp -> 4bpp expansion table: one input byte (8 pixels, MSB = leftmost) becomes four
+// output bytes (2 pixels each, even x in the low nibble per epd_draw_pixel). 1 = white =
+// 0xF. Flash-resident, so no DRAM cost, and it replaces the old bit-reverse table -- nibble
+// order is now explicit here rather than implied by epdiy's 8ppB packing.
+struct ExpandTable {
+  uint32_t v[256];
 };
-constexpr ReverseTable makeReverseTable() {
-  ReverseTable t{};
-  for (int i = 0; i < 256; i++) t.v[i] = reverseByte(static_cast<uint8_t>(i));
+constexpr ExpandTable makeExpandTable() {
+  ExpandTable t{};
+  for (int b = 0; b < 256; b++) {
+    uint32_t out = 0;
+    for (int px = 0; px < 8; px++) {
+      const bool white = (b >> (7 - px)) & 1;
+      if (!white) continue;
+      const int byteIdx = px / 2;                  // which of the four output bytes
+      const int shift = (px % 2) ? 4 : 0;          // odd x -> high nibble
+      out |= static_cast<uint32_t>(0xF) << (byteIdx * 8 + shift);
+    }
+    t.v[b] = out;
+  }
   return t;
 }
-constexpr ReverseTable REVERSE_BITS = makeReverseTable();
+constexpr ExpandTable EXPAND = makeExpandTable();
 
 }  // namespace
 
@@ -82,32 +172,27 @@ namespace Hz52Display {
 bool begin() {
   if (initialised) return true;
 
-  epd_init(&epd_board_v7_raw, &ED052TC4, EPD_OPTIONS_DEFAULT);
+  epd_init(&epd_board_v7_raw, &HZ52_PANEL, EPD_OPTIONS_DEFAULT);
   epd_set_vcom(VCOM_MV);
 
-  // One allocation each for the life of the device; never reallocated per refresh.
+  // ~1.84 MB of PSRAM: front + back (460,800 each at 4bpp) + difference (921,600, one byte
+  // per pixel holding the packed from/to pair). Against ~7.4 MB free.
+  hlState = epd_hl_init(EPD_BUILTIN_WAVEFORM);
+
+  // Our own 1bpp surface stays: GfxRenderer is 1bpp throughout, so it draws here and push()
+  // expands into epdiy's 4bpp framebuffer.
   panelBufferBytes = static_cast<size_t>(epd_width() / 8) * epd_height();
-  uint8_t** buffers[] = {&panelBuffer, &prevBuffer, &passBlackBuffer, &passWhiteBuffer};
-  for (uint8_t** slot : buffers) {
-    *slot = static_cast<uint8_t*>(heap_caps_malloc(panelBufferBytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-    if (*slot != nullptr) continue;
-    LOG_ERR("EPD", "OOM: %u bytes for panel buffers", static_cast<unsigned>(panelBufferBytes));
-    for (uint8_t** done : buffers) {
-      if (*done) {
-        heap_caps_free(*done);
-        *done = nullptr;
-      }
-    }
+  panelBuffer = static_cast<uint8_t*>(heap_caps_malloc(panelBufferBytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+  if (!panelBuffer) {
+    LOG_ERR("EPD", "OOM: %u bytes for 1bpp surface", static_cast<unsigned>(panelBufferBytes));
     return false;
   }
   memset(panelBuffer, 0xFF, panelBufferBytes);  // 0xFF = white, same polarity as EInkDisplay
-  // prevBuffer records what is on the glass. begin() is always followed by a clear() from
-  // HalDisplay, which re-whitens it; seed it white so the two agree even if that changes.
-  memset(prevBuffer, 0xFF, panelBufferBytes);
 
   initialised = true;
-  LOG_INF("EPD", "Panel ready: %dx%d, %u byte 1bpp buffer, VCOM -%d.%02d V", epd_width(), epd_height(),
-          static_cast<unsigned>(panelBufferBytes), VCOM_MV / 1000, (VCOM_MV % 1000) / 10);
+  LOG_INF("EPD", "Panel ready: %dx%d, 1bpp surface %u B + 4bpp hl state, VCOM -%d.%02d V, psramFree=%u",
+          epd_width(), epd_height(), static_cast<unsigned>(panelBufferBytes), VCOM_MV / 1000, (VCOM_MV % 1000) / 10,
+          static_cast<unsigned>(ESP.getFreePsram()));
   return true;
 }
 
@@ -119,90 +204,71 @@ int panelHeight() { return epd_height(); }
 void clear() {
   if (!initialised) return;
   // Mandatory on first boot after other firmware: epdiy has no idea what is physically on
-  // the glass, and a differential update would leave the previous image in place. Also the
-  // periodic full refresh that clears accumulated DU ghosting.
+  // the glass. epd_hl_set_all_white() only updates epdiy's *belief*, so the physical clear
+  // has to happen too or the first differential update keeps the old image.
   const uint32_t start = millis();
   epd_poweron();
   epd_clear();
   epd_poweroff();
-  LOG_INF("EPD", "Full clear (3 cycles) in %lums", static_cast<unsigned long>(millis() - start));
+  epd_hl_set_all_white(&hlState);
   panelIsWhite = true;
-  if (prevBuffer) {
-    memset(prevBuffer, 0xFF, panelBufferBytes);  // glass is now uniformly white
-  }
+  LOG_INF("EPD", "Full clear in %lums", static_cast<unsigned long>(millis() - start));
 }
 
-// Lighter de-ghost: two clear cycles instead of epd_clear()'s three (render.c:219), at
-// the same 12 us cycle time. MODE_DU never fully resets particles, so residue builds up
-// over successive differential updates -- this is the periodic purge the reader already
-// asks for every SETTINGS.getRefreshFrequency() pages via HALF_REFRESH.
-void deghost() {
-  if (!initialised) return;
-  const uint32_t start = millis();
-  epd_poweron();
-  epd_clear_area_cycles(epd_full_screen(), 2, 12);
-  epd_poweroff();
-  LOG_INF("EPD", "De-ghost (2 cycles) in %lums", static_cast<unsigned long>(millis() - start));
-  panelIsWhite = true;
-  if (prevBuffer) {
-    memset(prevBuffer, 0xFF, panelBufferBytes);
+// One-shot PMIC dump. Waveform tables, board definition and panel config all match the
+// stock firmware byte-for-byte, and even a full-reset GL16 waveform left ghosting unchanged
+// -- which points away from drive *timing* and toward drive *voltage*. If the rails or VCOM
+// are not what the panel expects, every transition under-drives regardless of waveform.
+//
+// Must run with the rails up: the TPS65185 does not ACK until WAKEUP is asserted.
+void logPmicState() {
+  i2c_master_dev_handle_t tps = epd_board_i2c_current_tps();
+  if (tps == nullptr) {
+    LOG_ERR("EPD", "PMIC handle unavailable");
+    return;
   }
+
+  const uint8_t revid = tps_read_register(tps, TPS_REG_REVID);
+  const uint8_t enable = tps_read_register(tps, TPS_REG_ENABLE);
+  const uint8_t vadj = tps_read_register(tps, TPS_REG_VADJ);
+  const uint8_t vcom1 = tps_read_register(tps, TPS_REG_VCOM1);
+  const uint8_t vcom2 = tps_read_register(tps, TPS_REG_VCOM2);
+  const uint8_t pg = tps_read_register(tps, TPS_REG_PG);
+  const uint8_t upseq0 = tps_read_register(tps, TPS_REG_UPSEQ0);
+  const uint8_t dwnseq0 = tps_read_register(tps, TPS_REG_DWNSEQ0);
+
+  // VCOM is a 9-bit DAC in 10 mV steps: VCOM1 is the low byte, VCOM2 bit0 the MSB.
+  const unsigned vcomMv = (((vcom2 & 0x01) << 8) | vcom1) * 10;
+
+  LOG_INF("EPD", "PMIC revid=0x%02X enable=0x%02X vadj=0x%02X pg=0x%02X upseq0=0x%02X dwnseq0=0x%02X", revid, enable,
+          vadj, pg, upseq0, dwnseq0);
+  LOG_INF("EPD", "PMIC vcom regs=0x%02X/0x%02X -> -%u.%02u V (we asked for -%d.%02d V)", vcom1, vcom2, vcomMv / 1000,
+          (vcomMv % 1000) / 10, VCOM_MV / 1000, (VCOM_MV % 1000) / 10);
+  // PG bit7 is the summary flag; the low nibble reports each rail individually.
+  LOG_INF("EPD", "PMIC power-good: all=%d vb=%d vddh=%d vpos=%d vneg=%d", (pg >> 7) & 1, (pg >> 3) & 1, (pg >> 2) & 1,
+          (pg >> 1) & 1, pg & 1);
 }
 
-bool push() {
+bool push(bool deghost) {
   if (!initialised) return false;
 
-  // Two-pass differential against the previous frame. Each 8ppB LUT only ever *drives*
-  // pixels one way and no-ops the rest -- start_at_white drives 0-bits to black and leaves
-  // 1-bits alone; start_at_black drives 1-bits to white and leaves 0-bits alone. Running
-  // both passes therefore reproduces an arbitrary frame from an arbitrary previous frame
-  // without ever forcing the glass uniform.
-  //
-  // The earlier code cleared before every push instead, because PREVIOUSLY_WHITE is only
-  // valid when the panel really is white. That was correct but cost a full epd_clear()
-  // (~2.9 s of visible flashing) on every single refresh.
-  //
-  // Bit semantics here are CrossPoint's: 1 = white, 0 = black.
-  //   pass A (drive to black): 0 where prev=1 and cur=0  ->  ~(prev & ~cur)
-  //   pass B (drive to white): 1 where prev=0 and cur=1  ->  ~prev & cur
-  bool anyToBlack = false;
-  bool anyToWhite = false;
+  // Expand the 1bpp surface into epdiy's 4bpp framebuffer. epdiy diffs this against its own
+  // back buffer and drives only what changed, so the two-pass differential this driver used
+  // to run by hand -- and the prev/passBlack/passWhite buffers it needed -- are gone.
+  uint8_t* fb = epd_hl_get_framebuffer(&hlState);
+  auto* out = reinterpret_cast<uint32_t*>(fb);
   for (size_t i = 0; i < panelBufferBytes; i++) {
-    const uint8_t prev = prevBuffer[i];
-    const uint8_t cur = panelBuffer[i];
-    const uint8_t toBlack = static_cast<uint8_t>(~(prev & static_cast<uint8_t>(~cur)));
-    const uint8_t toWhite = static_cast<uint8_t>(static_cast<uint8_t>(~prev) & cur);
-    if (toBlack != 0xFF) anyToBlack = true;
-    if (toWhite != 0x00) anyToWhite = true;
-    // Bit order still has to be flipped for epdiy (see the file header).
-    passBlackBuffer[i] = REVERSE_BITS.v[toBlack];
-    passWhiteBuffer[i] = REVERSE_BITS.v[toWhite];
-  }
-
-  if (!anyToBlack && !anyToWhite) {
-    return true;  // nothing changed; do not wake the rails
+    out[i] = EXPAND.v[panelBuffer[i]];
   }
 
   epd_poweron();
+  static bool pmicLogged = false;
+  if (!pmicLogged) {
+    pmicLogged = true;
+    logPmicState();
+  }
   const uint32_t start = millis();
-  enum EpdDrawError err = EPD_DRAW_SUCCESS;
-
-  // Erase before draw. The two passes are visibly separate (~220 ms each), so the order
-  // decides what the panel shows in between: draw-then-erase leaves the *union* of the old
-  // and new frames on screen -- every outgoing glyph plus every incoming one, which reads
-  // as a black after-image on each page turn. Erase-then-draw leaves the intersection,
-  // which reads as a brief thinning instead.
-  if (anyToWhite) {
-    err = epd_draw_base(epd_full_screen(), passWhiteBuffer, epd_full_screen(),
-                        static_cast<enum EpdDrawMode>(MODE_DU | MODE_PACKING_8PPB | PREVIOUSLY_BLACK),
-                        DRAW_TEMPERATURE_C, NULL, NULL, epd_get_display()->default_waveform);
-  }
-  if (err == EPD_DRAW_SUCCESS && anyToBlack) {
-    err = epd_draw_base(epd_full_screen(), passBlackBuffer, epd_full_screen(),
-                        static_cast<enum EpdDrawMode>(MODE_DU | MODE_PACKING_8PPB | PREVIOUSLY_WHITE),
-                        DRAW_TEMPERATURE_C, NULL, NULL, epd_get_display()->default_waveform);
-  }
-
+  const enum EpdDrawError err = epd_hl_update_screen(&hlState, deghost ? FULL_MODE : PAGE_MODE, panelTemperature());
   const uint32_t elapsed = millis() - start;
   epd_poweroff();
 
@@ -211,9 +277,8 @@ bool push() {
     LOG_ERR("EPD", "Draw failed: err=0x%x", static_cast<int>(err));
     return false;
   }
-
-  memcpy(prevBuffer, panelBuffer, panelBufferBytes);
-  LOG_INF("EPD", "Drew in %lums (toBlack=%d toWhite=%d)", static_cast<unsigned long>(elapsed), anyToBlack, anyToWhite);
+  LOG_INF("EPD", "Drew in %lums (%s, temp=%dC)", static_cast<unsigned long>(elapsed),
+          deghost ? "GC16" : (PAGE_MODE == MODE_DU ? "DU" : "GL16"), panelTemperature());
   return true;
 }
 

@@ -84,22 +84,17 @@ EInkDisplay::RefreshMode convertRefreshMode(HalDisplay::RefreshMode mode) {
 
 void HalDisplay::displayBuffer(HalDisplay::RefreshMode mode, bool turnOffScreen) {
 #ifdef CROSSPOINT_BOARD_HZ52
-  // MODE_DU is a fast two-level waveform that never fully resets particles, so residue
-  // accumulates across differential updates and old text stays faintly visible. Ignoring
-  // `mode` therefore meant the de-ghosting pass the reader already schedules (every
-  // SETTINGS.getRefreshFrequency() pages, via ReaderUtils::displayWithRefreshCycle ->
-  // HALF_REFRESH) was silently dropped, and ghosting only ever built up.
+  // MODE_DU is a fast two-level waveform that deliberately skips the reset phases, so
+  // residue builds up and old text stays faintly visible. The reader already schedules a
+  // de-ghosting pass every SETTINGS.getRefreshFrequency() pages (via
+  // ReaderUtils::displayWithRefreshCycle -> HALF_REFRESH); that becomes a GC16 paint here.
   //
-  // A clear is the only thing that fully resets this panel, so both de-ghosting modes map
-  // onto one: HALF_REFRESH takes the cheaper two-cycle path, FULL_REFRESH the three-cycle
-  // one. Both leave the glass uniformly white, which the push below repaints from.
+  // The de-ghost is a mode on the paint, not a call before it. epd_hl updates the
+  // difference between its front and back buffers and returns early when there is none, so
+  // issuing it before the new frame was expanded into the front buffer found an empty diff
+  // and silently did nothing -- which is why the interval refresh never appeared to run.
   (void)turnOffScreen;
-  if (mode == FULL_REFRESH) {
-    Hz52Display::clear();
-  } else if (mode == HALF_REFRESH) {
-    Hz52Display::deghost();
-  }
-  Hz52Display::push();
+  Hz52Display::push(mode == FULL_REFRESH || mode == HALF_REFRESH);
   return;
 #endif
   if (gpio.deviceIsX3() && mode == RefreshMode::HALF_REFRESH) {

@@ -24,12 +24,15 @@ int panelHeight();
 // the glass, and the heaviest de-ghost.
 void clear();
 
-// Two-cycle de-ghost for the reader's periodic HALF_REFRESH. Cheaper than clear(); still
-// leaves the panel uniformly white, so the next push repaints from a known state.
-void deghost();
+
 
 // Push the framebuffer to the panel.
-bool push();
+//
+// deghost selects MODE_GC16 (a flashing full-reset update) instead of MODE_DU for this
+// paint. It is a mode on the paint rather than a separate call because epd_hl updates the
+// *difference* between its front and back buffers and returns early when there is none --
+// a de-ghost issued before the new frame was expanded found an empty diff and did nothing.
+bool push(bool deghost = false);
 
 // Logical portrait surface (720 x 1280). Applies the measured panel transpose.
 int logicalWidth();
