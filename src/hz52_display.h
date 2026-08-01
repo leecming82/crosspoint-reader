@@ -20,8 +20,13 @@ size_t frameBufferSize();
 int panelWidth();
 int panelHeight();
 
-// Full flash clear. Required before the first push after other firmware owned the glass.
+// Full flash clear (3 cycles). Required before the first push after other firmware owned
+// the glass, and the heaviest de-ghost.
 void clear();
+
+// Two-cycle de-ghost for the reader's periodic HALF_REFRESH. Cheaper than clear(); still
+// leaves the panel uniformly white, so the next push repaints from a known state.
+void deghost();
 
 // Push the framebuffer to the panel.
 bool push();

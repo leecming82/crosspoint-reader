@@ -84,10 +84,21 @@ EInkDisplay::RefreshMode convertRefreshMode(HalDisplay::RefreshMode mode) {
 
 void HalDisplay::displayBuffer(HalDisplay::RefreshMode mode, bool turnOffScreen) {
 #ifdef CROSSPOINT_BOARD_HZ52
-  // Refresh mode is not yet mapped onto epdiy waveforms; every paint uses the 1bpp DU
-  // path (~220 ms). GC16/GL16 selection lands with the greyscale work.
-  (void)mode;
+  // MODE_DU is a fast two-level waveform that never fully resets particles, so residue
+  // accumulates across differential updates and old text stays faintly visible. Ignoring
+  // `mode` therefore meant the de-ghosting pass the reader already schedules (every
+  // SETTINGS.getRefreshFrequency() pages, via ReaderUtils::displayWithRefreshCycle ->
+  // HALF_REFRESH) was silently dropped, and ghosting only ever built up.
+  //
+  // A clear is the only thing that fully resets this panel, so both de-ghosting modes map
+  // onto one: HALF_REFRESH takes the cheaper two-cycle path, FULL_REFRESH the three-cycle
+  // one. Both leave the glass uniformly white, which the push below repaints from.
   (void)turnOffScreen;
+  if (mode == FULL_REFRESH) {
+    Hz52Display::clear();
+  } else if (mode == HALF_REFRESH) {
+    Hz52Display::deghost();
+  }
   Hz52Display::push();
   return;
 #endif
@@ -140,7 +151,12 @@ void HalDisplay::copyGrayscaleBuffers(const uint8_t*, const uint8_t*) {}
 void HalDisplay::copyGrayscaleLsbBuffers(const uint8_t*) {}
 void HalDisplay::copyGrayscaleMsbBuffers(const uint8_t*) {}
 void HalDisplay::cleanupGrayscaleBuffers(const uint8_t*) {}
-void HalDisplay::displayGrayBuffer(bool) { Hz52Display::push(); }
+// Deliberately does NOT push. The greyscale passes clear the shared framebuffer to 0x00
+// (all black) and render plane data into it before calling this; pushing there paints a
+// real near-black frame onto the panel, which is what produced a black after-image that
+// persisted rather than a transient artefact. The BW frame is pushed by displayBuffer()
+// after restoreBwBuffer(), so dropping this present loses nothing.
+void HalDisplay::displayGrayBuffer(bool) {}
 void HalDisplay::writeGrayscalePlaneStrip(bool, const uint8_t*, uint16_t, uint16_t) {}
 bool HalDisplay::supportsStripGrayscale() const { return false; }
 #else

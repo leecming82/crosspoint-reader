@@ -50,10 +50,14 @@ size_t panelBufferBytes = 0;
 bool initialised = false;
 bool panelIsWhite = false;
 
-// Scratch holding the bit-reversed copy handed to epdiy. A second buffer rather than an
-// in-place flip so panelBuffer stays in CrossPoint's convention and is safe to re-push or
-// read back; 115 KB of PSRAM against ~8 MB free.
-uint8_t* pushBuffer = nullptr;
+// Differential-update working set, all PSRAM, all one allocation each for the life of the
+// device. 3 x 115,200 = ~346 KB against ~8 MB free -- versus the 1.84 MB epd_hl_init()
+// would need for its front/back/difference trio, which would also re-open the display_type
+// mirroring question (highlevel.c:58 honours HORIZONTAL_MIRRORED; the low-level path does
+// not). panelBuffer itself stays untouched in CrossPoint's convention.
+uint8_t* prevBuffer = nullptr;        // what we believe is physically on the glass
+uint8_t* passBlackBuffer = nullptr;   // PREVIOUSLY_WHITE pass: drives white -> black
+uint8_t* passWhiteBuffer = nullptr;   // PREVIOUSLY_BLACK pass: drives black -> white
 
 // Flash-resident reverse-bits-in-a-byte table: static const, so it stays out of DRAM.
 constexpr uint8_t reverseByte(uint8_t v) {
@@ -81,21 +85,25 @@ bool begin() {
   epd_init(&epd_board_v7_raw, &ED052TC4, EPD_OPTIONS_DEFAULT);
   epd_set_vcom(VCOM_MV);
 
-  // One allocation for the life of the device; never reallocated per refresh.
+  // One allocation each for the life of the device; never reallocated per refresh.
   panelBufferBytes = static_cast<size_t>(epd_width() / 8) * epd_height();
-  panelBuffer = static_cast<uint8_t*>(heap_caps_malloc(panelBufferBytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-  if (!panelBuffer) {
-    LOG_ERR("EPD", "OOM: %u bytes for panel framebuffer", static_cast<unsigned>(panelBufferBytes));
-    return false;
-  }
-  pushBuffer = static_cast<uint8_t*>(heap_caps_malloc(panelBufferBytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-  if (!pushBuffer) {
-    heap_caps_free(panelBuffer);
-    panelBuffer = nullptr;
-    LOG_ERR("EPD", "OOM: %u bytes for push scratch", static_cast<unsigned>(panelBufferBytes));
+  uint8_t** buffers[] = {&panelBuffer, &prevBuffer, &passBlackBuffer, &passWhiteBuffer};
+  for (uint8_t** slot : buffers) {
+    *slot = static_cast<uint8_t*>(heap_caps_malloc(panelBufferBytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    if (*slot != nullptr) continue;
+    LOG_ERR("EPD", "OOM: %u bytes for panel buffers", static_cast<unsigned>(panelBufferBytes));
+    for (uint8_t** done : buffers) {
+      if (*done) {
+        heap_caps_free(*done);
+        *done = nullptr;
+      }
+    }
     return false;
   }
   memset(panelBuffer, 0xFF, panelBufferBytes);  // 0xFF = white, same polarity as EInkDisplay
+  // prevBuffer records what is on the glass. begin() is always followed by a clear() from
+  // HalDisplay, which re-whitens it; seed it white so the two agree even if that changes.
+  memset(prevBuffer, 0xFF, panelBufferBytes);
 
   initialised = true;
   LOG_INF("EPD", "Panel ready: %dx%d, %u byte 1bpp buffer, VCOM -%d.%02d V", epd_width(), epd_height(),
@@ -111,34 +119,90 @@ int panelHeight() { return epd_height(); }
 void clear() {
   if (!initialised) return;
   // Mandatory on first boot after other firmware: epdiy has no idea what is physically on
-  // the glass, and a differential update would leave the previous image in place.
+  // the glass, and a differential update would leave the previous image in place. Also the
+  // periodic full refresh that clears accumulated DU ghosting.
+  const uint32_t start = millis();
   epd_poweron();
   epd_clear();
   epd_poweroff();
+  LOG_INF("EPD", "Full clear (3 cycles) in %lums", static_cast<unsigned long>(millis() - start));
   panelIsWhite = true;
+  if (prevBuffer) {
+    memset(prevBuffer, 0xFF, panelBufferBytes);  // glass is now uniformly white
+  }
+}
+
+// Lighter de-ghost: two clear cycles instead of epd_clear()'s three (render.c:219), at
+// the same 12 us cycle time. MODE_DU never fully resets particles, so residue builds up
+// over successive differential updates -- this is the periodic purge the reader already
+// asks for every SETTINGS.getRefreshFrequency() pages via HALF_REFRESH.
+void deghost() {
+  if (!initialised) return;
+  const uint32_t start = millis();
+  epd_poweron();
+  epd_clear_area_cycles(epd_full_screen(), 2, 12);
+  epd_poweroff();
+  LOG_INF("EPD", "De-ghost (2 cycles) in %lums", static_cast<unsigned long>(millis() - start));
+  panelIsWhite = true;
+  if (prevBuffer) {
+    memset(prevBuffer, 0xFF, panelBufferBytes);
+  }
 }
 
 bool push() {
   if (!initialised) return false;
 
-  // MODE_PACKING_8PPB needs PREVIOUSLY_WHITE/BLACK: a 1bpp buffer carries no "from" state,
-  // so without it find_lut_functions() has no LUT and the draw fails with
-  // EPD_DRAW_LOOKUP_NOT_IMPLEMENTED. Only valid while the panel really is uniform.
-  if (!panelIsWhite) clear();
-
-  // Convert MSB-first (CrossPoint) to the order epdiy's 8ppB LUT expects. See the file
-  // header: without this every 8-pixel run is mirrored, which the transpose turns into
-  // glyph rows displaced vertically in 8-pixel groups.
+  // Two-pass differential against the previous frame. Each 8ppB LUT only ever *drives*
+  // pixels one way and no-ops the rest -- start_at_white drives 0-bits to black and leaves
+  // 1-bits alone; start_at_black drives 1-bits to white and leaves 0-bits alone. Running
+  // both passes therefore reproduces an arbitrary frame from an arbitrary previous frame
+  // without ever forcing the glass uniform.
+  //
+  // The earlier code cleared before every push instead, because PREVIOUSLY_WHITE is only
+  // valid when the panel really is white. That was correct but cost a full epd_clear()
+  // (~2.9 s of visible flashing) on every single refresh.
+  //
+  // Bit semantics here are CrossPoint's: 1 = white, 0 = black.
+  //   pass A (drive to black): 0 where prev=1 and cur=0  ->  ~(prev & ~cur)
+  //   pass B (drive to white): 1 where prev=0 and cur=1  ->  ~prev & cur
+  bool anyToBlack = false;
+  bool anyToWhite = false;
   for (size_t i = 0; i < panelBufferBytes; i++) {
-    pushBuffer[i] = REVERSE_BITS.v[panelBuffer[i]];
+    const uint8_t prev = prevBuffer[i];
+    const uint8_t cur = panelBuffer[i];
+    const uint8_t toBlack = static_cast<uint8_t>(~(prev & static_cast<uint8_t>(~cur)));
+    const uint8_t toWhite = static_cast<uint8_t>(static_cast<uint8_t>(~prev) & cur);
+    if (toBlack != 0xFF) anyToBlack = true;
+    if (toWhite != 0x00) anyToWhite = true;
+    // Bit order still has to be flipped for epdiy (see the file header).
+    passBlackBuffer[i] = REVERSE_BITS.v[toBlack];
+    passWhiteBuffer[i] = REVERSE_BITS.v[toWhite];
+  }
+
+  if (!anyToBlack && !anyToWhite) {
+    return true;  // nothing changed; do not wake the rails
   }
 
   epd_poweron();
   const uint32_t start = millis();
-  const enum EpdDrawError err = epd_draw_base(
-      epd_full_screen(), pushBuffer, epd_full_screen(),
-      static_cast<enum EpdDrawMode>(MODE_DU | MODE_PACKING_8PPB | PREVIOUSLY_WHITE), DRAW_TEMPERATURE_C, NULL, NULL,
-      epd_get_display()->default_waveform);
+  enum EpdDrawError err = EPD_DRAW_SUCCESS;
+
+  // Erase before draw. The two passes are visibly separate (~220 ms each), so the order
+  // decides what the panel shows in between: draw-then-erase leaves the *union* of the old
+  // and new frames on screen -- every outgoing glyph plus every incoming one, which reads
+  // as a black after-image on each page turn. Erase-then-draw leaves the intersection,
+  // which reads as a brief thinning instead.
+  if (anyToWhite) {
+    err = epd_draw_base(epd_full_screen(), passWhiteBuffer, epd_full_screen(),
+                        static_cast<enum EpdDrawMode>(MODE_DU | MODE_PACKING_8PPB | PREVIOUSLY_BLACK),
+                        DRAW_TEMPERATURE_C, NULL, NULL, epd_get_display()->default_waveform);
+  }
+  if (err == EPD_DRAW_SUCCESS && anyToBlack) {
+    err = epd_draw_base(epd_full_screen(), passBlackBuffer, epd_full_screen(),
+                        static_cast<enum EpdDrawMode>(MODE_DU | MODE_PACKING_8PPB | PREVIOUSLY_WHITE),
+                        DRAW_TEMPERATURE_C, NULL, NULL, epd_get_display()->default_waveform);
+  }
+
   const uint32_t elapsed = millis() - start;
   epd_poweroff();
 
@@ -147,7 +211,9 @@ bool push() {
     LOG_ERR("EPD", "Draw failed: err=0x%x", static_cast<int>(err));
     return false;
   }
-  LOG_INF("EPD", "Drew full screen in %lums", static_cast<unsigned long>(elapsed));
+
+  memcpy(prevBuffer, panelBuffer, panelBufferBytes);
+  LOG_INF("EPD", "Drew in %lums (toBlack=%d toWhite=%d)", static_cast<unsigned long>(elapsed), anyToBlack, anyToWhite);
   return true;
 }
 
