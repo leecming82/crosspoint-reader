@@ -134,6 +134,32 @@ void HalPowerManager::startDeepSleep(HalGPIO& gpio) const {
   }
 #endif
 
+#ifdef CROSSPOINT_BOARD_HZ52
+  if (gpio.deviceIsHz52()) {
+    // Must not fall through to the X4 path below. That path drives GPIO13 low and latches
+    // it (X4's battery-latch MOSFET, but the TPS65185 INT line here) and arms ext1 wake on
+    // InputManager::POWER_BUTTON_PIN = GPIO3, which on this board is the SD SPI clock. No
+    // button can assert GPIO3, so the device slept and never woke.
+    //
+    // Wake needs an RTC-capable pad (GPIO0-21 on the S3). Of the three buttons only GPIO0
+    // and GPIO21 qualify, and GPIO0 is the boot strap -- held low across reset the chip
+    // enters download mode instead of booting. GPIO21 is therefore the only usable wake
+    // source: sleep on Power, wake on the lower button. Revisit with the milestone 8
+    // mapping, ideally by moving Power onto GPIO21.
+    while (gpio.isPressed(HalGPIO::BTN_POWER)) {
+      delay(50);
+      gpio.update();
+    }
+#ifdef ENABLE_SERIAL_LOG
+    logSerial.end();
+#endif
+    pinMode(HZ52_BTN_PAIR_LOWER, INPUT_PULLUP);
+    esp_sleep_enable_ext1_wakeup(1ULL << HZ52_BTN_PAIR_LOWER, ESP_EXT1_WAKEUP_ANY_LOW);
+    esp_deep_sleep_start();
+    return;
+  }
+#endif
+
   // Ensure that the power button has been released to avoid immediately turning back on if you're holding it
   while (gpio.isPressed(HalGPIO::BTN_POWER)) {
     delay(50);
