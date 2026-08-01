@@ -2,7 +2,7 @@
 
 #include <Arduino.h>
 
-enum class BoardModel : uint8_t { X4, X3, MurphyM4 };
+enum class BoardModel : uint8_t { X4, X3, MurphyM4, HZ52 };
 enum class SocFamily : uint8_t { ESP32C3, ESP32S3 };
 
 struct BoardCapabilityProfile {

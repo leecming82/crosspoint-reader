@@ -113,6 +113,57 @@ constexpr BoardCapabilityProfile MURPHY_M4_PROFILE = {
     .sdD3Pin = 14,
 };
 
+// HZ5.2: 1280x720 ED052TC4 panel driven over an 8-bit parallel bus by epdiy, not SPI.
+// Capabilities start deliberately conservative and are promoted only as hardware
+// evidence lands (same policy as the Murphy bring-up):
+//   - psramCacheBudgetBytes stays 0 until the epdiy framebuffer pair (~900 KB of
+//     PSRAM for front+back at 4bpp) is allocated and the remainder measured.
+//   - displayGrayscaleBits stays 1 until the 4bpp render path exists; the panel
+//     supports 16 levels via a borrowed ED047 waveform.
+//   - displayPartialRefresh stays false until proven on our own driver.
+// SD is SPI-attached (FSPI CLK=3, MISO=2, MOSI=43), so every sdMmc* field is
+// inapplicable and left at the X4-style defaults.
+// See docs/hz52-device-migration-comparison.md for the full pin map.
+constexpr BoardCapabilityProfile HZ52_PROFILE = {
+    .model = BoardModel::HZ52,
+    .id = "hz52",
+    .label = "HZ5.2",
+    .socFamily = SocFamily::ESP32S3,
+    .hasPsram = true,
+    .psramCacheBudgetBytes = 0,
+    .displayWidth = 1280,
+    .displayHeight = 720,
+    .visibleWidth = 1280,
+    .visibleHeight = 720,
+    .displayGrayscaleBits = 1,
+    .displayPartialRefresh = false,
+    .displaySingleBufferRequired = false,
+    .inputButtonCount = 3,
+    .inputHasTouch = false,
+    .touchController = "none",
+    .hasFrontlight = false,
+    .frontlightChannels = 0,
+    .hasRtc = false,
+    .hasBatteryGauge = false,
+    .hasChargerControl = false,
+    .hasTiltSensor = false,
+    .hasEnvironmentalSensor = false,
+    .sdRequired = true,
+    .sdUsesSdMmc = false,
+    .sdMmc4Bit = false,
+    // GPIO46 is a real power gate, not a buffer enable: toggling it while mounted makes
+    // the card lose state entirely. Chip-select is GPIO44; the SD_MMC pin fields below
+    // do not apply because this board runs SD over SPI, one lane, like X3/X4.
+    .sdEnablePin = 46,
+    .sdEnableActiveLow = false,
+    .sdClkPin = -1,
+    .sdCmdPin = -1,
+    .sdD0Pin = -1,
+    .sdD1Pin = -1,
+    .sdD2Pin = -1,
+    .sdD3Pin = -1,
+};
+
 }  // namespace
 
 const BoardCapabilityProfile& boardProfileFor(BoardModel model) {
@@ -121,6 +172,8 @@ const BoardCapabilityProfile& boardProfileFor(BoardModel model) {
       return X3_PROFILE;
     case BoardModel::MurphyM4:
       return MURPHY_M4_PROFILE;
+    case BoardModel::HZ52:
+      return HZ52_PROFILE;
     case BoardModel::X4:
     default:
       return X4_PROFILE;
