@@ -1,6 +1,16 @@
 #include <HalDisplay.h>
 #include <HalGPIO.h>
 
+#ifdef CROSSPOINT_BOARD_HZ52
+// HZ5.2 has no display controller: the panel is an 8-bit parallel bus driven by epdiy,
+// with the SoC acting as the timing controller. EInkDisplay's SSD1677 command protocol has
+// no meaning here, so every method routes to Hz52Display instead. The einkDisplay member
+// is still constructed (its pins are all -1 on this board) but is never driven.
+#include "../../src/hz52_display.h"
+
+#include <cstring>
+#endif
+
 // Global HalDisplay instance
 HalDisplay display;
 
@@ -11,6 +21,14 @@ HalDisplay::HalDisplay() : einkDisplay(EPD_SCLK, EPD_MOSI, EPD_CS, EPD_DC, EPD_R
 HalDisplay::~HalDisplay() {}
 
 void HalDisplay::begin(bool seamless) {
+#ifdef CROSSPOINT_BOARD_HZ52
+  (void)seamless;
+  Hz52Display::begin();
+  // The panel physically retains whatever the previous firmware left on it, and epdiy has
+  // no way to know what that is, so the first paint must be a real clear.
+  Hz52Display::clear();
+  return;
+#else
   // Set X3-specific panel mode before initializing.
   if (gpio.deviceIsX3()) {
     einkDisplay.setDisplayX3();
@@ -31,9 +49,16 @@ void HalDisplay::begin(bool seamless) {
       wakeupReason == HalGPIO::WakeupReason::Other) {
     einkDisplay.requestResync();
   }
+#endif
 }
 
-void HalDisplay::clearScreen(uint8_t color) const { einkDisplay.clearScreen(color); }
+void HalDisplay::clearScreen(uint8_t color) const {
+#ifdef CROSSPOINT_BOARD_HZ52
+  memset(Hz52Display::frameBuffer(), color, Hz52Display::frameBufferSize());
+#else
+  einkDisplay.clearScreen(color);
+#endif
+}
 
 void HalDisplay::drawImage(const uint8_t* imageData, uint16_t x, uint16_t y, uint16_t w, uint16_t h,
                            bool fromProgmem) const {
@@ -58,6 +83,14 @@ EInkDisplay::RefreshMode convertRefreshMode(HalDisplay::RefreshMode mode) {
 }
 
 void HalDisplay::displayBuffer(HalDisplay::RefreshMode mode, bool turnOffScreen) {
+#ifdef CROSSPOINT_BOARD_HZ52
+  // Refresh mode is not yet mapped onto epdiy waveforms; every paint uses the 1bpp DU
+  // path (~220 ms). GC16/GL16 selection lands with the greyscale work.
+  (void)mode;
+  (void)turnOffScreen;
+  Hz52Display::push();
+  return;
+#endif
   if (gpio.deviceIsX3() && mode == RefreshMode::HALF_REFRESH) {
     einkDisplay.requestResync(1);
   }
@@ -66,6 +99,13 @@ void HalDisplay::displayBuffer(HalDisplay::RefreshMode mode, bool turnOffScreen)
 }
 
 void HalDisplay::refreshDisplay(HalDisplay::RefreshMode mode, bool turnOffScreen) {
+#ifdef CROSSPOINT_BOARD_HZ52
+  (void)mode;
+  (void)turnOffScreen;
+  Hz52Display::clear();
+  Hz52Display::push();
+  return;
+#endif
   if (gpio.deviceIsX3() && mode == RefreshMode::HALF_REFRESH) {
     einkDisplay.requestResync(1);
   }
@@ -73,10 +113,37 @@ void HalDisplay::refreshDisplay(HalDisplay::RefreshMode mode, bool turnOffScreen
   einkDisplay.refreshDisplay(convertRefreshMode(mode), turnOffScreen);
 }
 
-void HalDisplay::deepSleep() { einkDisplay.deepSleep(); }
+void HalDisplay::deepSleep() {
+#ifdef CROSSPOINT_BOARD_HZ52
+  // epdiy powers the panel down after every draw; nothing further to release here.
+  return;
+#else
+  einkDisplay.deepSleep();
+#endif
+}
 
-uint8_t* HalDisplay::getFrameBuffer() const { return einkDisplay.getFrameBuffer(); }
+uint8_t* HalDisplay::getFrameBuffer() const {
+#ifdef CROSSPOINT_BOARD_HZ52
+  return Hz52Display::frameBuffer();
+#else
+  return einkDisplay.getFrameBuffer();
+#endif
+}
 
+#ifdef CROSSPOINT_BOARD_HZ52
+// The two-plane greyscale surface below exists to squeeze 2-bit AA out of a 48 KB
+// framebuffer on a C3 with no PSRAM, and maps onto SSD1677's BW/RED RAM. HZ5.2 has
+// neither: 16-level greyscale here means a 4bpp buffer through epdiy. Inert until that
+// path exists; the board profile reports displayGrayscaleBits = 1 so nothing should call
+// these.
+void HalDisplay::copyGrayscaleBuffers(const uint8_t*, const uint8_t*) {}
+void HalDisplay::copyGrayscaleLsbBuffers(const uint8_t*) {}
+void HalDisplay::copyGrayscaleMsbBuffers(const uint8_t*) {}
+void HalDisplay::cleanupGrayscaleBuffers(const uint8_t*) {}
+void HalDisplay::displayGrayBuffer(bool) { Hz52Display::push(); }
+void HalDisplay::writeGrayscalePlaneStrip(bool, const uint8_t*, uint16_t, uint16_t) {}
+bool HalDisplay::supportsStripGrayscale() const { return false; }
+#else
 void HalDisplay::copyGrayscaleBuffers(const uint8_t* lsbBuffer, const uint8_t* msbBuffer) {
   einkDisplay.copyGrayscaleBuffers(lsbBuffer, msbBuffer);
 }
@@ -95,11 +162,36 @@ void HalDisplay::writeGrayscalePlaneStrip(bool lsbPlane, const uint8_t* rows, ui
 }
 
 bool HalDisplay::supportsStripGrayscale() const { return einkDisplay.supportsStripGrayscale(); }
+#endif
 
-uint16_t HalDisplay::getDisplayWidth() const { return einkDisplay.getDisplayWidth(); }
+uint16_t HalDisplay::getDisplayWidth() const {
+#ifdef CROSSPOINT_BOARD_HZ52
+  return Hz52Display::panelWidth();
+#else
+  return einkDisplay.getDisplayWidth();
+#endif
+}
 
-uint16_t HalDisplay::getDisplayHeight() const { return einkDisplay.getDisplayHeight(); }
+uint16_t HalDisplay::getDisplayHeight() const {
+#ifdef CROSSPOINT_BOARD_HZ52
+  return Hz52Display::panelHeight();
+#else
+  return einkDisplay.getDisplayHeight();
+#endif
+}
 
-uint16_t HalDisplay::getDisplayWidthBytes() const { return einkDisplay.getDisplayWidthBytes(); }
+uint16_t HalDisplay::getDisplayWidthBytes() const {
+#ifdef CROSSPOINT_BOARD_HZ52
+  return Hz52Display::panelWidth() / 8;
+#else
+  return einkDisplay.getDisplayWidthBytes();
+#endif
+}
 
-uint32_t HalDisplay::getBufferSize() const { return einkDisplay.getBufferSize(); }
+uint32_t HalDisplay::getBufferSize() const {
+#ifdef CROSSPOINT_BOARD_HZ52
+  return Hz52Display::frameBufferSize();
+#else
+  return einkDisplay.getBufferSize();
+#endif
+}

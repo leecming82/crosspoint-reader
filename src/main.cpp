@@ -434,7 +434,6 @@ void enterDeepSleep(bool fromTimeout = false) {
 }
 
 #ifdef CROSSPOINT_BOARD_HZ52
-void hz52DisplayDemo();  // src/hz52_display.cpp
 
 // Do not touch the I2C bus (SDA=39 / SCL=40) with Arduino Wire on this board: epdiy owns
 // it through IDF's driver for VCOM and panel temperature, and claiming it first makes
@@ -542,24 +541,24 @@ void setup() {
           board.hasBatteryGauge, board.hasChargerControl, board.hasTiltSensor, board.hasEnvironmentalSensor);
   HalSystem::logBootDiagnostics(board);
 
-#ifdef CROSSPOINT_BOARD_HZ52
-  hz52DisplayDemo();
-#endif
-
   // SD Card Initialization
   // We need 6 open files concurrently when parsing a new chapter
   const bool storageReady = Storage.begin();
   HalSystem::logStorageDiagnostics(storageReady);
 
 #ifdef CROSSPOINT_BOARD_HZ52
-  // HZ5.2 bring-up guard: storage and the panel both work, but the panel is driven
-  // directly by Hz52Display rather than through HalDisplay/GfxRenderer, so the normal
-  // activity stack cannot render yet. setupDisplayAndFonts() must not run: EPD_* is
-  // unmapped for this board in HalGPIO.h and the SSD1677 path it initialises does not
-  // exist here. Lift this once Hz52Display is folded in behind the board profile.
+  // HZ5.2 bring-up guard. The panel now renders through HalDisplay/GfxRenderer, so the
+  // display is no longer the blocker; two things still are, and both abort or strand the
+  // boot rather than degrade gracefully:
+  //   1. HalEnvSensor::begin() calls Wire.begin(ENV_SDA, ENV_SCL) unconditionally. epdiy
+  //      owns SDA=39/SCL=40 through IDF for VCOM and panel temperature, and claiming the
+  //      bus with Arduino Wire makes epd_board_init() fail its i2c assert and abort.
+  //   2. Input is not wired: HalGPIO::begin() bypasses InputManager on this board (it
+  //      assumes POWER_BUTTON_PIN=3 and an ADC ladder on GPIO1/2), so the three buttons
+  //      reach no activity and the UI would render but not navigate.
+  // Lift once both are addressed -- see milestone 5 in the migration doc.
   hz52StorageSanity(storageReady);
-  LOG_INF("MAIN", "HZ5.2 bring-up: storage=%d, diagnostics only (panel not wired into HalDisplay yet)",
-          storageReady);
+  LOG_INF("MAIN", "HZ5.2 bring-up: storage=%d, diagnostics only (input and I2C ownership pending)", storageReady);
   bootDiagnosticsOnly = true;
   return;
 #endif

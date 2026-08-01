@@ -192,14 +192,23 @@ void GfxRenderer::insertFont(const int fontId, EpdFontFamily font) {
 
 // Translate logical (x,y) coordinates to physical panel coordinates based on current orientation
 // This should always be inlined for better performance
+// Whether the panel's row index runs opposite to the portrait reading direction. True for
+// the SSD1677 boards; false for HZ5.2, whose parallel panel scans the other way, making
+// its portrait mapping a pure transpose with no sign flip. Measured with an origin-"L"
+// pattern -- see docs/hz52-device-migration-comparison.md.
+#ifdef CROSSPOINT_BOARD_HZ52
+static constexpr bool kPanelInvertsPortraitAxis = false;
+#else
+static constexpr bool kPanelInvertsPortraitAxis = true;
+#endif
+
 static inline void rotateCoordinates(const GfxRenderer::Orientation orientation, const int x, const int y, int* phyX,
                                      int* phyY, const uint16_t panelWidth, const uint16_t panelHeight) {
   switch (orientation) {
     case GfxRenderer::Portrait: {
-      // Logical portrait (480x800) → panel (800x480)
-      // Rotation: 90 degrees clockwise
+      // Logical portrait → panel, rotated 90 degrees clockwise.
       *phyX = y;
-      *phyY = panelHeight - 1 - x;
+      *phyY = kPanelInvertsPortraitAxis ? (panelHeight - 1 - x) : x;
       break;
     }
     case GfxRenderer::LandscapeClockwise: {
@@ -209,10 +218,9 @@ static inline void rotateCoordinates(const GfxRenderer::Orientation orientation,
       break;
     }
     case GfxRenderer::PortraitInverted: {
-      // Logical portrait (480x800) → panel (800x480)
-      // Rotation: 90 degrees counter-clockwise
+      // Logical portrait → panel, rotated 90 degrees counter-clockwise.
       *phyX = panelWidth - 1 - y;
-      *phyY = x;
+      *phyY = kPanelInvertsPortraitAxis ? x : (panelHeight - 1 - x);
       break;
     }
     case GfxRenderer::LandscapeCounterClockwise: {

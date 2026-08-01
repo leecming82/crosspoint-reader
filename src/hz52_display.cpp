@@ -10,9 +10,18 @@
 //
 // Deliberately uses the low-level epd_draw_base() rather than the epd_hl_* API: the
 // high-level state allocates 1.84 MB of PSRAM for its front/back diff pair, while a 1bpp
-// buffer is 115,200 bytes. MODE_PACKING_8PPB is "0 = black, 1 = white, MSB leftmost",
-// which is exactly CrossPoint's existing framebuffer convention, so GfxRenderer's output
-// can eventually be handed over with no conversion at all.
+// buffer is 115,200 bytes.
+//
+// MODE_PACKING_8PPB shares CrossPoint's polarity (0 = black, 1 = white) but NOT its bit
+// order within a byte. CrossPoint packs MSB = leftmost pixel; epdiy's 8ppB LUT walks the
+// byte the other way (lut_8ppB_start_at_white[0x01] alters the low output slot and [0x80]
+// the high one, and the panel shifts that run out in the opposite sense). Handing the
+// buffer over unconverted mirrors every 8-pixel run.
+//
+// That is invisible on solid fills, which is why the border and rules looked crisp, but it
+// wrecks glyphs -- and because the panel is transposed (phyX is *logical y*), an 8-pixel
+// run is vertical on screen, so glyph rows appeared displaced up/down in 8-pixel groups.
+// Converting here keeps CrossPoint's MSB-first convention intact everywhere else.
 #ifdef CROSSPOINT_BOARD_HZ52
 
 #include "hz52_display.h"
@@ -41,6 +50,27 @@ size_t panelBufferBytes = 0;
 bool initialised = false;
 bool panelIsWhite = false;
 
+// Scratch holding the bit-reversed copy handed to epdiy. A second buffer rather than an
+// in-place flip so panelBuffer stays in CrossPoint's convention and is safe to re-push or
+// read back; 115 KB of PSRAM against ~8 MB free.
+uint8_t* pushBuffer = nullptr;
+
+// Flash-resident reverse-bits-in-a-byte table: static const, so it stays out of DRAM.
+constexpr uint8_t reverseByte(uint8_t v) {
+  uint8_t r = 0;
+  for (int i = 0; i < 8; i++) r = static_cast<uint8_t>((r << 1) | ((v >> i) & 1));
+  return r;
+}
+struct ReverseTable {
+  uint8_t v[256];
+};
+constexpr ReverseTable makeReverseTable() {
+  ReverseTable t{};
+  for (int i = 0; i < 256; i++) t.v[i] = reverseByte(static_cast<uint8_t>(i));
+  return t;
+}
+constexpr ReverseTable REVERSE_BITS = makeReverseTable();
+
 }  // namespace
 
 namespace Hz52Display {
@@ -56,6 +86,13 @@ bool begin() {
   panelBuffer = static_cast<uint8_t*>(heap_caps_malloc(panelBufferBytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
   if (!panelBuffer) {
     LOG_ERR("EPD", "OOM: %u bytes for panel framebuffer", static_cast<unsigned>(panelBufferBytes));
+    return false;
+  }
+  pushBuffer = static_cast<uint8_t*>(heap_caps_malloc(panelBufferBytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+  if (!pushBuffer) {
+    heap_caps_free(panelBuffer);
+    panelBuffer = nullptr;
+    LOG_ERR("EPD", "OOM: %u bytes for push scratch", static_cast<unsigned>(panelBufferBytes));
     return false;
   }
   memset(panelBuffer, 0xFF, panelBufferBytes);  // 0xFF = white, same polarity as EInkDisplay
@@ -89,10 +126,17 @@ bool push() {
   // EPD_DRAW_LOOKUP_NOT_IMPLEMENTED. Only valid while the panel really is uniform.
   if (!panelIsWhite) clear();
 
+  // Convert MSB-first (CrossPoint) to the order epdiy's 8ppB LUT expects. See the file
+  // header: without this every 8-pixel run is mirrored, which the transpose turns into
+  // glyph rows displaced vertically in 8-pixel groups.
+  for (size_t i = 0; i < panelBufferBytes; i++) {
+    pushBuffer[i] = REVERSE_BITS.v[panelBuffer[i]];
+  }
+
   epd_poweron();
   const uint32_t start = millis();
   const enum EpdDrawError err = epd_draw_base(
-      epd_full_screen(), panelBuffer, epd_full_screen(),
+      epd_full_screen(), pushBuffer, epd_full_screen(),
       static_cast<enum EpdDrawMode>(MODE_DU | MODE_PACKING_8PPB | PREVIOUSLY_WHITE), DRAW_TEMPERATURE_C, NULL, NULL,
       epd_get_display()->default_waveform);
   const uint32_t elapsed = millis() - start;
@@ -133,30 +177,5 @@ int logicalWidth() { return epd_height(); }   // 720
 int logicalHeight() { return epd_width(); }   // 1280
 
 }  // namespace Hz52Display
-
-// Bring-up demo: draw a portrait "page" of decreasing-width bars, so correct orientation
-// is obvious at a glance -- it should read as left-aligned text lines running down the
-// portrait screen, not sideways.
-void hz52DisplayDemo() {
-  if (!Hz52Display::begin()) return;
-
-  const int lw = Hz52Display::logicalWidth();
-  const int lh = Hz52Display::logicalHeight();
-  memset(Hz52Display::frameBuffer(), 0xFF, Hz52Display::frameBufferSize());
-
-  Hz52Display::fillLogicalRect(0, 0, lw, 8, true);            // top rule, full width
-  Hz52Display::fillLogicalRect(0, lh - 8, lw, 8, true);       // bottom rule
-  static const int widths[] = {88, 72, 90, 55, 84, 68, 40};   // ragged right, like text
-  int y = 80;
-  for (const int pct : widths) {
-    Hz52Display::fillLogicalRect(40, y, (lw - 80) * pct / 100, 26, true);
-    y += 60;
-  }
-  Hz52Display::fillLogicalRect(40, lh - 90, 120, 26, true);   // footer marker, bottom-left
-
-  LOG_INF("EPD", "Demo page: logical %dx%d portrait", lw, lh);
-  Hz52Display::clear();
-  Hz52Display::push();
-}
 
 #endif

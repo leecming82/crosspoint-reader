@@ -315,9 +315,20 @@ re-initialised on wake** — a resumed mount will not survive the gate cycling. 
 unidentified, but are now known *not* to gate either SD or I²C, which narrows them to panel control
 (`PWRUP`, `VCOM_CTRL`, `OE`, `MODE`).
 
-**4. Display bring-up (epdiy, 1bpp) — done (2026-07-27). Panel renders portrait pages.**
+**4. Display bring-up (epdiy, 1bpp) — done (2026-08-01). Renders through `HalDisplay`/`GfxRenderer`.**
 
-The panel powers, clears, and draws. A 1bpp full-screen update completes in **221 ms**.
+The panel powers, clears, and draws. A 1bpp full-screen update completes in **221 ms** (**232 ms** including
+the bit-order conversion below).
+
+`HalDisplay` now routes every method to `Hz52Display` under `CROSSPOINT_BOARD_HZ52`, so `GfxRenderer` draws
+into the framebuffer `HalDisplay` hands it and activities need no board-specific code. Text and shapes render
+correctly in logical portrait. Two things were needed beyond the driver itself:
+
+- **Orientation.** The panel is landscape-native (`1280x720`) and the transform is a pure transpose
+  (`phyX = logical y`, `phyY = logical x`), measured with an asymmetric origin pattern rather than assumed.
+  `GfxRenderer` gained `kPanelInvertsPortraitAxis` (false for HZ5.2) parameterising the Portrait and
+  PortraitInverted mappings. `display_type` proved inert on the LCD path.
+- **Bit order.** See [The 8PPB bit-order trap](#the-8ppb-bit-order-trap).
 
 **No custom board definition was needed.** HZ5.2 is an epdiy V7 derivative with the PCA9555 expander
 removed, which upstream already ships as `epd_board_v7_raw` ("a small v7 board without IO expander targeted
@@ -356,8 +367,8 @@ the existing mechanism rather than adding one.
 
 **Memory: use the low-level API, not `epd_hl_*`.** `epd_hl_init()` allocates **1.84 MB** of PSRAM for its
 front/back diff pair. `epd_draw_base()` with `MODE_PACKING_8PPB` takes a **115,200-byte** 1bpp buffer — a 16×
-saving — and that packing is "0 = black, 1 = white, MSB leftmost", *exactly* CrossPoint's existing framebuffer
-convention, so our buffer can be pushed with **no conversion**. This makes render model (a) the proven path.
+saving. This makes render model (a) the proven path. The packing shares CrossPoint's polarity but **not** its
+bit order — see "The 8PPB bit-order trap" below, which cost the most debugging time of anything in milestone 4.
 
 **Pixel clock is halved to 11 MHz** because Arduino's prebuilt libs use a 32-byte data cache line; epdiy
 reduces the clock rather than risk coherency faults. Stock is IDF-native and gets 22 MHz. Largely moot in
@@ -389,8 +400,46 @@ which is exactly what happened on the first successful refresh.
 device, never per refresh. It tracks whether the panel is uniform and self-clears when `PREVIOUSLY_WHITE`
 would otherwise be invalid, since that flag is a correctness requirement rather than an optimisation.
 
-Because the buffer's packing and polarity are identical to `EInkDisplay`'s (`0 = black`, MSB leftmost,
-`0xFF` = white), `GfxRenderer` output can eventually be handed over with **no conversion layer at all**.
+### The 8PPB bit-order trap
+
+The claim carried through most of milestone 4 — that 8PPB is byte-for-byte CrossPoint's format — is **wrong**,
+and it was wrong in the most expensive possible way: five of six properties match, so the buffer renders a
+recognisable image and looks correct on anything solid.
+
+| Property | `EInkDisplay` (SSD1677) | epdiy `MODE_PACKING_8PPB` |
+| --- | --- | --- |
+| Bits per pixel | 1 | 1 |
+| Pixels per byte | 8 | 8 |
+| Polarity | `0` = black, `1` = white | same |
+| Row order / stride | row-major, `width / 8` | same |
+| **Bit order within a byte** | **MSB = first pixel** | **LSB = first pixel** |
+
+Evidence, from `lut_8ppB_start_at_white` in `.pio/libdeps/hz52/epdiy/src/output_common/lut.c`: `lut[0x01]`
+(input LSB set) alters the *lowest* output slot and `lut[0x80]` (input MSB set) the *highest*, and the panel
+shifts that run out in the opposite sense to ours. `lut[0x00] = 0x5555` (all slots `01`, drive to black) and
+`lut[0xFF] = 0x0000` confirm the shared polarity.
+
+**Why it hid.** Reversing a byte whose 8 bits are all equal is a no-op, so filled rectangles, rules and
+borders are unaffected apart from a ≤7 px nudge on their edge bytes. Every early test was solid shapes, so
+the wrong assumption looked confirmed. Glyph strokes are 1–2 px wide, so nearly every byte is a mixed pattern
+and nearly every one was mirrored.
+
+**Why it did not look like a packing bug.** Because the panel is transposed (`phyX` is *logical y*), the
+8-pixel byte group runs **vertically** on screen. Mirroring inside a byte flips 8 screen rows top-to-bottom,
+so horizontal glyph strokes were displaced up and down in 8-row bands — presenting as a layout or font fault,
+not a bit-order one. On a non-transposed panel the same bug would smear horizontally, which is far more
+recognisable.
+
+**Fix:** convert at the epdiy boundary in `Hz52Display::push()` via a 256-entry `constexpr` reverse table
+(flash-resident, no DRAM cost) into a second PSRAM scratch buffer. ~11 ms per full push against a 220 ms draw.
+Deliberately *not* in `GfxRenderer::drawPixel` — that is the hottest path in the renderer and shared by every
+board, and bit order is a property of this panel's interface, not of CrossPoint's framebuffer. One convention
+holds everywhere upstream; only the push adapts.
+
+**Method note.** Three hypotheses reasoned from source were all wrong (font decompression, 2-bit misread,
+`drawLine` fast path). Two measurements settled it: dumping the glyph bitmap both ways proved the font data
+and decode correct, then hand-blitting a glyph through `drawPixel` put the fault *below* the renderer, which
+no amount of reading `drawText` would have shown. Prefer the measurement.
 
 **Core affinity resolved — and there is no choice to make.** `render.c:316` creates an `epd_prep` feed task
 **pinned to every core** (`xTaskCreatePinnedToCore(..., i)`) at `configMAX_PRIORITIES - 1`, the highest priority
@@ -410,7 +459,13 @@ render through the normal path. Deliberately **not** attempted as part of the ti
 SSD1677-shaped grayscale surface (`copyGrayscale*`, `writeGrayscalePlaneStrip`) that has no analogue here.
 Rewiring that touches every board and belongs with the render-path work, not with a cleanup commit.
 
-**5. Physical button input — not started.** Pins are known (`38`, `0`, `21`); build the 3-button + long-press event model behind a capability check. Document `GPIO0`'s boot-strap role.
+**5. Physical button input — next.** Pins are known (`38`, `0`, `21`); build the 3-button + long-press event model behind a capability check. Document `GPIO0`'s boot-strap role.
+
+Two blockers must clear together before the bring-up guard in `setup()` can be lifted and the activity stack
+allowed to run — both abort or strand the boot rather than degrade:
+
+1. **`HalEnvSensor::begin()` calls `Wire.begin(ENV_SDA, ENV_SCL)` unconditionally** ([HalEnvSensor.cpp:28](../lib/hal/HalEnvSensor.cpp#L28)). epdiy owns SDA=39/SCL=40 through IDF for VCOM and panel temperature; claiming it with Arduino `Wire` makes `epd_board_init()` fail its i2c assert and abort. Needs gating on `hasEnvironmentalSensor`. `HalClock` is already safe — it gates on `deviceIsX3()`/`deviceIsMurphyM4()`.
+2. **Input is not wired.** `HalGPIO::begin()` bypasses `InputManager` on this board (it assumes `POWER_BUTTON_PIN=3` and an ADC ladder on GPIO1/2), so the three buttons reach no activity; the UI would render but not navigate.
 
 **6. Japanese EPUB smoke test — not started.** Expect FD-pool issues as on M4 (`max_files` had to go to 12).
 
@@ -435,14 +490,14 @@ Rewiring that touches every board and belongs with the render-path work, not wit
   Note that M4's charger-status line (`GPIO43`) read *LOW* while charging, so simple charger status is a poor fit unless the polarity is inverted or the battery was already full. **Leading candidate: TPS65185 `PWRGOOD` or `INT`.** `GPIO47` is upstream V7's `D15`, freed by HZ5.2's 8-bit bus. Having dropped the PCA9555 expander that normally carries `PWRGOOD`/`INT`, the vendor needed direct GPIOs for them — and both are open-drain inputs requiring a pull-up, exactly this pad's signature. SD card-detect is the alternative.
 
   **Do not try to characterise this by unplugging USB.** JTAG rides on the same USB connection, so disconnecting removes the only channel for reading the pin — the test is self-defeating. M4's charger line was characterised by custom firmware logging it, not by JTAG. Tests that keep USB attached, best first: sample across a page refresh (`PWRGOOD` asserts when the panel rails come up); eject the SD card and re-read (card-detect); hold a magnet near the bezel (hall/lid). Otherwise defer to milestone 3, when our own firmware can log it.
-- **Individual roles of the remaining seven software-GPIO control lines** (`9`,`10`,`11`,`12`,`14` LOW; `44`,`46` HIGH). `45` is identified as `STV` by the upstream match. The remainder are the ex-PCA9555 set — `OE`, `MODE`, `PWRUP`, `VCOM_CTRL`, `WAKEUP` — plus the SD chip-select. Distinguish by sampling levels across a page refresh: panel-control lines toggle with the scan, PMIC lines change only at power-up/down, and SD CS toggles with card access.
-- **Which I²C devices sit on `SCL=40`/`SDA=39`.** Bus confirmed; occupants not. Expect the TPS65185; scan for temperature and any RTC.
+- **Individual roles of the remaining software-GPIO control lines** (`9`,`10`,`11`,`12` LOW). Partly resolved: `14` = TPS65185 `WAKEUP`, `44` = SD chip-select, `46` = SD power gate (a real gate, not a buffer enable — the card loses state when toggled), `45` = `STV` from the upstream match. The rest are the ex-PCA9555 set — `OE`, `MODE`, `PWRUP`, `VCOM_CTRL` — and the upstream `epd_board_v7_raw` assignment is the working hypothesis. Note a watchpoint trace taken *during* panel refreshes wrongly implicated `GPIO9` as chip-select; sample when only the subsystem of interest is active.
+- ~~**Which I²C devices sit on `SCL=40`/`SDA=39`.**~~ **Resolved (milestone 3):** the **TPS65185 at `0x68`**, and nothing else. The bus reads empty until `GPIO14` (`WAKEUP`) is asserted — found by sweeping the control block one pad at a time, since a scan on a correctly pulled-up bus returning zero devices is a *power* symptom, not a wiring one. No RTC found, consistent with `hasRtc = false`.
 - A safe **PSRAM cache budget**. Size is settled: 8 MB octal, leaving ~7.4 MB after the display's ~900 KB. Budget stays 0 until measured under a real Japanese book with a large SD font loaded.
 - **Battery divider ratio**, and whether a charger-status line exists.
 - **Deep-sleep wake pin.** Both vendor builds reference `rtc_gpio_*`, so it is an RTC-capable pad (`GPIO0`–`GPIO21`) — likely `GPIO0` or `GPIO21`.
 - **Power-off / power-latch mechanism** behind `关机`.
 - **Waveform LUT size** and internal-SRAM cost; whether 16-level via the ED047 waveform is safe for sustained use.
-- **`display_type`**: upstream `ED052TC4` says `1`, vendor ships `2`. Settle with the milestone 4 test pattern.
+- ~~**`display_type`**: upstream `ED052TC4` says `1`, vendor ships `2`.~~ **Resolved (milestone 4):** inert on our code path. Orientation is applied entirely by `GfxRenderer`; use upstream `ED052TC4` unmodified.
 - **Whether an external RTC exists** (no evidence found, but absence of strings is not proof).
 - **Download-mode entry sequence.** JTAG posture is settled: enabled.
 

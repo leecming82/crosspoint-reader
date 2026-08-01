@@ -24,3 +24,11 @@ lib/EpdFont/scripts/output/
 # (worktrees, scheduled-task locks, settings.local, scout CLEANUP.md) out.
 .claude/*
 !.claude/skills/
+# test/ doubles as a scratch area for device bring-up (vendor firmware dumps, sample
+# EPUBs, logs). Ignore it by default, but keep the tracked unit-test paths visible so a
+# newly added test is not silently invisible to git.
+test/*
+!test/CMakeLists.txt
+!test/README
+!test/differential_rounding/
+!test/epubs/
