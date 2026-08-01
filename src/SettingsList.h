@@ -36,7 +36,10 @@ inline std::string basenameFromPath(const char* path) {
   return slash ? slash + 1 : path;
 }
 
-#ifdef CROSSPOINT_BOARD_MURPHY_M4
+// Guarded on the feature, not the board: these settings exist because the reader
+// uses the runtime FreeType path, which is true of every PSRAM-class board (Murphy
+// M4, HZ5.2), not of Murphy specifically.
+#ifdef CROSSPOINT_TTF_READER_DIRECT_FREETYPE
 inline SettingInfo buildTtfFontFamilySetting() {
   SettingInfo s;
   s.nameId = StrId::STR_FONT_FAMILY;

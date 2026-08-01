@@ -1,4 +1,4 @@
-#ifdef CROSSPOINT_BOARD_MURPHY_M4
+#ifdef CROSSPOINT_TTF_READER_DIRECT_FREETYPE
 
 #include "TtfFontScanner.h"
 
