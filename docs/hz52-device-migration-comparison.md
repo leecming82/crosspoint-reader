@@ -26,7 +26,43 @@ A little residue still accumulates between interval refreshes. That is expected 
 remaining bug: GL16 never drives `W→W` or `B→B`, so the background gets no periodic reset —
 which is exactly what the GC16 interval pass is for, and why the setting still earns its place.
 
-**Next, in rough order:**
+**NEXT TASK — EPUB images render in misplaced, overlapping bands.**
+
+On a page whose content is a full-page scanned image, the image draws twice at different
+origins: one copy roughly where it belongs, and a second offset left and down, overlapping it.
+Text on the same page is correct. Photographed on device 2026-08-02, reading a Japanese EPUB
+(the `供述調書` page, footer reads `表紙  1/1  2%`).
+
+Prior art, and why this is a *follow-on* rather than a fresh bug: `57b3e7d6` fixed images
+rendering "in misplaced horizontal bands" on this panel. The cause then was that
+`DirectPixelWriter` (`lib/Epub/Epub/converters/DirectPixelWriter.h`) reimplements the
+orientation transform independently of `GfxRenderer::rotateCoordinates`, precomputing a linear
+form so the per-pixel loop avoids a call — and it still hardcoded X4's Portrait convention.
+Both copies now carry `kPanelInvertsPortraitAxis`. **That there are two independent copies of
+this transform is the standing hazard**; confirm nothing has grown a third before assuming the
+fault is elsewhere.
+
+Where to look, and one lead already narrowed:
+
+- `DirectPixelWriter` is used by `ImageBlock.cpp`, `JpegToFramebufferConverter.cpp`,
+  `PngToFramebufferConverter.cpp` and `ImageRotationUtils.h`. Only `ImageBlock` was exercised by
+  the earlier fix.
+- `GfxRenderer` has a **strip target** for raw writers that bypass `drawPixel`
+  ([GfxRenderer.h:199](../lib/GfxRenderer/GfxRenderer.h#L199)) — writers subtract a physical-row
+  origin and clip to a band. Misplaced bands is exactly its failure signature, but it looks
+  inactive here: `EpubReaderActivity.cpp:1924` gates it on
+  `renderTextAntiAliasing && renderer.supportsStripGrayscale()`, and HZ5.2 has
+  `displayGrayscaleBits = 1` (so AA is off) and `supportsStripGrayscale()` returning false.
+  Verify that on device rather than trusting the read.
+- Two draws at different origins also fits the page being rendered more than once without an
+  intervening clear. `ImageBlock::render` deliberately skips the font-prewarm scan pass for this
+  reason ([ImageBlock.cpp:149](../lib/Epub/Epub/blocks/ImageBlock.cpp#L149)); check whether the
+  BW pass runs twice.
+
+Reproduce by opening that EPUB and paging to the image. Note the panel transpose means a
+stride/origin error shows up rotated, so reason in *physical* coordinates when reading the code.
+
+**Then, in rough order:**
 
 1. **Sweep the waveform frame count**, if 0.40 s ever stops feeling fast enough. Frame count is
    the only thing that costs time on this hardware (~24.4 ms each), and
@@ -699,6 +735,16 @@ Two blockers had to clear together before the bring-up guard in `setup()` could 
 **7. UI density pass — not started.** [Area 3](#area-3-ui-density-at-283-ppi). Board `ppi` capability, UI font sizing, sweep of hardcoded layout constants.
 
 **8. Three-button UX conversion — not started.** Jump menus replacing `Left`/`Right`, hint layout, `ButtonRemapActivity` hidden, keyboard-entry strategy decided.
+
+Two symptoms reported from device use on 2026-08-02, both belonging here rather than to milestone 5:
+
+- **No way out of the file browser.** There is no dedicated Back button on this board —
+  `hz52LongPressButton` maps only the isolated front button (`GPIO38`) to `BTN_BACK`, as a long
+  press, while a short press on the same button is Confirm. Establish whether the browser
+  ignores `BTN_BACK` (a real bug) or whether the gesture is simply undiscoverable (a hint-layout
+  problem, which is this milestone's actual subject).
+- **No way to reach ruby placement settings** from the reader with three buttons. Unverified
+  whether the setting is unreachable or absent.
 
 **9. 16-level greyscale — not started.** Native 4bpp reader rendering. Two prerequisites, both
 recorded where they bite: `HalDisplay`'s greyscale surface is SSD1677-shaped and inert here, and the
