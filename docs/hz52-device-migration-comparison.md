@@ -6,46 +6,42 @@ Date: 2026-07-27 (last worked 2026-08-02)
 
 ## RESUME HERE (2026-08-02)
 
-**Done:** milestones 1–5. Device boots to the normal CrossPoint UI, renders through
-`HalDisplay`/`GfxRenderer`, navigates with its three buttons, and runs the TTF reader.
-Panel driver is now 4bpp via epdiy's `epd_hl_*` (real frame-indexed waveforms). All work is
-committed on branch `hz52`; **nothing is pushed** — the submodule branch `hz52-sd-cs`
-(commit `3e50170`) must be pushed before the parent, or the parent references a commit
-nobody can fetch.
+**Done:** milestones 1–5, plus the panel refresh work below. The device boots to the normal
+CrossPoint UI, renders through `HalDisplay`/`GfxRenderer`, navigates with its three buttons, and
+runs the TTF reader. **Nothing is pushed** — the submodule branch `hz52-sd-cs` (commit
+`3e50170`) must be pushed before the parent, or the parent references a commit nobody can fetch.
 
-**Open problem:** ghosting on page turns — a faint shadow of the previous page wherever it
-had ink. Six hypotheses tested and eliminated; see
-[Ghosting investigation](#ghosting-investigation-2026-08-02unresolved-one-hypothesis-left-standing)
-in the Milestones section for the full table. Do not re-test those.
+**Ghosting is resolved and page turns no longer flash.** It took four independent fixes; the full
+account is in [Ghosting investigation](#ghosting-investigation) under Milestones. Current
+behaviour, measured on device:
 
-**The one hypothesis left:** we drive the panel at **11 MHz, stock drives it at 22**. epdiy
-halves the pixel clock because Arduino's prebuilt libs ship a 32-byte data cache line
-(`lcd_driver.c: check_cache_configuration`). E-ink waveforms are time-calibrated, so every
-phase runs for twice its designed duration — which would mis-time DU, GL16, ED047 and every
-temperature band identically, matching the observation that no waveform change helped.
-Confirmed from the vendor binaries: their `bus_speed = 22` and epdiy's clock-halving log
-strings are *absent* from both stock builds but present in ours, so stock was compiled with
-a 64-byte cache line.
+| | mode | cost |
+| --- | --- | --- |
+| page turn | GL16, whole panel | ~0.74 s |
+| interval refresh (`refreshFrequency`, default 15) | GC16, whole panel | ~0.74 s |
+| boot / full clear | `epd_clear()` | ~1.62 s |
 
-**Next task:** rebuild Arduino with `CONFIG_ESP32S3_DATA_CACHE_LINE_SIZE=64`. Two routes,
-check the cheaper one first:
+A little residue still accumulates between interval refreshes. That is expected rather than a
+remaining bug: GL16 never drives `W→W` or `B→B`, so the background gets no periodic reset —
+which is exactly what the GC16 interval pass is for, and why the setting still earns its place.
 
-1. `custom_sdkconfig` — pioarduino reads this project option
-   (`~/.platformio/platforms/espressif32/builder/frameworks/arduino.py:550-553`, and
-   `espidf.custom_sdkconfig` from the board at :534). **Unverified whether it triggers a
-   rebuild of the prebuilt libs** — if it does, this is a two-line fix.
-2. `framework = arduino, espidf` — Arduino as an IDF component, supported at
-   `arduino.py:884`. Correct but changes how the whole firmware builds.
+**Next, in rough order:**
 
-Expected side effect either way: page turns ~265 ms → ~130 ms.
+1. **Sweep the waveform frame count.** Frame count is the only thing that costs time on this
+   hardware (~24.4 ms each), and `scripts/gen_hz52_waveform.py --frames N` regenerates the table.
+   30 frames is today's 0.74 s; 20 → ~0.49 s, 16 → ~0.39 s, 12 → ~0.29 s. Sweep down until
+   transitions visibly stop completing.
+2. **Page preparation, not the panel.** `prewarm` (TTF glyph rasterization) adds 157–1043 ms on
+   top of the panel time, so a page turn totals ~1.3–2.0 s. The panel drive blocks its task for
+   ~0.74 s doing no CPU work, so rasterizing the *next* page in that window would take prewarm
+   toward zero for sequential reading. The glyph sidecar is also only at 30–36% of its cache
+   limit.
+3. **Resolve the PMIC power-good decode** — see the investigation section. Cheap, never done, and
+   it either retires a suspect or reopens one.
 
-**Do not** force the clock with a build flag. Patching out the halving was tried and
-boot-loops the device with visible artifacting; the guard is load-bearing.
-
-**Also open (lower priority):** UI is legible but small at 283 ppi (milestone 7); many
-screens still assume touch and are hard to use with three buttons (milestone 8); `default`/X4
-env does not build on this branch (`FontSelectionActivity`, `ReaderFontSizeActivity` need
-non-TTF fallbacks).
+**Also open (lower priority):** UI is legible but small at 283 ppi (milestone 7); many screens
+still assume touch and are hard to use with three buttons (milestone 8); `default`/X4 env does not
+build on this branch (`FontSelectionActivity`, `ReaderFontSizeActivity` need non-TTF fallbacks).
 
 ---
 
@@ -520,13 +516,80 @@ allowed to run — both abort or strand the boot rather than degrade:
 
 **8. Three-button UX conversion — not started.** Jump menus replacing `Left`/`Right`, hint layout, `ButtonRemapActivity` hidden, keyboard-entry strategy decided.
 
-**Ghosting investigation (2026-08-02) — unresolved; one hypothesis left standing.**
+### Ghosting investigation
 
-Page turns leave a faint shadow of the previous page wherever it had ink — on tategaki pages, a boxy
-residue per character cell. Only pixels that *had to move* are affected, which is the signature of
-transitions not completing.
+**(2026-08-02) — resolved.**
 
-Ruled out, each by measurement rather than reasoning:
+Page turns left a shadow of the previous page wherever it had ink — on tategaki pages, a boxy
+residue per character cell. Four independent things were wrong. Several were fixed together, so the
+individual contributions cannot be cleanly attributed; what follows is the mechanism of each.
+
+**1. The pixel clock was halved.** epdiy drops 22 → 11 MHz when it sees a 32-byte data cache line
+(`lcd_driver.c: check_cache_configuration`), which is what Arduino's prebuilt libs ship. `[env:hz52]`
+now sets `custom_sdkconfig`, so pioarduino rebuilds those libs from source with
+`CONFIG_ESP32S3_DATA_CACHE_LINE_SIZE=64`; the guard stops firing, and the clock-halving log strings
+are dead-stripped from our binary exactly as they are from the vendor's. This turned out **not** to
+be a ghosting cause — everything still ghosted afterwards — but it halved every refresh, which is
+what made the real fixes affordable. See [Raising the pixel clock](#raising-the-pixel-clock-to-22-mhz)
+for what it entailed.
+
+**Do not** force the clock with a build flag. Patching out the halving was tried and boot-loops the
+device with visible artifacting; the guard is load-bearing. Make its premise false instead.
+
+**2. Nothing was ever driving the whole panel.** `epd_hl_update_area` diffs front against back and
+hands `dirty_lines`/`dirty_columns` to `epd_draw_base`, so pixels whose value did not change are
+never driven *whatever mode is requested*. A "full refresh" therefore repainted the glyphs that had
+moved and nothing else. This is the single most important finding, and it explains why every
+experiment in the table below failed: they all varied the drive applied to a diff that already
+excluded the pixels holding the residue.
+
+**3. The dirty masks were producing the seams.** With the panel finally being driven properly, a
+faint grid of light outlines appeared on character-cell boundaries. That was not residue: the masks
+are per-row *and* per-column, so what got driven was the intersection of changed rows and changed
+columns, and the boundaries between driven and undriven bands read as seams. `drawFullScreen()`
+passes NULL for both, driving every line and column. It costs nothing — frame time is fixed by the
+line clock, not by how many pixels are dirty.
+
+**4. The waveform's phase weighting was being flattened.** `EpdWaveformPhases.phase_times` is read
+in exactly one file, `output_i2s/render_i2s.c`. The LCD render path this board uses gives every
+phase one panel scan at fixed line timing, so every phase gets an equal ~24.4 ms. ED097TC2's GC16
+first half is `15,8,8,8,8,8,10,10,10,10,20,20,50,100,200` — its final settle is meant to be 41% of
+the half-waveform and was getting 6.7%, so transitions landed short of the rail.
+`scripts/gen_hz52_waveform.py` resamples the designed timeline onto equal frames (repeating a phase
+being the only way to hold it longer), giving that settle 8 frames of 30 instead of 1. Registered
+via `epd_hl_waveform()` — data only, no change to the draw path.
+
+**Mode choice.** With the above fixed, decoding the LUTs for pure B/W content shows GC16 and GL16
+differ in exactly one class of pixel:
+
+| | W→W | W→B | B→W | B→B |
+| --- | --- | --- | --- | --- |
+| GC16 | darken + lighten | darken | lighten | — |
+| GL16 | — | darken | lighten | — |
+
+GC16 takes the unchanged white background through a full darken-then-lighten cycle — that is the
+visible flash. GL16 leaves it alone, so page turns use GL16 and show no flash, while changed pixels
+still get the full 15 phases each way. GC16 remains the interval refresh precisely because GL16
+never drives `W→W` or `B→B`, so the background would otherwise never be reset at all.
+
+DU is not usable at any point: 5 flat phases, a one-directional push with no reset stage. Nothing
+shorter exists either. epdiy's mode enum lists `GC16_FAST`(3), `A2`(4), `GL16_FAST`(6) and `DU4`(7),
+but no bundled table implements any of them — epdiy hand-synthesizes waveforms from per-panel
+frame-time tables rather than parsing vendor `.wbf` data (`scripts/epdiy_waveform_gen.py`), and has
+no ED052TC4 entry at all. Its own ED052TC4 display definition pairs the panel with
+`epdiy_ED097TC2`, exactly as we do.
+
+**Why X3/X4/M4 never hit any of this.** They are not comparable hardware. Those boards have an
+SSD1677-class controller holding per-transition LUT banks — `LUTWW`, `LUTBW`, `LUTWB`, `LUTBB`,
+`LUTC` — selected per pixel from (old state, new state). `LUTWW`/`LUTBB` mean **even unchanged
+pixels get driven**, which is what prevents both drift and seams. Those LUTs are also OEM-extracted
+for that exact panel (see `EInkDisplay.cpp`: "Values mirror the OEM V5.6.21 X3 firmware LUT bank").
+Here the SoC drives the panel directly, epdiy diffs in software, and unchanged pixels get nothing.
+
+#### Hypotheses eliminated along the way
+
+Each by measurement rather than reasoning. Every one varied the *drive*; none could have worked,
+because the diff excluded the pixels that mattered.
 
 | Hypothesis | Test | Result |
 | --- | --- | --- |
@@ -534,37 +597,113 @@ Ruled out, each by measurement rather than reasoning:
 | 1bpp cannot run a waveform | rewrote to 4bpp/`epd_hl` | real waveforms now, ghosting unchanged |
 | Wrong waveform family | swapped `ED097TC2` → `ED047TC2` | no change |
 | Wrong temperature band | PMIC reads 32 °C (die, not glass); applied −10 °C | no change |
-| DU inherently ghosts | switched page turns to `MODE_GL16` | **no change**, +1.1 s, visible shifting |
-| Wrong drive voltage | read TPS65185 registers | VCOM −2.70 V as set; `PG=0xFA`, all rails good |
+| DU inherently ghosts | switched page turns to `MODE_GL16` | no change — but masks were still on |
+| Wrong drive voltage | read TPS65185 registers | VCOM −2.70 V as set; `PG=0xFA` — but see below |
+| Waveform phases mis-timed | rebuilt Arduino at a 64-byte cache line, 11 → 22 MHz | no change; page turns 265 → 152 ms |
 
-Static analysis of the vendor firmware (`test/*.bin`) closed off the remaining "they must have something
-we don't" theories:
+The GL16 row is worth noting: that test predates both fixes GL16 needed. The masks were still on, so
+it painted bands rather than the whole screen, and `phase_times` was still being flattened, so no
+transition completed. GL16 is what page turns use now.
 
-- **The waveform tables are byte-identical to upstream epdiy.** Both are compiled in — `ED097TC2` GC16 LUT
-  at `0x452844`, `ED047TC2` GC16 at `0x45737C`. There is no bespoke ED052TC4 table to find.
+#### Two things that do not work — do not retry
+
+**A white-only flash instead of a black one.** `epd_push_pixels(area, t, 1)` drives the whole panel
+toward white *unconditionally*, so unlike an `epd_hl` paint it does reach every pixel — it looked
+like the way to get a reset that fades to white rather than flashing black. It produces a mottled
+grey screen with the previous image showing through, which is worse than what it replaces.
+
+The reason is in `epd_clear_area_cycles`: each cycle is **10 dark + 10 lighten + 2 neutral** frames
+(`color` 0 = `DARK_BYTE`, 1 = `CLEAR_BYTE`, default = `0x00`, i.e. no drive). The dark half is what
+resets, and the neutral frames let the pixels settle. Lighten frames alone drag particles partway
+and leave them un-settled. Same physics that makes DU ghost: a one-directional push cannot reset
+e-ink. **The dark stage is not cosmetic, and there is no white-only equivalent.**
+
+**Absolute full-screen painting via `epd_draw_base`.** `MODE_EPDIY_WHITE_TO_GL16` (15 phases, no
+inversion stage) is only reachable with `MODE_PACKING_2PPB`, which in turn requires a
+`PREVIOUSLY_WHITE`/`PREVIOUSLY_BLACK` flag — without one, `find_lut_functions` returns
+`EPD_DRAW_LOOKUP_NOT_IMPLEMENTED` (0x2). Supplying it makes the call execute and **hangs the device
+hard on the LCD render method**: no serial, unrecoverable over USB-JTAG.
+
+Recovery, if it happens anyway: press the physical reset button, then catch the device in the
+bootloader with `esptool --after no-reset` and flash the app directly
+(`write-flash 0x10000 .pio/build/hz52/firmware.bin`). `pio run -t upload` cannot connect, because
+its own reset lets the hung firmware run again.
+
+#### The drive-voltage row is not as settled as it reads
+
+`PG=0xFA` was recorded as "all rails good", but our own decode of that byte prints `vddh=0 vneg=0`:
+
+```text
+[3815] [INF] [EPD] PMIC power-good: all=1 vb=1 vddh=0 vpos=1 vneg=0
+```
+
+`hz52_display.cpp: logPmicState` assumes "bit7 is the summary flag, the low nibble reports each
+rail" and reads bits 3/2/1/0. One of two things is true, with very different consequences:
+
+- the bit-layout assumption is wrong and the log line is cosmetically misdecoded, or
+- **VDDH and VNEG genuinely are not power-good.** VNEG is the negative rail; a weak VNEG
+  under-drives the toward-white transition and leaves residue exactly where ink was.
+
+Worth checking against the TPS65185 datasheet's PG register definition. Ghosting is resolved without
+it, so this is no longer urgent — but the row should not be treated as ruled out.
+
+#### Vendor firmware static analysis
+
+Closed off the remaining "they must have something we don't" theories:
+
+- **The waveform tables are byte-identical to upstream epdiy.** Both are compiled in — `ED097TC2`
+  GC16 LUT at `0x452844`, `ED047TC2` GC16 at `0x45737C`. There is no bespoke ED052TC4 table to find.
 - **Same board definition**: `epd_board_v7_raw` (3/3 log strings present), `pca9555.c` absent.
-- **Stock's normal mode is a greyscale refresh, not DU** — its menu reads `切换到8级灰刷新 (默认波形)`
-  ("switch to 8-level grey refresh, default waveform"), with `(ED047波形)` as the 16-level option.
-- **Stock runs the panel at 22 MHz; we run at 11.** Its descriptor carries `bus_speed = 22`, and all three
-  of epdiy's clock-halving log strings are *absent* from both vendor builds while present in ours. That
-  branch gates on a compile-time constant, so the compiler strips it when the cache line is 64 B —
-  the binary is telling us stock built with `CONFIG_ESP32S3_DATA_CACHE_LINE_SIZE=64`.
+- **Stock's normal mode is a greyscale refresh, not DU** — its menu reads
+  `切换到8级灰刷新 (默认波形)` ("switch to 8-level grey refresh, default waveform"), with
+  `(ED047波形)` as the 16-level option. We now do the same thing for a different reason: GL16 rather
+  than DU, chosen for the flash rather than the residue.
+- **Stock ran the panel at 22 MHz while we ran at 11.** Its descriptor carries `bus_speed = 22`, and
+  all three of epdiy's clock-halving log strings were *absent* from both vendor builds while present
+  in ours. That branch gates on a compile-time constant, so the compiler strips it when the cache
+  line is 64 B — the binary was telling us stock built with
+  `CONFIG_ESP32S3_DATA_CACHE_LINE_SIZE=64`. Since closed.
 
-**The one hypothesis left: waveform phase timing.** epdiy halves the pixel clock (22 → 11 MHz) because
-Arduino's prebuilt libs ship a 32-byte data cache line and DMA from PSRAM cannot stay coherent at full
-rate (`lcd_driver.c: check_cache_configuration`). An e-ink waveform is time-calibrated, so at half the
-clock **every phase is applied for twice its designed duration** — a systematic over-drive on every
-transition. This is the only measurable difference from stock left, and it explains why no waveform
-change helped: DU, GL16, ED047 and the temperature bands are all mis-timed by the same factor.
+### Raising the pixel clock to 22 MHz
 
-**Do not try to force the clock with a build flag.** Patching out the halving
-(`EPDIY_FORCE_FULL_PIXEL_CLOCK`) was tried: the device boot-loops with visible artifacting. The guard is
-load-bearing — a 32-byte cache line genuinely cannot sustain the DMA. epdiy's own source has a dead end
-there (`// fixme: this would be nice, but doesn't work :( Cache_Suspend_DCache()`).
+Detail for item 1 above. Measured on device: page turns 261–281 ms → 140–155 ms, full clear
+3033 ms → 1589 ms, and epdiy's three clock-halving warnings gone from the boot log — the branch
+dead-stripped from the binary, the same signature the vendor builds show.
 
-The hypothesis is therefore **untested**, and testing it requires the real fix: build Arduino as an
-ESP-IDF component with a 64-byte data cache line, which is what epdiy's error message instructs and what
-stock evidently did. Expected side effect: page turns ~265 ms → ~130 ms.
+The cheap route worked: `custom_sdkconfig` in `[env:hz52]` is enough. It does trigger a from-source
+rebuild of the Arduino IDF libs (`arduino.py: check_reinstall_frwrk` → `call_compile_libs` →
+`espidf.py`), so `framework = arduino, espidf` was not needed. But "two-line fix" it was not — a
+from-source Arduino build diverges from the prebuilt one in four ways, each of which had to be handled:
+
+1. **Embedded data files.** `esp_insights` and `esp_rainmaker` embed server certificates via
+   `target_add_binary_data()`. PlatformIO drives the build with SCons rather than ninja and reimplements
+   that for exactly one case, the mbedtls bundle (`espidf.py: generate_mbedtls_bundle`); everything else
+   gets a source-less `.S` in the code model and the build dies. `scripts/embed_idf_data_files.py` reads
+   the recipes back out of the CMake-generated `build.ninja` and registers equivalent SCons builders.
+   Dropping the two components instead would have been simpler, but the Arduino wrapper libraries for
+   them are only removable via `CONFIG_ARDUINO_SELECTIVE_COMPILATION`, which silently also drops five
+   libraries that have no `CONFIG_ARDUINO_SELECTIVE_*` symbol to re-enable them (`USB`, `HTTPUpdate`,
+   `ESP_NOW`, `ESP_I2S`, `ESP_HostedOTA`) — leaving hz52 with a different Arduino surface to the
+   murphy_m4 baseline, and muddying the one variable this change exists to isolate.
+2. **`-Wl,--wrap=log_printf`.** `esp_diagnostics` defines `__wrap_log_printf` only under
+   `CONFIG_LIB_BUILDER_COMPILE`, a symbol that lives in Espressif's `esp32-arduino-lib-builder` and has
+   no Kconfig entry in the shipped framework, so kconfig drops it from a from-source build. The matching
+   `--wrap` flag lives in the prebuilt `flags/ld_flags`, which the rebuild does *not* regenerate
+   (`espidf.py: idf_lib_copy` copies archives and `sdkconfig.h`, not `flags/`). The wrapper is only an
+   ESP Insights capture hook that forwards to `__real_log_printf`, so `[env:hz52]` unflags the wrap.
+3. **`-mdisable-hardware-atomics`.** pioarduino greps the raw text of `custom_sdkconfig` for
+   `PSRAM`/`CONFIG_SPIRAM=y` and, finding neither, strips this flag (`arduino.py: has_psram_config`).
+   The ESP32-S3 cannot do hardware atomics against PSRAM addresses, so that would silently miscompile
+   every atomic on this board. `[env:hz52]` therefore restates `CONFIG_SPIRAM=y` — redundant as config,
+   load-bearing as text.
+4. **Stale `sdkconfig.<env>`.** kconfig prefers an existing `sdkconfig.hz52` over `sdkconfig.defaults`,
+   so an edit to `custom_sdkconfig` can appear to do nothing. Both files are generated and gitignored;
+   delete `sdkconfig.hz52` when changing the option.
+
+The Arduino framework package is *shared state*: building `murphy_m4` afterwards reinstalls it back to
+the prebuilt libs, and returning to `hz52` rebuilds from source. Both directions were verified — M4
+builds against pristine Feb-dated libs with a 32-byte line, hz52 round-trips back to 64. Alternating
+between the two envs costs one framework rebuild each way.
 
 **9. 16-level greyscale — not started.** Native 4bpp reader rendering (model (b)). Validate the ED047-waveform mode does not ghost or stress the panel over long runs.
 
