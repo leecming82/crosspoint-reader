@@ -890,7 +890,26 @@ mid-grey pixel gets no drive at all. Page turns would go ~0.40 s → ~0.74 s.
 
 **10. Fully functional Japanese EPUB — not started.** Horizontal and vertical, ruby/furigana through parse/cache/layout/render, dictionary cursor geometry, SD fonts, bookmarks, TOC, footnotes, percent/chapter nav, orientation, progress save/resume.
 
-**11. Power, battery, sleep — barely started.** The **battery percentage now reads** (`GPIO1`, 11 dB, stock's raw-count conversion — see [Still Open](#still-open) for the ratio caveat); before that the status bar showed a permanent 0%, because `getBatteryPercentage()` returns a hard zero for any board that is not X3/X4/M4 and nothing configured the pad. Still to do: charging state (no characterised signal — the indicator reads full on USB), power-off path (the vendor has one — `关机`), deep-sleep framebuffer persistence, wake sources, no-RTC clock strategy, PMIC temperature.
+**11. Power, battery, sleep — barely started.** The **battery percentage now reads** (`GPIO1`, 11 dB, stock's raw-count conversion — see [Still Open](#still-open) for the ratio caveat); before that the status bar showed a permanent 0%, because `getBatteryPercentage()` returns a hard zero for any board that is not X3/X4/M4 and nothing configured the pad.
+
+**Deep sleep now stays asleep.** It previously woke the instant it slept, forever. The buttons are
+active-low against the *internal* pull-up (`HalGPIO::begin` uses `pinMode(INPUT_PULLUP)`), which is
+a digital-IO setting and does not survive the handover to RTC control at sleep: `GPIO21` floated,
+`ESP_EXT1_WAKEUP_ANY_LOW` was satisfied immediately, and the device rebooted. Fixed by re-asserting
+the pull through the RTC mux (`rtc_gpio_pullup_en`, input-only) **and** holding
+`ESP_PD_DOMAIN_RTC_PERIPH` on — the pull-up resistors live in that domain, so without the second
+part they are powered down with it and the pin floats again. The EXT1 wake *logic* is in
+`RTC_CNTL` and was never the problem; what was missing was a reference level.
+
+Two diagnostic notes, because both misled us for a while. A wake here looks exactly like a cold
+boot (splash, full clear, `seamless=0`) since HZ5.2 only takes the seamless path when quick-resume
+is enabled — so boot appearance cannot distinguish a wake from a reset. And the loop reproduced
+**on battery**, which is what ruled out the USB host resetting the chip; observing over serial
+cannot settle that question, because the cable is the suspect.
+
+Still to do: charging state (no characterised signal — the indicator reads full on USB), power-off
+path (the vendor has one — `关机`), deep-sleep framebuffer persistence, no-RTC clock strategy, PMIC
+temperature, and **suspend current** (below).
 
 **12. BLE HID remote — not started.** Promoted from optional accelerator to a real deliverable, because it is the pressure valve for the three-button budget.
 
@@ -931,6 +950,22 @@ mid-grey pixel gets no drive at all. Page turns would go ~0.40 s → ~0.74 s.
 - **Power-off / power-latch mechanism** behind `关机`.
 - **Waveform LUT size** and internal-SRAM cost; whether 16-level via the ED047 waveform is safe for sustained use.
 - ~~**`display_type`**: upstream `ED052TC4` says `1`, vendor ships `2`.~~ **Resolved (milestone 4):** inert on our code path. Orientation is applied entirely by `GfxRenderer`; use upstream `ED052TC4` unmodified.
+- **Suspend current — never measured.** No figure exists for this board, so standby life on the
+  2500 mAh cell is unknown to within three orders of magnitude. The framing that matters: below
+  roughly 30–50 µA the cell's own self-discharge (~2–3%/month) dominates and further SoC savings
+  are unobservable, so the `ESP_PD_DOMAIN_RTC_PERIPH` hold added for the wake pin (tens of µA) is
+  irrelevant. What could matter is the **SD rail**. `GPIO46` is a real power gate (the card loses
+  state when toggled), it is asserted at boot and never deliberately released, and it is *not*
+  RTC-capable — so at deep sleep the pad simply goes high-Z and the rail's state is decided by
+  external components nobody has characterised. It may switch itself off, or it may sit at ~1 mA,
+  which is the difference between years and weeks of standby.
+
+  Measure before changing anything: current across the battery terminals in suspend (USB keeps the
+  device awake and bypasses the cell), or crudely, suspend it for a day or two and compare battery
+  percentages using the CSV-logger pattern that already exists for M4. Powering the rail down would
+  need `gpio_hold_en(GPIO_NUM_46)` + `gpio_deep_sleep_hold_en()` (the pattern the X4 path uses for
+  its latch pin) **and** SdFat flushed and unmounted first — cutting power to a mounted card risks
+  the filesystem, so this is not the two-line change it first appears to be.
 - **Whether an external RTC exists** (no evidence found, but absence of strings is not proof).
 - **Download-mode entry sequence.** JTAG posture is settled: enabled.
 

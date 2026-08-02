@@ -2,6 +2,7 @@
 
 #include <Logging.h>
 #include <WiFi.h>
+#include <driver/rtc_io.h>
 #include <esp_sleep.h>
 
 #include <algorithm>
@@ -200,7 +201,20 @@ void HalPowerManager::startDeepSleep(HalGPIO& gpio) const {
 #ifdef ENABLE_SERIAL_LOG
     logSerial.end();
 #endif
-    pinMode(HZ52_BTN_PAIR_LOWER, INPUT_PULLUP);
+    // The buttons are active-low against the *internal* pull-up (HalGPIO::begin uses
+    // pinMode(INPUT_PULLUP)), and that is a digital-IO setting which does not survive the
+    // handover to RTC control at deep sleep. Left as it was, GPIO21 floats the moment we
+    // sleep, ANY_LOW is satisfied immediately, and the device wakes straight back up -- an
+    // endless sleep/wake loop that also happens on battery, so it is the pad and not USB.
+    //
+    // Re-assert the pull through the RTC mux and keep the RTC peripheral domain powered, or
+    // the pull is switched off with the rest of the domain and we are back to a floating pin.
+    const gpio_num_t wakePin = static_cast<gpio_num_t>(HZ52_BTN_PAIR_LOWER);
+    rtc_gpio_init(wakePin);
+    rtc_gpio_set_direction(wakePin, RTC_GPIO_MODE_INPUT_ONLY);
+    rtc_gpio_pulldown_dis(wakePin);
+    rtc_gpio_pullup_en(wakePin);
+    esp_sleep_pd_config(ESP_PD_DOMAIN_RTC_PERIPH, ESP_PD_OPTION_ON);
     esp_sleep_enable_ext1_wakeup(1ULL << HZ52_BTN_PAIR_LOWER, ESP_EXT1_WAKEUP_ANY_LOW);
     esp_deep_sleep_start();
     return;
