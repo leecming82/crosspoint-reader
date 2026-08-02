@@ -47,6 +47,46 @@ uint16_t readMurphyBatteryMillivolts() {
   return static_cast<uint16_t>(std::min<uint32_t>(sensedMv * 2U, 5000U));
 }
 
+// HZ5.2 senses the cell through a divider on GPIO1 whose resistors are not known. This
+// reproduces the stock firmware's conversion rather than inventing one:
+//
+//   cell_volts = (raw / 4095) * 3100 mV * K
+//
+// recovered from the battery function's literal pool in the vendor images. The pool is
+// identifiable: alongside K it carries ESP-IDF's attenuation table (950/1250/1750/3100) and
+// the percent ladder 3.7/3.9/4.05/4.15/4.2 with slopes 75/133.33/150.
+//
+// Note 3100 is the *nominal* 11 dB full scale, not this chip's calibrated one, so K absorbs
+// the ADC's real gain error along with the divider ratio. The two cannot be separated from
+// the binary. That is why this works from raw counts: feeding analogReadMilliVolts() into a
+// K derived against the nominal scale would apply the chip's calibration twice.
+//
+// K is 6.6 in the Jun 2026 vendor build and 6.9 in the Jul 2026 one, so it is the vendor's
+// own empirical fudge and not a schematic value. 6.6 is used here because against this
+// unit's measured raw (~847 at a terminated charge, charge LED green) it yields 4.23 V,
+// whereas 6.9 yields 4.43 V, which no single LiPo cell reaches. This unit shipped with a
+// Jul 14 build, between the two.
+//
+// Trustworthy near full charge, less so as the cell drains. A multimeter across the
+// terminals, or a logged discharge, would settle both K and the curve; the divider ratio
+// stays listed as open in docs/hz52-device-migration-comparison.md until then.
+constexpr uint32_t HZ52_ADC_FULL_SCALE_MV = 3100;  // stock's nominal 11 dB full scale
+constexpr uint32_t HZ52_ADC_MAX_COUNTS = 4095;     // 12-bit
+constexpr uint32_t HZ52_SENSE_SCALE_TENTHS = 66;   // stock's K (6.6), scaled by 10
+
+uint16_t readHz52BatteryMillivolts() {
+  // The divider is high-impedance enough that a single conversion has little margin if the
+  // pad is ever loaded differently, so average a burst. Measured spread was under 2 counts.
+  constexpr int samples = 16;
+  uint32_t sum = 0;
+  for (int i = 0; i < samples; ++i) {
+    sum += static_cast<uint32_t>(analogRead(HZ52_BATTERY_ADC_PIN));
+  }
+  const uint32_t raw = sum / samples;
+  const uint32_t cellMv = raw * HZ52_ADC_FULL_SCALE_MV * HZ52_SENSE_SCALE_TENTHS / (HZ52_ADC_MAX_COUNTS * 10U);
+  return static_cast<uint16_t>(std::min<uint32_t>(cellMv, 5000U));
+}
+
 #ifdef CROSSPOINT_BOARD_MURPHY_M4
 void startMurphyDeepSleep(HalGPIO& gpio) {
   while (gpio.isPressed(HalGPIO::BTN_POWER)) {
@@ -75,6 +115,11 @@ void HalPowerManager::begin() {
     pinMode(BAT_GPIO0, INPUT);
   } else if (gpio.deviceIsMurphyM4()) {
     pinMode(MURPHY_BATTERY_ADC_PIN, INPUT);
+  } else if (gpio.deviceIsHz52()) {
+    pinMode(HZ52_BATTERY_ADC_PIN, INPUT);
+    // readHz52BatteryMillivolts() converts raw counts against a 3100 mV full scale, which is
+    // only the 11 dB figure. Set it explicitly rather than inheriting the core default.
+    analogSetPinAttenuation(HZ52_BATTERY_ADC_PIN, ADC_11db);
   }
   normalFreq = getCpuFrequencyMhz();
   modeMutex = xSemaphoreCreateMutex();
@@ -198,17 +243,19 @@ void HalPowerManager::startDeepSleep(HalGPIO& gpio) const {
 }
 
 uint16_t HalPowerManager::getBatteryPercentage() const {
-  if (!gpio.deviceIsX3() && !gpio.deviceIsX4() && !gpio.deviceIsMurphyM4()) {
+  if (!gpio.deviceIsX3() && !gpio.deviceIsX4() && !gpio.deviceIsMurphyM4() && !gpio.deviceIsHz52()) {
     return 0;
   }
 
-  if (gpio.deviceIsMurphyM4()) {
+  // Both M4 and HZ5.2 read a plain divider through the ADC; only the pin and ratio differ.
+  if (gpio.deviceIsMurphyM4() || gpio.deviceIsHz52()) {
     const unsigned long now = millis();
     if (_batteryLastPollMs != 0 && (now - _batteryLastPollMs) < BATTERY_POLL_MS) {
       return _batteryCachedPercent;
     }
 
-    const uint16_t percent = interpolateBatteryPercent(readMurphyBatteryMillivolts());
+    const uint16_t millivolts = gpio.deviceIsHz52() ? readHz52BatteryMillivolts() : readMurphyBatteryMillivolts();
+    const uint16_t percent = interpolateBatteryPercent(millivolts);
     if (_batteryCachedPercent == 0) {
       _batteryCachedPercent = percent;
     } else {

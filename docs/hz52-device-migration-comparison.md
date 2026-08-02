@@ -760,7 +760,7 @@ mid-grey pixel gets no drive at all. Page turns would go ~0.40 s → ~0.74 s.
 
 **10. Fully functional Japanese EPUB — not started.** Horizontal and vertical, ruby/furigana through parse/cache/layout/render, dictionary cursor geometry, SD fonts, bookmarks, TOC, footnotes, percent/chapter nav, orientation, progress save/resume.
 
-**11. Power, battery, sleep — not started.** Battery divider on `GPIO1`, power-off path (the vendor has one — `关机`), deep-sleep framebuffer persistence, wake sources, no-RTC clock strategy, PMIC temperature.
+**11. Power, battery, sleep — barely started.** The **battery percentage now reads** (`GPIO1`, 11 dB, stock's raw-count conversion — see [Still Open](#still-open) for the ratio caveat); before that the status bar showed a permanent 0%, because `getBatteryPercentage()` returns a hard zero for any board that is not X3/X4/M4 and nothing configured the pad. Still to do: charging state (no characterised signal — the indicator reads full on USB), power-off path (the vendor has one — `关机`), deep-sleep framebuffer persistence, wake sources, no-RTC clock strategy, PMIC temperature.
 
 **12. BLE HID remote — not started.** Promoted from optional accelerator to a real deliverable, because it is the pressure valve for the three-button budget.
 
@@ -776,7 +776,27 @@ mid-grey pixel gets no drive at all. Page turns would go ~0.40 s → ~0.74 s.
 - **Individual roles of the remaining software-GPIO control lines** (`9`,`10`,`11`,`12` LOW). Partly resolved: `14` = TPS65185 `WAKEUP`, `44` = SD chip-select, `46` = SD power gate (a real gate, not a buffer enable — the card loses state when toggled), `45` = `STV` from the upstream match. The rest are the ex-PCA9555 set — `OE`, `MODE`, `PWRUP`, `VCOM_CTRL` — and the upstream `epd_board_v7_raw` assignment is the working hypothesis. Note a watchpoint trace taken *during* panel refreshes wrongly implicated `GPIO9` as chip-select; sample when only the subsystem of interest is active.
 - ~~**Which I²C devices sit on `SCL=40`/`SDA=39`.**~~ **Resolved (milestone 3):** the **TPS65185 at `0x68`**, and nothing else. The bus reads empty until `GPIO14` (`WAKEUP`) is asserted — found by sweeping the control block one pad at a time, since a scan on a correctly pulled-up bus returning zero devices is a *power* symptom, not a wiring one. No RTC found, consistent with `hasRtc = false`.
 - A safe **PSRAM cache budget**. Size is settled: 8 MB octal, leaving ~7.4 MB after the display's ~900 KB. Budget stays 0 until measured under a real Japanese book with a large SD font loaded.
-- **Battery divider ratio**, and whether a charger-status line exists.
+- **Battery divider ratio** — *partly closed.* The indicator works (`GPIO1`, 11 dB, stock's
+  conversion), but the ratio itself is still not established, and cannot be read out of the vendor
+  binaries because **stock's own constant is not stable**: the battery function's literal pool
+  carries `K = 6.6` in the Jun 2026 build and `6.9` in the Jul 2026 one, either side of the Jul 14
+  build this unit shipped with. Stock computes `cell_volts = (raw / 4095) * 3100 mV * K`, and since
+  3100 is the *nominal* 11 dB full scale rather than the chip's calibrated one (~3547 mV here), `K`
+  absorbs the ADC gain error together with the divider — the two cannot be separated. That is the
+  same ambiguity as fitting our own scale factor, just parameterised differently: our single-point
+  fit against `analogReadMilliVolts` gives 5.7, and `6.6 / 5.7 = 1.14`, exactly the ratio of the two
+  full-scale figures.
+
+  We use `K = 6.6`, because against this unit's measured raw (~847 at a terminated charge, charge
+  LED green) it gives 4.23 V while 6.9 gives 4.43 V, which no single LiPo cell reaches. Good near
+  full charge, unverified as the cell drains. **A multimeter across the terminals settles it in
+  seconds**; a logged discharge would also settle the percent curve. The pool additionally holds
+  stock's ladder — 3.7/3.9/4.05/4.15/4.2 with slopes 75/133.33/150 — which is only partly
+  reconstructed (those slopes account for 50% between 3.7 V and 4.15 V), so we kept the existing
+  shared curve rather than adopt half of theirs.
+- **Whether a charger-status line exists.** `isUsbConnected()` is hardcoded false on this board, so
+  the indicator cannot show charging and reads full whenever USB is attached. Same open question as
+  `GPIO47` above.
 - **Deep-sleep wake pin.** Both vendor builds reference `rtc_gpio_*`, so it is an RTC-capable pad (`GPIO0`–`GPIO21`) — likely `GPIO0` or `GPIO21`.
 - **Power-off / power-latch mechanism** behind `关机`.
 - **Waveform LUT size** and internal-SRAM cost; whether 16-level via the ED047 waveform is safe for sustained use.
@@ -925,6 +945,10 @@ Key facts derived:
 - **BLE:** Bluedroid HID **host**, scanning for `KEY`-suffixed page-turner remotes, bonding, storing in NVS, auto-reconnecting on wake.
 - **Wi-Fi:** SoftAP `elink` at `192.168.4.1` for provisioning, then STA with an embedded HTML file manager. NTP from `ntp.aliyun.com`.
 - **Battery:** older build uses legacy `adc1_*` (newer migrated to `adc_oneshot`), which independently narrowed the battery input to ADC1 — `GPIO1`–`GPIO10`. The register read then found the analog pad at `GPIO1`.
+
+  The conversion itself was later recovered from the battery function's float literal pool, found by scanning for a monotonic run of LiPo-range float32 values (`5.2_v3_droid.bin` at `0x501024`, `firmware-5inch…bin` at `0x491674`). The pool is unambiguous: ESP-IDF's attenuation table `950/1250/1750/3100`, `4095`, `1000`, the percent ladder `3.7/3.9/4.05/4.15/4.2` with slopes `75/133.33/150`, and the scale factor `K`. Stock computes `cell_volts = (raw / 4095) * 3100 mV * K`.
+
+  **`K` differs between the two builds — 6.6 (Jun) and 6.9 (Jul)** — so it is a vendor recalibration, not a schematic value, and stock cannot be treated as authoritative on the divider. See [Still Open](#still-open) for which we adopted and why. Worth noting as method: a float literal pool is often easier to identify than the code that uses it, and the *neighbours* of a constant are what confirm you have the right function.
 - **No touch, no frontlight strings** of any kind, in either build.
 
 **Stock UI inventory**, useful as a three-button UX reference: main menu (book list, `文件管理` file manager, `WIFI传书` transfer, `旋转屏幕` rotate, `系统设置` settings, `关机` power off); system settings (Bluetooth, sleep timeout 3/5/10/30/180 min or never, sleep screen default/image/clock, help, VCOM); page settings (font size 20–60, weight normal/semi-bold/bold, margins 5–50, line height 10–50%); and — most relevant to [Area 2](#area-2-three-button-ux) — explicit jump menus in place of directional navigation.
