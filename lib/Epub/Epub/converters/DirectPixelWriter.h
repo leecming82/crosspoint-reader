@@ -175,7 +175,11 @@ struct DirectPixelWriter {
     const int sy = phyY - originY;
     if (static_cast<unsigned>(sy) >= static_cast<unsigned>(clipRows)) return;
 
-    const uint16_t byteIndex = static_cast<uint16_t>(sy * displayWidthBytes + (phyX >> 3));
+    // 32-bit: a framebuffer offset does not fit in 16 bits on a large panel. HZ5.2 is
+    // 1280x720 = 115200 B, so every physical row past 409 wrapped back to the top and drew
+    // a second, displaced copy of the image. Matches GfxRenderer::drawPixel(), which has
+    // always computed this offset in 32 bits -- which is why text was unaffected.
+    const uint32_t byteIndex = static_cast<uint32_t>(sy) * displayWidthBytes + (phyX >> 3);
     const uint8_t bitMask = 1 << (7 - (phyX & 7));
 
     if (state) {
