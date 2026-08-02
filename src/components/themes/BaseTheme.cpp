@@ -2,6 +2,7 @@
 
 #include <GfxRenderer.h>
 #include <HalClock.h>
+#include <HalGPIO.h>
 #include <HalPowerManager.h>
 #include <HalStorage.h>
 #include <Logging.h>
@@ -133,8 +134,17 @@ void BaseTheme::drawProgressBar(const GfxRenderer& renderer, Rect rect, const si
   renderer.drawCenteredText(UI_10_FONT_ID, rect.y + rect.height + 15, percentText.c_str());
 }
 
+bool BaseTheme::frontButtonHintsVisible() {
+  // HZ5.2's labels come from SETTINGS.frontButton*, which describe a four-button front panel
+  // this board does not have, so every screen was drawing four hints for buttons that cannot
+  // be pressed. Nothing here is remappable, so there is no correct four-slot row to draw.
+  return !gpio.deviceIsHz52();
+}
+
 void BaseTheme::drawButtonHints(GfxRenderer& renderer, const char* btn1, const char* btn2, const char* btn3,
                                 const char* btn4) const {
+  if (!frontButtonHintsVisible()) return;
+
   const GfxRenderer::Orientation orig_orientation = renderer.getOrientation();
   renderer.setOrientation(GfxRenderer::Orientation::Portrait);
 

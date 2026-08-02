@@ -30,6 +30,12 @@ which is exactly what the GC16 interval pass is for, and why the setting still e
 `f71b0e7f`; the cause was a 16-bit framebuffer offset, not the orientation transform. Account in
 [Image rendering](#image-rendering).
 
+**Three-button UX is largely working** (milestone 8): the hold gesture, file browser exit, ruby
+offset, dictionary cursor and hint suppression all landed on 2026-08-02, and the dictionary
+cursor's hard crash is fixed. One known race remains: the cursor draws and pushes the panel from
+the activity loop while only calling `RenderLock::peek()`, a check-then-act against the render
+task. It was not the crash, but it is real — every other render path takes `RenderLock`.
+
 **NEXT TASK — page preparation, not the panel.** `prewarm` (TTF glyph rasterization) adds
 157–1043 ms on top of the panel time, so a page turn totals ~0.6–1.4 s. It cannot be overlapped
 *with* the refresh — epdiy pins a max-priority feed task to both cores for the duration (see
@@ -651,6 +657,35 @@ Closed off the remaining "they must have something we don't" theories:
   line is 64 B — the binary was telling us stock built with
   `CONFIG_ESP32S3_DATA_CACHE_LINE_SIZE=64`. Since closed.
 
+### Partial repaints do not exist here — measured
+
+**(2026-08-02.)** Cropping a paint to fewer lines saves nothing. Measured on device with
+`epd_draw_base`'s `crop_to` rect, sweeping the crop height:
+
+| crop height | paint |
+| --- | --- |
+| 720 rows (full panel) | 388 ms |
+| 360 | 388 ms |
+| 180 | 388 ms |
+| 90 | 388 ms |
+| 32 | 381 ms |
+
+So the "frame time is fixed by the line clock" note under [Panel refresh](#panel-refresh) holds
+for **area** rects, not merely for the dirty masks: every paint costs a full panel refresh
+whatever region it targets. Any UI built on cheap partial updates — a moving cursor above all —
+has to be designed around ~0.4 s per repaint on this board.
+
+Two related corrections, both of which cost time before being spotted:
+
+- **`4bpp` and partial refresh are unrelated.** epdiy's framebuffer is *always* 4bpp and `push()`
+  already expands our 1bpp surface into it, so 16-level greyscale (milestone 9) is not a
+  prerequisite for anything here. If anything the association runs the other way: epdiy's cheap
+  partial modes (`MODE_DU`, `A2`) are 1-bit, and `MODE_DU` is already ruled out on this panel.
+- **`Time = N ms from clearScreen to displayBuffer` is measured from the last `clearScreen`.**
+  Any path that calls `displayBuffer()` without one — the cursor overlay does — reports garbage.
+  A 10 s and then a 108 s "render" were both artifacts of this; do not treat that log line as a
+  render duration unless a full page render preceded it.
+
 ### Raising the pixel clock to 22 MHz
 
 Detail for item 1 above. Measured on device: page turns 261–281 ms → 140–155 ms, full clear
@@ -740,17 +775,58 @@ it in one pass.
 
 **7. UI density pass — not started.** [Area 3](#area-3-ui-density-at-283-ppi). Board `ppi` capability, UI font sizing, sweep of hardcoded layout constants.
 
-**8. Three-button UX conversion — not started.** Jump menus replacing `Left`/`Right`, hint layout, `ButtonRemapActivity` hidden, keyboard-entry strategy decided.
+**8. Three-button UX conversion — in progress (2026-08-02).** Done: the hold gesture, the file
+browser exit, ruby offset, the dictionary cursor, and hint suppression. Still open: jump menus
+replacing `Left`/`Right` elsewhere, `ButtonRemapActivity` hidden, keyboard-entry strategy.
 
-Two symptoms reported from device use on 2026-08-02, both belonging here rather than to milestone 5:
+### The hold is the whole problem
 
-- **No way out of the file browser.** There is no dedicated Back button on this board —
-  `hz52LongPressButton` maps only the isolated front button (`GPIO38`) to `BTN_BACK`, as a long
-  press, while a short press on the same button is Confirm. Establish whether the browser
-  ignores `BTN_BACK` (a real bug) or whether the gesture is simply undiscoverable (a hint-layout
-  problem, which is this milestone's actual subject).
-- **No way to reach ruby placement settings** from the reader with three buttons. Unverified
-  whether the setting is unreachable or absent.
+Everything below is one root cause. This board resolves a button's logical identity **at the
+release edge**, from how long it was down — there is no dedicated Back button, so Back *is* a
+hold of the isolated button (`GPIO38`). Three consequences, each of which produced a separate
+user-visible bug:
+
+1. **`isPressed(BTN_BACK)` could never be true.** `hz52ShortPressButton()` only ever returns
+   Confirm/Up/Down, so every "hold Back for N ms" affordance in the firmware was dead code here —
+   the file browser's jump-to-root *and* long-press-to-file-browser in all three readers.
+   `isPressed()` now reports Back once past the long-press threshold.
+2. **A hold stays visible after it has been acted on.** `isPressed()` is true for the gesture's
+   whole duration, so the handler that acted kept seeing its own press and so did every later
+   one: entering the dictionary cursor immediately exited it again, leaving ruby adjust fell into
+   the file browser, and the browser jumped to root then straight on to Home. **Whoever acts on a
+   hold must call `consumeHold()`** — the claim hides the gesture until the button is released
+   and pressed again, and suppresses its release edge. This applies to every hold-triggered
+   action added from here on.
+3. **A hold looked like idleness.** `main.cpp`'s `userActivity` was `wasAnyPressed() ||
+   wasAnyReleased()`, both false for the entire hold, so the CPU stayed at its **10 MHz idle
+   clock** — and a panel paint at 10 MHz cannot feed the 22 MHz pixel clock. It stalls and the
+   task watchdog fires. That is what made the dictionary cursor a reliable hard crash, sometimes
+   needing a physical reset. Fixed with `gpio.isAnyHeld()`. Note this is a trap for *any*
+   hold-triggered work on this board, not just painting.
+
+Do not reintroduce a duration-based rule for suppressing the release edge. One existed briefly
+and silently swallowed holds past 1 s, which left screens whose exit is `wasReleased(Back)`
+reachable only inside a ~300 ms window of hold durations. The claim is the mechanism.
+
+### Resolved symptoms
+
+- ~~**No way out of the file browser.**~~ Cause 1 above. A hold now jumps to root, and a hold at
+  root leaves for Home — previously the hold had nowhere to go and did nothing.
+- ~~**No way to reach ruby placement settings.**~~ It was always reachable from the reader menu;
+  what was broken is that X offset was bound to `Left`/`Right`, which this board does not have,
+  and `renderRubyAdjustOverlay()` was `#ifdef CROSSPOINT_BOARD_MURPHY_M4` — so it was a modal
+  state that drew nothing. Up/Down now drive one axis, a short press switches axis, a hold exits.
+- **Dictionary cursor** had the same shape: within-column movement and popup match cycling were
+  both on `Left`/`Right`, so only column jumps worked and only the top-ranked match was ever
+  visible. Up/Down move within the column, **holding** Up/Down jumps a column, press looks up,
+  hold exits. The jump threshold is deliberately equal to the board's long-press boundary: below
+  it a nav button emits a release event, at or above it emits none, so the jump can never also
+  fire a step and no dead band exists between them.
+- **Front-button hints are suppressed** and their 40 px reclaimed. `mapLabels()` builds its four
+  slots from `SETTINGS.frontButton*` — front hardware this board does not have — so every screen
+  drew four hints for buttons that cannot be pressed. One predicate,
+  `BaseTheme::frontButtonHintsVisible()`. **Beware**: any screen whose only exit is stated in the
+  hint row is stranded by this. `CrashActivity` was, and now spells the gesture out instead.
 
 **9. 16-level greyscale — not started.** Native 4bpp reader rendering. Two prerequisites, both
 recorded where they bite: `HalDisplay`'s greyscale surface is SSD1677-shaped and inert here, and the

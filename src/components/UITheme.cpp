@@ -79,7 +79,7 @@ int UITheme::getNumberOfItemsPerPage(const GfxRenderer& renderer, bool hasHeader
   }
   if (hasButtonHints && orientation != GfxRenderer::Orientation::LandscapeClockwise &&
       orientation != GfxRenderer::Orientation::LandscapeCounterClockwise) {
-    reservedHeight += metrics.verticalSpacing + metrics.buttonHintsHeight;
+    reservedHeight += metrics.verticalSpacing + frontButtonHintsHeight(metrics);
   }
   const int availableHeight = renderer.getScreenHeight() - reservedHeight - extraReservedHeight;
   int rowHeight = hasSubtitle ? metrics.listWithSubtitleRowHeight : metrics.listRowHeight;
@@ -95,24 +95,24 @@ Rect UITheme::getScreenSafeArea(const GfxRenderer& renderer, bool hasFrontButton
   switch (orientation) {
     case GfxRenderer::Orientation::Portrait:
       if (hasFrontButtonHints) {
-        safeArea.height -= currentMetrics->buttonHintsHeight;
+        safeArea.height -= frontButtonHintsHeight(*currentMetrics);
       }
       break;
     case GfxRenderer::Orientation::LandscapeClockwise:
       if (hasFrontButtonHints) {
-        safeArea.x += currentMetrics->buttonHintsHeight;
-        safeArea.width -= currentMetrics->buttonHintsHeight;
+        safeArea.x += frontButtonHintsHeight(*currentMetrics);
+        safeArea.width -= frontButtonHintsHeight(*currentMetrics);
       }
       break;
     case GfxRenderer::Orientation::PortraitInverted:
       if (hasFrontButtonHints) {
-        safeArea.y += currentMetrics->buttonHintsHeight;
-        safeArea.height -= currentMetrics->buttonHintsHeight;
+        safeArea.y += frontButtonHintsHeight(*currentMetrics);
+        safeArea.height -= frontButtonHintsHeight(*currentMetrics);
       }
       break;
     case GfxRenderer::Orientation::LandscapeCounterClockwise:
       if (hasFrontButtonHints) {
-        safeArea.width -= currentMetrics->buttonHintsHeight;
+        safeArea.width -= frontButtonHintsHeight(*currentMetrics);
       }
       break;
   }

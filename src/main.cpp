@@ -680,8 +680,11 @@ void loop() {
   mappedInputManager.setTouchLogicalSize(renderer.getScreenWidth(), renderer.getScreenHeight());
   halTouch.setLogicalOrientation(static_cast<uint8_t>(renderer.getOrientation()));
   mappedInputManager.update();
-  const bool userActivity =
-      gpio.wasAnyPressed() || gpio.wasAnyReleased() || mappedInputManager.hadTouchActivity() || halTiltSensor.hadActivity();
+  // isAnyHeld() covers boards that only emit button edges on release: without it a hold looks
+  // like idleness, the CPU stays at its 10 MHz idle clock, and any action the hold triggers --
+  // a panel paint above all -- runs far too slowly to feed the display.
+  const bool userActivity = gpio.wasAnyPressed() || gpio.wasAnyReleased() || gpio.isAnyHeld() ||
+                            mappedInputManager.hadTouchActivity() || halTiltSensor.hadActivity();
   if (userActivity) {
     lastActivityTime = millis();
     restoreFrontlightFromIdle();

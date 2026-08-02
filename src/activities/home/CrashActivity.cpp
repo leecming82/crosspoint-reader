@@ -107,8 +107,17 @@ void CrashActivity::render(RenderLock&&) {
     y += lineHeight;
   }
 
-  const auto labels = mappedInput.mapLabels(tr(STR_BACK), "", "", "");
-  GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+  if (BaseTheme::frontButtonHintsVisible()) {
+    const auto labels = mappedInput.mapLabels(tr(STR_BACK), "", "", "");
+    GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+  } else {
+    // This screen's only exit is the hint row, so suppressing it stranded the user here with
+    // nothing on screen saying how to leave. Boards without the row get the gesture spelled
+    // out instead -- loop() exits on a held Back, which is a hold of the one button.
+    const int lineHeight = renderer.getLineHeight(UI_10_FONT_ID);
+    renderer.drawCenteredText(UI_10_FONT_ID, renderer.getScreenHeight() - lineHeight * 2, tr(STR_HOLD_TO_GO_BACK),
+                              true);
+  }
 
   renderer.displayBuffer();
 }

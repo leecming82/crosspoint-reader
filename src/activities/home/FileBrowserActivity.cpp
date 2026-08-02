@@ -433,17 +433,35 @@ void FileBrowserActivity::loop() {
   // Long press BACK (1s+) goes to root folder (Books mode only).
   // In firmware-pick mode we keep navigation simple: short Back = up dir / cancel.
   if (mode == Mode::Books && mappedInput.isPressed(MappedInputManager::Button::Back) &&
-      mappedInput.getHeldTime() >= GO_HOME_MS && basepath != "/" && !lockLongPressBack) {
-    basepath = "/";
-    loadFiles();
-    selectorIndex = 0;
-    requestUpdate();
+      mappedInput.getHeldTime() >= GO_HOME_MS && !lockLongPressBack) {
+    // Claim the gesture: this handler stays reachable on the next iteration while the button
+    // is still down, so without it one hold would jump to root and then continue on to Home.
+    mappedInput.consumeHold();
+    if (basepath != "/") {
+      basepath = "/";
+      loadFiles();
+      selectorIndex = 0;
+      requestUpdate();
+    } else {
+      // Already at root, so the hold has nowhere further up to go: leave for Home. Boards
+      // whose only Back gesture is the hold otherwise have no way out of the browser at all.
+      onGoHome();
+    }
     return;
   }
 
   if (lockLongPressBack && mappedInput.wasReleased(MappedInputManager::Button::Back)) {
     lockLongPressBack = false;
     return;
+  }
+
+  // A hold that already acted while down emits no release edge (HZ5.2), so the clause above
+  // would never fire and the lock would latch on forever, permanently suppressing the
+  // jump-to-root. Clear it once the button is simply no longer held. The wasReleased() guard
+  // keeps the release-emitting boards on the path above, where the edge is also consumed.
+  if (lockLongPressBack && !mappedInput.isPressed(MappedInputManager::Button::Back) &&
+      !mappedInput.wasReleased(MappedInputManager::Button::Back)) {
+    lockLongPressBack = false;
   }
 
   const int currentPageItems = pageItems();

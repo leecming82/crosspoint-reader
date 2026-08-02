@@ -52,6 +52,10 @@ class EpubReaderActivity final : public Activity {
   enum class RubyAdjustAxis : uint8_t { X, Y };
   bool rubyAdjustActive = false;
   bool rubyAdjustIgnoreOpeningRelease = false;
+  // Which axis Up/Down drives on boards with no Left/Right. Y first: it matches what Up/Down
+  // did before the toggle existed, so the gesture that already worked keeps working.
+  RubyAdjustAxis rubyAdjustAxis = RubyAdjustAxis::Y;
+  bool kanjiColumnJumpFired = false;  // one column jump per hold, not one per loop iteration
   ReaderFontConfig readerFontConfig;
   EpubReaderUtils::EpubFontOverride epubFontOverride;
 
@@ -92,6 +96,11 @@ class EpubReaderActivity final : public Activity {
   int kanjiResumeIndexPos = 0;
 
   static constexpr unsigned long CURSOR_ENTER_MS = 600;
+  // Hold Up/Down to jump a whole column, on boards with no Left/Right. Deliberately equal to
+  // HalGPIO's HZ5.2 long-press boundary: below it a nav button emits a release event (a
+  // within-column step), at or above it emits none. Matching the two exactly means the jump
+  // can never also fire a step, and leaves no dead band between the gestures.
+  static constexpr unsigned long KANJI_COLUMN_JUMP_MS = 700;
 
   void enterKanjiCursorMode();
   bool handleKanjiCursorTouch();

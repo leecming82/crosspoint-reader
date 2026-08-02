@@ -100,6 +100,8 @@ MappedInputManager::TouchPoint MappedInputManager::lastTouchLongPress() const { 
 
 unsigned long MappedInputManager::getHeldTime() const { return gpio.getHeldTime(); }
 
+void MappedInputManager::consumeHold() const { gpio.consumeHold(); }
+
 MappedInputManager::Labels MappedInputManager::mapLabels(const char* back, const char* confirm, const char* previous,
                                                          const char* next) const {
   // Swap previous/next labels to match the page turn direction swap in INVERTED and LANDSCAPE_CCW.

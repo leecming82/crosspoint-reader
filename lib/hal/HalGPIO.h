@@ -1,8 +1,8 @@
 #pragma once
 
 #include <Arduino.h>
-#include <InputManager.h>
 #include <BoardProfile.h>
+#include <InputManager.h>
 
 // Display SPI pins (custom pins for XteinkX4/Murphy, not hardware SPI defaults)
 #if defined(CROSSPOINT_BOARD_HZ52)
@@ -136,6 +136,7 @@ class HalGPIO {
   unsigned long hz52PressFinish = 0;
   unsigned long hz52PowerPressStart = 0;
   unsigned long hz52PowerPressFinish = 0;
+  bool hz52HoldClaimed = false;  // an activity has acted on this hold; hide it from the rest
 
   void hz52Update();
 
@@ -160,9 +161,21 @@ class HalGPIO {
 
   // Button input methods
   void update();
+  // Claim the in-progress hold gesture. isPressed(BTN_BACK) reports the hold for as long as
+  // the button is down, so without this the first handler to act leaves the gesture visible
+  // and the next screen acts on the same press -- exiting ruby adjust then jumping to the
+  // file browser, or reaching the browser root then continuing to Home. Any handler that
+  // acts on a hold must claim it; the claim clears when the button is next pressed.
+  void consumeHold();
   bool isPressed(uint8_t buttonIndex) const;
   bool wasPressed(uint8_t buttonIndex) const;
   bool wasAnyPressed() const;
+  // True while any button is physically down. HZ5.2 resolves a button's logical identity at
+  // the release edge, so wasAnyPressed()/wasAnyReleased() are both false for the whole of a
+  // hold -- which left main.cpp seeing no user activity and the CPU parked at its 10 MHz idle
+  // clock. Any hold-triggered action then ran at 10 MHz, and a panel paint at that clock
+  // cannot feed the 22 MHz pixel clock: it stalls and the task watchdog fires.
+  bool isAnyHeld() const;
   bool wasReleased(uint8_t buttonIndex) const;
   bool wasAnyReleased() const;
   bool wasFrontlightButtonReleased() const;

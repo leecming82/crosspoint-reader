@@ -179,6 +179,12 @@ class BaseTheme {
   void drawBatteryRight(const GfxRenderer& renderer, Rect rect,
                         bool showPercentage = true) const;  // Right aligned (UI headers)
   virtual void fillBatteryIcon(const GfxRenderer& renderer, Rect rect, uint16_t percentage) const;
+  // False on boards with no remappable front panel. HZ5.2 has three fixed buttons, so the
+  // four-slot hint row describes hardware that does not exist -- it is suppressed there and
+  // its reserved strip is reclaimed for content (see UITheme::frontButtonHintsHeight).
+  // Every drawButtonHints() implementation must honour this; the side-button hints stay,
+  // because Up/Down are real buttons on every board.
+  static bool frontButtonHintsVisible();
   virtual void drawButtonHints(GfxRenderer& renderer, const char* btn1, const char* btn2, const char* btn3,
                                const char* btn4) const;
   virtual void drawSideButtonHints(const GfxRenderer& renderer, const char* topBtn, const char* bottomBtn) const;

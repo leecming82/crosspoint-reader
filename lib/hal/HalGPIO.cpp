@@ -329,8 +329,7 @@ void HalGPIO::begin() {
     hz52LastRawState = hz52RawState;
     hz52PhysicalState = hz52RawState;
     lastUsbConnected = isUsbConnected();
-    LOG_INF("GPIO",
-            "HZ5.2 buttons: GPIO%d confirm/back(hold) GPIO%d up GPIO%d down; no power button, wake=GPIO%d",
+    LOG_INF("GPIO", "HZ5.2 buttons: GPIO%d confirm/back(hold) GPIO%d up GPIO%d down; no power button, wake=GPIO%d",
             HZ52_BTN_ISOLATED, HZ52_BTN_PAIR_UPPER, HZ52_BTN_PAIR_LOWER, HZ52_BTN_PAIR_LOWER);
     return;
   }
@@ -367,11 +366,24 @@ void HalGPIO::hz52Update() {
   if (previousState == 0 && rawState != 0) {
     hz52PhysicalState = rawState;
     hz52PressStart = now;
+    hz52HoldClaimed = false;  // a new press is a new gesture
     return;
   }
 
   if (previousState == 0 || rawState != 0) {
     return;  // mid-chord change; wait for full release
+  }
+
+  // A claimed hold emits nothing on release: the handler that acted has taken the gesture,
+  // and an edge here would deliver it a second time to whatever screen the action opened.
+  // Keyed on the claim rather than on elapsed time, so an *unclaimed* hold still delivers its
+  // release however long it lasted -- an earlier duration-based rule silently swallowed long
+  // holds, leaving screens whose exit is wasReleased(Back) reachable only inside a ~300 ms
+  // window of hold durations.
+  if (hz52HoldClaimed) {
+    hz52PressFinish = now;
+    hz52PhysicalState = 0;
+    return;
   }
 
   const unsigned long heldTime = now - hz52PressStart;
@@ -389,6 +401,8 @@ void HalGPIO::hz52Update() {
   hz52PressFinish = now;
   hz52PhysicalState = 0;
 }
+
+void HalGPIO::consumeHold() { hz52HoldClaimed = true; }
 
 void HalGPIO::update() {
   if (deviceIsHz52()) {
@@ -495,15 +509,25 @@ bool HalGPIO::isPressed(uint8_t buttonIndex) const {
     // so holding the upper button past 1s did nothing and the only way out of a book was a
     // 300 ms release window between our 700 ms threshold and the reader's 1 s one.
     if (hz52RawState == 0) return false;
+
+    // A claimed gesture reports nothing at all until the button is released and pressed
+    // again. isPressed() stays true for a hold's whole duration, so without this the handler
+    // that acted keeps seeing its own press and every later handler sees it too: entering the
+    // dictionary cursor immediately exited it again, leaving ruby adjust fell into the file
+    // browser, and the browser jumped to root then straight on to Home. Must be checked
+    // before either identity below.
+    if (hz52HoldClaimed) return false;
+
+    // Isolated button past the long-press threshold: it *is* Back now, which is what makes
+    // "hold Back >= 1 s" reachable at all -- hz52ShortPressButton() only ever returns
+    // Confirm/Up/Down, so isPressed(BTN_BACK) could previously never be true and every such
+    // affordance was dead code here. Callers add their own longer getHeldTime() gate on top.
     const uint8_t longMapping = hz52LongPressButton(hz52RawState);
-    const bool longHeld = (millis() - hz52PressStart) >= HZ52_LONG_PRESS_MS;
-    if (longHeld && longMapping != 0xFF) {
-      // Isolated button past the threshold: it *is* Back now, which is what lets the
-      // reader's "hold Back >= 1 s -> file browser" gesture become reachable.
+    if (longMapping != 0xFF && (millis() - hz52PressStart) >= HZ52_LONG_PRESS_MS) {
       return longMapping == buttonIndex;
     }
-    // Navigation buttons keep their short identity for as long as they are held, so
-    // ButtonNavigator's auto-repeat sees a continuously-pressed Up/Down.
+    // Below the threshold, and for the navigation buttons at any duration, the short identity
+    // holds -- ButtonNavigator's auto-repeat needs to see a continuously-pressed Up/Down.
     return hz52ShortPressButton(hz52RawState) == buttonIndex;
   }
   if (deviceIsMurphyM4()) {
@@ -520,6 +544,18 @@ bool HalGPIO::wasPressed(uint8_t buttonIndex) const {
     return buttonIndex <= BTN_POWER && (murphyPressedEvents & (1 << buttonIndex));
   }
   return inputMgr.wasPressed(buttonIndex);
+}
+
+bool HalGPIO::isAnyHeld() const {
+  if (deviceIsHz52()) {
+    return hz52RawState != 0;
+  }
+  if (deviceIsMurphyM4()) {
+    return murphyRawState != 0;
+  }
+  // Other boards emit a press edge when the button goes down, so wasAnyPressed() already
+  // marks the activity and there is nothing to add here.
+  return false;
 }
 
 bool HalGPIO::wasAnyPressed() const {

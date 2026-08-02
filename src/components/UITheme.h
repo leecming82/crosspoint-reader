@@ -17,6 +17,12 @@ class UITheme {
   static UITheme& getInstance() { return instance; }
 
   const ThemeMetrics& getMetrics() const { return *currentMetrics; }
+  // Height actually reserved for the front-button hint row: zero where the row is suppressed
+  // (see BaseTheme::frontButtonHintsVisible), so the strip becomes content instead of a gap.
+  // The metric itself stays constexpr because themes use it in constexpr layout maths.
+  static int frontButtonHintsHeight(const ThemeMetrics& metrics) {
+    return BaseTheme::frontButtonHintsVisible() ? metrics.buttonHintsHeight : 0;
+  }
   const BaseTheme& getTheme() const { return *currentTheme; }
   Rect getScreenSafeArea(const GfxRenderer& renderer, bool hasFrontButtonHints = false,
                          bool hasSideButtonHints = false);

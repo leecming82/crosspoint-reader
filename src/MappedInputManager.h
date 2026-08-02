@@ -31,6 +31,9 @@ class MappedInputManager {
   bool wasTouchLongPressed() const;
   TouchPoint lastTouchLongPress() const;
   unsigned long getHeldTime() const;
+  // Claim the in-progress hold so no later handler acts on the same press. Call it whenever
+  // acting on an isPressed()+getHeldTime() hold; see HalGPIO::consumeHold().
+  void consumeHold() const;
   Labels mapLabels(const char* back, const char* confirm, const char* previous, const char* next) const;
   // Returns the raw front button index that was pressed this frame (or -1 if none).
   int getPressedFrontButton() const;

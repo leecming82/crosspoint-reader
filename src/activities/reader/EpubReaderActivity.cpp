@@ -513,11 +513,33 @@ void EpubReaderActivity::loop() {
     if (RenderLock::peek()) {
       return;
     }
+    // Boards with three buttons have no Left/Right binding at all, so the cursor's
+    // within-column movement and the popup's match cycling were both unreachable there.
+    const bool threeButtonInput = gpio.deviceIsHz52();
     if (handleKanjiCursorTouch()) {
       return;
     }
     // Popup mode: Back dismisses it, Left/Right cycle through ranked dictionary matches.
     if (kanjiPopupActive) {
+      if (threeButtonInput) {
+        // Dismiss on the hold, for the same reason cursor exit does; Up/Down take over match
+        // cycling, which was on the unbound Left/Right and so only ever showed match 1.
+        if (mappedInput.isPressed(MappedInputManager::Button::Back) &&
+            mappedInput.getHeldTime() >= ReaderUtils::GO_HOME_MS) {
+          mappedInput.consumeHold();
+          hideKanjiPopup();
+          return;
+        }
+        if (mappedInput.wasPressed(MappedInputManager::Button::Up)) {
+          moveKanjiPopupMatch(-1);
+          return;
+        }
+        if (mappedInput.wasPressed(MappedInputManager::Button::Down)) {
+          moveKanjiPopupMatch(+1);
+          return;
+        }
+        return;  // Swallow all other input while popup is active.
+      }
       if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
         hideKanjiPopup();
         return;
@@ -534,7 +556,20 @@ void EpubReaderActivity::loop() {
     }
     // Back exits cursor mode without leaving the reader. Long Back is disabled here
     // so slow popup/cursor redraws cannot accidentally navigate away.
-    if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
+    //
+    // Where Back is only produced by holding, a release edge is the wrong trigger: HZ5.2
+    // emits one only for a hold between its long-press and hold thresholds, and swallows it
+    // beyond that, so exiting worked for a ~300 ms window of hold durations and did nothing
+    // if you held longer. Use the hold itself, and claim it so the reader's own
+    // hold-to-file-browser does not act on the same press.
+    if (threeButtonInput) {
+      if (mappedInput.isPressed(MappedInputManager::Button::Back) &&
+          mappedInput.getHeldTime() >= ReaderUtils::GO_HOME_MS) {
+        mappedInput.consumeHold();
+        exitKanjiCursorMode();
+        return;
+      }
+    } else if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
       exitKanjiCursorMode();
       return;
     }
@@ -543,6 +578,33 @@ void EpubReaderActivity::loop() {
       showKanjiPopup();
       return;
     }
+    if (threeButtonInput) {
+      // Up/Down step within the column; holding either jumps a whole column. See
+      // KANJI_COLUMN_JUMP_MS for why the threshold is what it is.
+      const bool upHeld = mappedInput.isPressed(MappedInputManager::Button::Up);
+      const bool downHeld = mappedInput.isPressed(MappedInputManager::Button::Down);
+      if ((upHeld || downHeld) && mappedInput.getHeldTime() >= KANJI_COLUMN_JUMP_MS) {
+        // Once per hold: this stays true for every iteration the button remains down, and a
+        // column jump costs a full-panel repaint, so repeating would queue a pile of them.
+        if (!kanjiColumnJumpFired) {
+          kanjiColumnJumpFired = true;
+          moveKanjiCursorToLine(upHeld ? -1 : +1);
+          flushKanjiCursorRefresh();
+        }
+        return;
+      }
+      if (!upHeld && !downHeld) {
+        kanjiColumnJumpFired = false;
+      }
+      if (mappedInput.wasPressed(MappedInputManager::Button::Up)) {
+        moveKanjiCursor(-1);
+      } else if (mappedInput.wasPressed(MappedInputManager::Button::Down)) {
+        moveKanjiCursor(+1);
+      }
+      flushKanjiCursorRefresh();
+      return;
+    }
+
     // Left/Right buttons move within the current tategaki column; side buttons jump columns.
     // Use wasPressed only (leading edge) to avoid double-fires across render windows.
     if (mappedInput.wasPressed(MappedInputManager::Button::Left)) {
@@ -563,8 +625,11 @@ void EpubReaderActivity::loop() {
   }
 
   // Long-press Confirm (600ms) enters cursor mode for Japanese books in horizontal or vertical writing mode.
-  if (isJapaneseLanguageBook() && section && mappedInput.isPressed(MappedInputManager::Button::Confirm) &&
-      mappedInput.getHeldTime() >= CURSOR_ENTER_MS) {
+  // Not while ruby adjust is open: that mode's exit is also a hold, and this check runs first, so holding
+  // to leave ruby adjust opened the dictionary cursor instead -- which then rendered for 10 s and tripped
+  // the task watchdog. Ruby adjust owns the hold while it is active.
+  if (!rubyAdjustActive && isJapaneseLanguageBook() && section &&
+      mappedInput.isPressed(MappedInputManager::Button::Confirm) && mappedInput.getHeldTime() >= CURSOR_ENTER_MS) {
     if (RenderLock::peek()) {
       return;
     }
@@ -589,8 +654,28 @@ void EpubReaderActivity::loop() {
     if (handleRubyAdjustTouch()) {
       return;
     }
-    if (mappedInput.wasReleased(MappedInputManager::Button::Confirm) ||
-        mappedInput.wasReleased(MappedInputManager::Button::Back)) {
+    // Three-button boards have no Left/Right at all (MappedInputManager returns false for
+    // both), so X was simply unreachable here. Up/Down drive one axis at a time and the short
+    // press switches which; the hold exits. Boards with four front buttons keep the direct
+    // mapping below, where each axis has its own pair.
+    const bool axisToggleInput = gpio.deviceIsHz52();
+    if (axisToggleInput) {
+      // Exit is the hold, not a release: a consumed hold emits no release edge on this board.
+      if (mappedInput.isPressed(MappedInputManager::Button::Back) &&
+          mappedInput.getHeldTime() >= ReaderUtils::GO_HOME_MS) {
+        // Claim it, or the reader's own hold-to-file-browser below acts on the same press and
+        // leaving ruby adjust drops straight into the browser.
+        mappedInput.consumeHold();
+        exitRubyAdjustMode();
+        return;
+      }
+      if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
+        rubyAdjustAxis = rubyAdjustAxis == RubyAdjustAxis::X ? RubyAdjustAxis::Y : RubyAdjustAxis::X;
+        requestUpdate();
+        return;
+      }
+    } else if (mappedInput.wasReleased(MappedInputManager::Button::Confirm) ||
+               mappedInput.wasReleased(MappedInputManager::Button::Back)) {
       exitRubyAdjustMode();
       return;
     }
@@ -603,11 +688,11 @@ void EpubReaderActivity::loop() {
       return;
     }
     if (mappedInput.wasPressed(MappedInputManager::Button::Up)) {
-      adjustRubyOffset(RubyAdjustAxis::Y, -1);
+      adjustRubyOffset(axisToggleInput ? rubyAdjustAxis : RubyAdjustAxis::Y, -1);
       return;
     }
     if (mappedInput.wasPressed(MappedInputManager::Button::Down)) {
-      adjustRubyOffset(RubyAdjustAxis::Y, +1);
+      adjustRubyOffset(axisToggleInput ? rubyAdjustAxis : RubyAdjustAxis::Y, +1);
       return;
     }
     return;
@@ -638,6 +723,9 @@ void EpubReaderActivity::loop() {
 
   // Long press BACK (1s+) goes to file selection
   if (mappedInput.isPressed(MappedInputManager::Button::Back) && mappedInput.getHeldTime() >= ReaderUtils::GO_HOME_MS) {
+    // Claim it so the browser we are about to open does not see the same still-held press and
+    // immediately act on it too.
+    mappedInput.consumeHold();
     clearLatchedPageTurnIntent();
     activityManager.goToFileBrowser(epub ? epub->getPath() : "");
     return;
@@ -2172,6 +2260,26 @@ void EpubReaderActivity::renderRubyAdjustOverlay() const {
   renderer.drawText(UI_10_FONT_ID, screenWidth - xPlusWidth - 8, screenHeight / 2 - lineHeight / 2, "X+", true);
   renderer.drawCenteredText(UI_10_FONT_ID, screenHeight / 2 - lineHeight / 2, tr(STR_DONE), true);
 #endif
+
+#ifdef CROSSPOINT_BOARD_HZ52
+  // Without this the board entered a modal state that drew nothing at all: the overlay above
+  // labels touch targets, and this board has neither touch nor Left/Right. Show both axis
+  // values, mark the one Up/Down currently drives, and name the two gestures that exist.
+  const int screenHeight = renderer.getScreenHeight();
+  const int lineHeight = renderer.getLineHeight(UI_10_FONT_ID);
+  const bool xActive = rubyAdjustAxis == RubyAdjustAxis::X;
+
+  char values[48];
+  snprintf(values, sizeof(values), xActive ? "[X %u]   Y %u" : "X %u   [Y %u]",
+           static_cast<unsigned>(currentRubyOffsetX()), static_cast<unsigned>(currentRubyOffsetY()));
+
+  char switchHint[64];
+  snprintf(switchHint, sizeof(switchHint), "%s  /  %s", tr(STR_RUBY_SWITCH_AXIS), tr(STR_DONE));
+
+  const int centreY = screenHeight / 2 - lineHeight;
+  renderer.drawCenteredText(UI_10_FONT_ID, centreY, values, true);
+  renderer.drawCenteredText(UI_10_FONT_ID, centreY + lineHeight + 4, switchHint, true);
+#endif
 }
 
 void EpubReaderActivity::navigateToHref(const std::string& hrefStr, const bool savePosition) {
@@ -2240,6 +2348,13 @@ void EpubReaderActivity::enterKanjiCursorMode() {
   if (!section) return;
   LOG_DBG("DICT", "Enter cursor requested spine=%d page=%d", currentSpineIndex, section->currentPage);
   kanjiCursorIgnoreOpeningTouch = mappedInput.wasTouchLongPressed();
+
+  // The gesture that opened cursor mode is still in progress -- entry fires at 600 ms and the
+  // button is usually held past that. Cursor mode's own exit is a hold, so without claiming
+  // the opening press here it reached its threshold moments later and closed the mode again
+  // immediately. Claim it: the button reports nothing further until it is released and
+  // pressed again.
+  mappedInput.consumeHold();
 
   if (!rebuildKanjiCursorPage()) {
     kanjiCursorIgnoreOpeningTouch = false;
@@ -2569,6 +2684,17 @@ bool EpubReaderActivity::drawKanjiCursor() {
   kanjiCursorRectX = rect.x;
   kanjiCursorRectY = rect.y;
   kanjiCursorRectSize = rect.width;
+
+  // Cursor mode drew no affordances at all on a board with no hint row, so its gestures were
+  // undiscoverable. Repainted on every cursor move (the white fill makes it idempotent) and
+  // cleared by the full re-render that exitKanjiCursorMode() requests.
+  if (gpio.deviceIsHz52()) {
+    const int lineHeight = renderer.getLineHeight(UI_10_FONT_ID);
+    const int barHeight = lineHeight + 8;
+    const int barY = renderer.getScreenHeight() - barHeight;
+    renderer.fillRect(0, barY, renderer.getScreenWidth(), barHeight, false);
+    renderer.drawCenteredText(UI_10_FONT_ID, barY + 4, tr(STR_DICT_CURSOR_HINTS), true);
+  }
   return true;
 }
 

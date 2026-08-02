@@ -220,7 +220,8 @@ Rect EpubReaderMenuActivity::contentRect() const {
 #else
   const int contentTop =
       screen.y + metrics.topPadding + metrics.headerHeight + metrics.tabBarHeight + metrics.verticalSpacing;
-  const int contentBottom = renderer.getScreenHeight() - metrics.buttonHintsHeight - metrics.verticalSpacing;
+  const int contentBottom =
+      renderer.getScreenHeight() - UITheme::frontButtonHintsHeight(metrics) - metrics.verticalSpacing;
 #endif
   return Rect{screen.x, contentTop, screen.width, std::max(0, contentBottom - contentTop)};
 }
