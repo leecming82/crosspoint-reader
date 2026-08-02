@@ -206,9 +206,16 @@ bool begin() {
   // per pixel holding the packed from/to pair). Against ~7.4 MB free.
   hlState = epd_hl_init(EPD_BUILTIN_WAVEFORM);
 
-  // Swap in the resampled waveform. Same phase count, so the same ~0.73 s, but the frames
-  // are redistributed to match the timeline ED097TC2 was authored against -- see
-  // scripts/gen_hz52_waveform.py. Data only: the draw path is unchanged.
+  // Swap in the generated waveform: GC16's frames redistributed to match the timeline
+  // ED097TC2 was authored against, and GL16 with its two 15-phase halves superimposed rather
+  // than sequenced. See scripts/gen_hz52_waveform.py. Data only, the draw path is unchanged.
+  //
+  // The merged GL16 is only correct while the render path stays 1bpp. Of all 256 (from, to)
+  // transitions, real GL16 drives 224 in *both* halves -- a mid-grey to mid-grey pixel needs
+  // drive-to-rail then drive-to-target, in sequence -- and the merged table covers only the
+  // 30 that start from a rail, which is all binary content can reach. A greyscale pixel would
+  // get no drive at all, not merely a degraded one. So milestone 9 (16-level greyscale) must
+  // regenerate with --no-merge before enabling displayGrayscaleBits > 1 here.
   epd_hl_waveform(&hlState, &hz52_waveform);
 
   // Our own 1bpp surface stays: GfxRenderer is 1bpp throughout, so it draws here and push()
