@@ -126,17 +126,19 @@ void HalPowerManager::begin() {
   assert(modeMutex != nullptr);
 }
 
-int HalPowerManager::idleCpuFrequencyMhz() const {
-  return LOW_POWER_FREQ;
-}
+int HalPowerManager::idleCpuFrequencyMhz() const { return LOW_POWER_FREQ; }
 
 void HalPowerManager::setPowerSaving(bool enabled) {
   if (normalFreq <= 0) {
     return;  // invalid state
   }
 
-  if (gpio.deviceIsMurphyM4()) {
-    // Murphy M4/S3 intermittently trips INT_WDT after live CPU downclocking; keep loop idle delay but skip freq scaling.
+  if (gpio.deviceIsMurphyM4() || gpio.deviceIsHz52()) {
+    // Live CPU downclocking is trouble on both ESP32-S3 boards; keep the loop idle delay but skip freq scaling.
+    // M4 intermittently trips INT_WDT on the switch itself. HZ5.2 downclocks cleanly, but LOW_POWER_FREQ is 10 MHz
+    // -- a figure validated on C3 hardware -- and that is too slow to feed this board's peripherals: an epdiy paint
+    // issued from any path that does not hold a power lock starves into a task watchdog reset. Treated as the same
+    // underlying hazard as M4's rather than chasing each starved peripheral separately.
     enabled = false;
   }
 

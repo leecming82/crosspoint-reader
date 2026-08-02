@@ -17,6 +17,7 @@
       "+<base/ftsystem.c>",
       "+<base/ftmm.c>",
       "+<sfnt/sfnt.c>",
+      "+<raster/raster.c>",
       "+<smooth/smooth.c>",
       "+<truetype/truetype.c>"
     ]

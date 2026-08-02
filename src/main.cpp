@@ -19,11 +19,11 @@
 #include <SPI.h>
 #include <WiFi.h>
 #include <builtinFonts/all.h>
+#include <sys/time.h>
 
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
-#include <sys/time.h>
 
 #include "CrossPointSettings.h"
 #include "CrossPointState.h"
@@ -674,7 +674,6 @@ void loop() {
   const unsigned long loopStartTime = millis();
   static unsigned long lastMemPrint = 0;
 
-
   static unsigned long lastActivityTime = millis();
 
   mappedInputManager.setTouchLogicalSize(renderer.getScreenWidth(), renderer.getScreenHeight());
@@ -732,10 +731,29 @@ void loop() {
       String cmd = line.substring(4);
       cmd.trim();
       if (cmd == "SCREENSHOT") {
+        // A serial command is not user activity, so the CPU is usually at its idle clock by
+        // the time one arrives -- and at 10 MHz the USB CDC cannot sustain a framebuffer-sized
+        // write, which stalled after a few KB and returned a truncated image. Hold the same
+        // power lock the render task uses for the duration of the transfer.
+        HalPowerManager::Lock powerLock;
         const uint32_t bufferSize = display.getBufferSize();
         logSerial.printf("SCREENSHOT_START:%d\n", bufferSize);
         uint8_t* buf = display.getFrameBuffer();
-        logSerial.write(buf, bufferSize);
+        // write() queues into a fixed TX ring and returns how much it took, which for a
+        // framebuffer-sized buffer is a small fraction of it. The return value was ignored, so
+        // a screenshot silently emitted a few hundred bytes and then declared itself complete;
+        // it only looked correct on the smaller framebuffers of the SPI boards. Push the
+        // remainder in chunks, draining between them.
+        uint32_t sent = 0;
+        while (sent < bufferSize) {
+          const size_t written = logSerial.write(buf + sent, bufferSize - sent);
+          if (written == 0) {
+            delay(1);  // ring full: let the host drain before trying again
+            continue;
+          }
+          sent += written;
+          logSerial.flush();
+        }
         logSerial.printf("SCREENSHOT_END\n");
       }
     }

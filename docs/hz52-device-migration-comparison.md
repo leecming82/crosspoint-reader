@@ -36,6 +36,17 @@ cursor's hard crash is fixed. One known race remains: the cursor draws and pushe
 the activity loop while only calling `RenderLock::peek()`, a check-then-act against the render
 task. It was not the crash, but it is real — every other render path takes `RenderLock`.
 
+**Japanese glyphs are much improved at 1bpp** — see [Japanese glyph rendering](#japanese-glyph-rendering-at-1bpp).
+Two separate defects (a 25% ink threshold acting as a dilation, and thin diagonals dropping out)
+are fixed, the second by vendoring FreeType's monochrome rasterizer for its dropout control.
+Greyscale (4 or 16 level) was considered and deferred: the content pipeline already produces 4
+levels and throws them away, but enabling it means regenerating the GL16 waveform unmerged, which
+roughly doubles the page turn from 0.40 s to ~0.74 s. Revisit only if the anti-aliasing is judged
+worth that.
+
+**Also idle CPU scaling is now disabled on this board**, matching M4. 10 MHz is a figure validated
+on C3 hardware and is too slow to feed this board's peripherals — see milestone 8.
+
 **NEXT TASK — page preparation, not the panel.** `prewarm` (TTF glyph rasterization) adds
 157–1043 ms on top of the panel time, so a page turn totals ~0.6–1.4 s. It cannot be overlapped
 *with* the refresh — epdiy pins a max-priority feed task to both cores for the duration (see
@@ -656,6 +667,49 @@ Closed off the remaining "they must have something we don't" theories:
   in ours. That branch gates on a compile-time constant, so the compiler strips it when the cache
   line is 64 B — the binary was telling us stock built with
   `CONFIG_ESP32S3_DATA_CACHE_LINE_SIZE=64`. Since closed.
+
+### Japanese glyph rendering at 1bpp
+
+**(2026-08-02.)** Two defects, found by capturing the framebuffer over the firmware's existing
+`CMD:SCREENSHOT` and magnifying individual glyphs. Screenshots are ground truth: they separate a
+rasterization fault from a panel one, which guesswork could not.
+
+**Glyphs were dilated, not thresholded.** `shouldDrawPackedPixel()` inked any pixel whose packed
+value was below 3, and `quantizeCoverage()` puts that boundary at **25%** coverage — so any pixel
+the outline merely grazed became solid black. Glyphs grew by up to a pixel on every side, filling
+the counters of dense kanji (目, 田, 書) and merging neighbouring strokes. Now `val < 2`, which is
+exactly 50%. Note this also removed an accidental emboldening, so text reads lighter; the weight
+axis is the place to put that back if wanted, not the threshold.
+
+**Thin diagonals broke into dotted lines.** A ~1px stroke at a shallow angle deposits roughly half
+coverage in *every* pixel along its length, so which ones survive a hard threshold is arbitrary.
+No threshold value fixes it — lower clogs the counters, higher erases more of the stroke.
+Horizontal and vertical stems were never affected because they align to the pixel grid. The fix is
+FreeType's monochrome rasterizer (`FT_LOAD_TARGET_MONO` + `FT_RENDER_MODE_MONO`) with
+`FT_OUTLINE_SMART_DROPOUTS`: dropout control forces a pixel on where a feature would otherwise
+break, keeping strokes connected without adding weight anywhere else.
+
+That required **vendoring FreeType's `raster` module**, which the trimmed
+`lib/FreeTypeStandalone` did not ship — it had only base/sfnt/smooth/truetype. Without it every
+glyph fails with `FT_Err_Cannot_Render_Glyph` (19) and pages render empty. Cost is ~5.4 KB of
+flash. The renderer choice is gated on `displayGrayscaleBits <= 1`, because MONO emits only the
+extreme packed levels: on a greyscale panel it would leave the `GRAYSCALE_MSB`/`LSB` planes empty
+and silently disable text anti-aliasing. Murphy M4 therefore keeps the 8-bit path. Any MONO
+failure falls back to `FT_RENDER_MODE_NORMAL` rather than rendering nothing.
+
+Note the active raster path here is `rasterizeAndCacheGlyphWithDirectFreeType()`, which renders at
+native size with hinting already on. `downsample2BitCoverage()` and its supersampling belong to
+the *custom* rasterizer, which this board does not use — easy to change by mistake.
+
+**Trap: `build_cache_dir = .cache` does not invalidate on header changes.** Adding the module to
+`ftmodule.h` had no effect for several flash cycles because the cache kept restoring an
+`ftinit.c.o` compiled before the edit, so `FT_Add_Default_Modules` never registered the renderer.
+`firmware.map` showed the class linked, which was misleading — PlatformIO links every object
+regardless of references. Deleting `.pio/build/<env>` does not help; the cache refills it. Verify
+with `nm .pio/build/<env>/lib*/FreeTypeStandalone/base/ftinit.c.o | grep raster`, and note that a
+separate `pio run -t upload` re-runs the build against the cache, so a verified clean build can be
+silently replaced by a stale one at upload time. Clear `.cache` or verify in the same command that
+uploads.
 
 ### Partial repaints do not exist here — measured
 

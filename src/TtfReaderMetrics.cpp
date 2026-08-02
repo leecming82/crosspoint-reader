@@ -2,6 +2,7 @@
 
 #include "TtfReaderMetrics.h"
 
+#include <HalGPIO.h>
 #include <HalStorage.h>
 #include <Logging.h>
 #include <TtfCustomRasterizer.h>
@@ -24,7 +25,10 @@ constexpr size_t TTF_RASTER_SCRATCH_BYTES = 64 * 1024;
 constexpr size_t TTF_GLYPH_CACHE_MAX_BYTES = 768 * 1024;
 constexpr uint32_t TTF_STATS_LOG_INTERVAL_MS = 3000;
 constexpr const char* TTF_GLYPH_CACHE_DIR = "/.crosspoint/ttf_cache";
-constexpr uint16_t TTF_GLYPH_SIDECAR_VERSION = 2;
+// 3: coverage is summed from FreeType's 8-bit alpha rather than counted as non-zero
+// subsamples, so the stored 2-bit levels differ for the same glyph. Cached glyphs must be
+// re-rasterized or the old, coarser values would keep being drawn.
+constexpr uint16_t TTF_GLYPH_SIDECAR_VERSION = 7;  // 7: monochrome rasterizer with dropout control
 constexpr uint32_t TTF_GLYPH_SIDECAR_SAVE_INTERVAL_MS = 30UL * 60UL * 1000UL;
 constexpr uint32_t TTF_GLYPH_SIDECAR_SAVE_DIRTY_GLYPHS = 128;
 constexpr size_t TTF_GLYPH_SIDECAR_SAVE_DIRTY_BYTES = 64 * 1024;
@@ -340,7 +344,12 @@ uint8_t getPackedGlyphPixel(const uint8_t* bitmap, const size_t pixelIndex) {
 
 bool shouldDrawPackedPixel(const GfxRenderer::RenderMode renderMode, const uint8_t val) {
   if (renderMode == GfxRenderer::BW) {
-    return val < 3;
+    // Ink at half coverage or more. `val < 3` inked anything the outline touched at all,
+    // which is a dilation rather than a threshold: glyphs grew by up to a pixel on every
+    // side, filling the counters of dense kanji and merging neighbouring strokes. Note this
+    // also removes an accidental emboldening, so text will read lighter -- the weight axis is
+    // the right place to put that back if it now looks too thin.
+    return val < 2;
   }
   if (renderMode == GfxRenderer::GRAYSCALE_MSB) return val == 1 || val == 2;
   if (renderMode == GfxRenderer::GRAYSCALE_LSB) return val == 1;
@@ -373,6 +382,10 @@ bool downsample2BitCoverage(const uint8_t* highBitmap, const ttf::CustomRasterRe
   memset(outBitmap, 0xFF, packedGlyphBytes(outWidth, outHeight));
   for (int y = 0; y < outHeight; ++y) {
     for (int x = 0; x < outWidth; ++x) {
+      // Sum FreeType's actual 8-bit coverage. This previously counted subsamples as a plain
+      // yes/no (`!= 0`), which threw away the antialiasing FreeType had already computed and
+      // made every partially-touched subsample count as fully inked -- so a pixel the outline
+      // merely grazed scored the same as a solid one.
       int coverage = 0;
       int samples = 0;
       for (int sy = 0; sy < TTF_RASTER_SUPERSAMPLE; ++sy) {
@@ -382,11 +395,13 @@ bool downsample2BitCoverage(const uint8_t* highBitmap, const ttf::CustomRasterRe
           const int hx = x * TTF_RASTER_SUPERSAMPLE + sx;
           if (hx >= highRaster.width) continue;
           ++samples;
-          if (highBitmap[static_cast<size_t>(hy) * highRaster.width + hx] != 0) ++coverage;
+          coverage += highBitmap[static_cast<size_t>(hy) * highRaster.width + hx];
         }
       }
+      // level = round(mean coverage x 3), so 0 is empty and 3 is solid.
+      const int fullCoverage = samples * 255;
       const uint8_t level =
-          samples == 0 ? 0 : static_cast<uint8_t>(std::min(3, (coverage * 3 + samples / 2) / samples));
+          samples == 0 ? 0 : static_cast<uint8_t>(std::min(3, (coverage * 3 + fullCoverage / 2) / fullCoverage));
       setPackedGlyphPixel(outBitmap, static_cast<size_t>(y) * outWidth + x, static_cast<uint8_t>(3 - level));
     }
   }
@@ -639,7 +654,6 @@ bool TtfReaderMetrics::initializeDirectFreeType() {
     unloadDirectFreeType();
     return false;
   }
-
   FT_Open_Args openArgs = {};
   openArgs.flags = FT_OPEN_STREAM;
   openArgs.stream = &directFtStream_.stream;
@@ -831,7 +845,8 @@ bool TtfReaderMetrics::loadFromPath(const char* path, const uint8_t pixelSize, c
           static_cast<unsigned long>(identityHash_));
   LOG_INF("TTFR", "metrics upem=%u asc=%d desc=%d gap=%d line=%d glyphs=%u", m.unitsPerEm, m.ascender, m.descender,
           m.lineGap, lineHeightPx(), m.numGlyphs);
-  LOG_INF("TTFR", "sample A present=%d glyph=%u adv=%d kana present=%d glyph=%u adv=%d kanji present=%d glyph=%u adv=%d",
+  LOG_INF("TTFR",
+          "sample A present=%d glyph=%u adv=%d kana present=%d glyph=%u adv=%d kanji present=%d glyph=%u adv=%d",
           ascii.present ? 1 : 0, ascii.glyphId, ascii.advancePx, kana.present ? 1 : 0, kana.glyphId, kana.advancePx,
           kanji.present ? 1 : 0, kanji.glyphId, kanji.advancePx);
   return true;
@@ -1079,8 +1094,47 @@ const TtfReaderMetrics::CachedGlyph* TtfReaderMetrics::rasterizeAndCacheGlyphWit
   }
 
   const uint32_t rasterStartUs = micros();
-  FT_Error error = FT_Load_Glyph(directFtFace_, glyphIndex, FT_LOAD_DEFAULT);
-  if (error == 0) error = FT_Render_Glyph(directFtFace_->glyph, FT_RENDER_MODE_NORMAL);
+  // Rasterize monochrome where the panel is monochrome, 8-bit where it is not.
+  //
+  // An 8-bit render thresholded at 50% breaks thin diagonals and curves into dotted lines: a
+  // ~1px stroke at a shallow angle deposits roughly half coverage in every pixel along its
+  // length, so whether each one survives the threshold is arbitrary. No threshold setting
+  // fixes that -- lower it and the counters of dense kanji clog, raise it and more of the
+  // stroke disappears. Dropout control is the mechanism built for exactly this: the rasterizer
+  // notices a feature that would break between sample points and forces a pixel on, keeping
+  // strokes connected without adding weight anywhere else. Horizontal and vertical stems were
+  // never the problem; they align to the pixel grid already.
+  //
+  // Gated on the panel's bit depth rather than the board, because MONO emits only the extreme
+  // packed levels (0 and 3). On a greyscale panel that would leave the GRAYSCALE_MSB/LSB
+  // planes with nothing to draw and silently turn text anti-aliasing off.
+  //
+  // MONO needs the `raster` module in lib/FreeTypeStandalone. A build without it fails every
+  // glyph with FT_Err_Cannot_Render_Glyph (19), which renders every page empty -- so failure
+  // falls back to FT_RENDER_MODE_NORMAL, which is always available, rather than giving up.
+  const bool useMonoRaster = gpio.getBoardProfile().displayGrayscaleBits <= 1;
+  FT_Error error = FT_Err_Cannot_Render_Glyph;
+  if (useMonoRaster) {
+    error = FT_Load_Glyph(directFtFace_, glyphIndex, FT_LOAD_TARGET_MONO);
+    if (error == 0) {
+      if (directFtFace_->glyph->format == FT_GLYPH_FORMAT_OUTLINE) {
+        directFtFace_->glyph->outline.flags |= FT_OUTLINE_SMART_DROPOUTS;
+      }
+      error = FT_Render_Glyph(directFtFace_->glyph, FT_RENDER_MODE_MONO);
+    }
+    if (error != 0) {
+      static bool loggedMonoFallback = false;
+      if (!loggedMonoFallback) {
+        loggedMonoFallback = true;
+        LOG_ERR("TTFR", "Monochrome rasterizer unavailable (error=%ld); using 8-bit rendering",
+                static_cast<long>(error));
+      }
+    }
+  }
+  if (error != 0) {
+    error = FT_Load_Glyph(directFtFace_, glyphIndex, FT_LOAD_DEFAULT);
+    if (error == 0) error = FT_Render_Glyph(directFtFace_->glyph, FT_RENDER_MODE_NORMAL);
+  }
   rasterTimeUs_ += micros() - rasterStartUs;
   if (error != 0) {
     ++rasterFailed_;
@@ -1125,8 +1179,17 @@ const TtfReaderMetrics::CachedGlyph* TtfReaderMetrics::rasterizeAndCacheGlyphWit
           glyphBitmap.pitch < 0 ? sourceBase - static_cast<size_t>(y) * sourcePitch
                                 : sourceBase + static_cast<size_t>(y) * sourcePitch;
       for (int x = 0; x < cached.width; ++x) {
-        setPackedGlyphPixel(cached.bitmap.get(), static_cast<size_t>(y) * cached.width + x,
-                            coverageToPackedGrayValue(quantizeCoverage(sourceRow[x])));
+        // MONO renders 1 bit per pixel, MSB first, so a set bit is ink and the packed value is
+        // either fully black or fully white. Kept branchy rather than assuming the mode, so an
+        // 8-bit render still packs correctly if the flags above are ever changed back.
+        uint8_t packed;
+        if (glyphBitmap.pixel_mode == FT_PIXEL_MODE_MONO) {
+          const bool ink = ((sourceRow[x >> 3] >> (7 - (x & 7))) & 1) != 0;
+          packed = ink ? 0 : 3;
+        } else {
+          packed = coverageToPackedGrayValue(quantizeCoverage(sourceRow[x]));
+        }
+        setPackedGlyphPixel(cached.bitmap.get(), static_cast<size_t>(y) * cached.width + x, packed);
       }
     }
     glyphCacheBytes_ += cached.bitmapBytes;
@@ -1149,7 +1212,6 @@ const TtfReaderMetrics::CachedGlyph* TtfReaderMetrics::rasterizeAndCacheGlyphWit
 
 const TtfReaderMetrics::CachedGlyph* TtfReaderMetrics::rasterizeAndCacheGlyphWithCustomRasterizer(
     const uint32_t cp, const EpdFontFamily::Style style, const ttf::GlyphMetrics& metrics) const {
-
   CachedGlyph cached;
   cached.codepoint = cp;
   cached.glyphId = metrics.glyphId;
