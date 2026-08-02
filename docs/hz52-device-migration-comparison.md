@@ -8,8 +8,8 @@ Date: 2026-07-27 (last worked 2026-08-02)
 
 **Done:** milestones 1–6. The device boots to the normal CrossPoint UI, renders through
 `HalDisplay`/`GfxRenderer`, navigates with its three buttons, and reads a tategaki Japanese EPUB
-end to end through the TTF reader. **Nothing is pushed** — the submodule branch `hz52-sd-cs`
-(commit `3e50170`) must be pushed before the parent, or the parent references a commit nobody can
+end to end through the TTF reader. Pushed to `origin` (the personal fork), submodule first: any
+future push must keep that order, or the parent references an `open-x4-sdk` commit nobody can
 fetch.
 
 **Ghosting is resolved and page turns no longer flash.** It took four independent fixes plus a
@@ -26,57 +26,26 @@ A little residue still accumulates between interval refreshes. That is expected 
 remaining bug: GL16 never drives `W→W` or `B→B`, so the background gets no periodic reset —
 which is exactly what the GC16 interval pass is for, and why the setting still earns its place.
 
-**NEXT TASK — EPUB images render in misplaced, overlapping bands.**
+**EPUB image rendering is resolved.** Full-page images drew as two overlapping copies until
+`f71b0e7f`; the cause was a 16-bit framebuffer offset, not the orientation transform. Account in
+[Image rendering](#image-rendering).
 
-On a page whose content is a full-page scanned image, the image draws twice at different
-origins: one copy roughly where it belongs, and a second offset left and down, overlapping it.
-Text on the same page is correct. Photographed on device 2026-08-02, reading a Japanese EPUB
-(the `供述調書` page, footer reads `表紙  1/1  2%`).
+**NEXT TASK — page preparation, not the panel.** `prewarm` (TTF glyph rasterization) adds
+157–1043 ms on top of the panel time, so a page turn totals ~0.6–1.4 s. It cannot be overlapped
+*with* the refresh — epdiy pins a max-priority feed task to both cores for the duration (see
+[Core affinity during refresh](#core-affinity-during-refresh)) — but it can be moved into the idle
+time between page turns, which is far more plentiful. The glyph sidecar is also only at 30–36% of
+its cache limit, so raising that cuts misses outright.
 
-Prior art, and why this is a *follow-on* rather than a fresh bug: `57b3e7d6` fixed images
-rendering "in misplaced horizontal bands" on this panel. The cause then was that
-`DirectPixelWriter` (`lib/Epub/Epub/converters/DirectPixelWriter.h`) reimplements the
-orientation transform independently of `GfxRenderer::rotateCoordinates`, precomputing a linear
-form so the per-pixel loop avoids a call — and it still hardcoded X4's Portrait convention.
-Both copies now carry `kPanelInvertsPortraitAxis`. **That there are two independent copies of
-this transform is the standing hazard**; confirm nothing has grown a third before assuming the
-fault is elsewhere.
+**Then: resolve the PMIC power-good decode** — see the investigation section. Cheap, never done,
+and it either retires a suspect or reopens one.
 
-Where to look, and one lead already narrowed:
-
-- `DirectPixelWriter` is used by `ImageBlock.cpp`, `JpegToFramebufferConverter.cpp`,
-  `PngToFramebufferConverter.cpp` and `ImageRotationUtils.h`. Only `ImageBlock` was exercised by
-  the earlier fix.
-- `GfxRenderer` has a **strip target** for raw writers that bypass `drawPixel`
-  ([GfxRenderer.h:199](../lib/GfxRenderer/GfxRenderer.h#L199)) — writers subtract a physical-row
-  origin and clip to a band. Misplaced bands is exactly its failure signature, but it looks
-  inactive here: `EpubReaderActivity.cpp:1924` gates it on
-  `renderTextAntiAliasing && renderer.supportsStripGrayscale()`, and HZ5.2 has
-  `displayGrayscaleBits = 1` (so AA is off) and `supportsStripGrayscale()` returning false.
-  Verify that on device rather than trusting the read.
-- Two draws at different origins also fits the page being rendered more than once without an
-  intervening clear. `ImageBlock::render` deliberately skips the font-prewarm scan pass for this
-  reason ([ImageBlock.cpp:149](../lib/Epub/Epub/blocks/ImageBlock.cpp#L149)); check whether the
-  BW pass runs twice.
-
-Reproduce by opening that EPUB and paging to the image. Note the panel transpose means a
-stride/origin error shows up rotated, so reason in *physical* coordinates when reading the code.
-
-**Then, in rough order:**
-
-1. **Sweep the waveform frame count**, if 0.40 s ever stops feeling fast enough. Frame count is
-   the only thing that costs time on this hardware (~24.4 ms each), and
-   `scripts/gen_hz52_waveform.py --gl-frames N` regenerates the table: 15 is today's 0.40 s,
-   12 → ~0.32 s, 10 → ~0.27 s. Unlike the merge this is genuine downsampling, so it does trade
-   quality — sweep down until transitions visibly stop completing.
-2. **Page preparation, not the panel.** `prewarm` (TTF glyph rasterization) adds 157–1043 ms on
-   top of the panel time, so a page turn totals ~0.6–1.4 s. It cannot be overlapped *with* the
-   refresh — epdiy pins a max-priority feed task to both cores for the duration (see
-   [Core affinity during refresh](#core-affinity-during-refresh)) — but it can be moved into the
-   idle time between page turns, which is far more plentiful. The glyph sidecar is also only at
-   30–36% of its cache limit, so raising that cuts misses outright.
-3. **Resolve the PMIC power-good decode** — see the investigation section. Cheap, never done, and
-   it either retires a suspect or reopens one.
+**Decided against (2026-08-02): sweeping the waveform frame count.** Frame count is the only thing
+that costs time on this hardware (~24.4 ms each) and `scripts/gen_hz52_waveform.py --gl-frames N`
+would regenerate the table — 15 is today's 0.40 s, 12 → ~0.32 s, 10 → ~0.27 s. But unlike the
+halves merge this is genuine downsampling: it pays for speed in transition quality. 0.40 s is fast
+enough, and the page-preparation work above is both the larger win and free of that trade.
+Revisit only if panel time itself becomes the complaint.
 
 **Also open (lower priority):** UI is legible but small at 283 ppi (milestone 7); many screens
 still assume touch and are hard to use with three buttons (milestone 8); `default`/X4 env does not
@@ -731,6 +700,43 @@ Two blockers had to clear together before the bring-up guard in `setup()` could 
 2. **Input is not wired.** `HalGPIO::begin()` bypasses `InputManager` on this board (it assumes `POWER_BUTTON_PIN=3` and an ADC ladder on GPIO1/2), so the three buttons reach no activity; the UI would render but not navigate.
 
 **6. Japanese EPUB smoke test — passing (2026-08-02), not stress-tested.** A tategaki EPUB renders end to end through the TTF reader: section cache deserialises, ruby and vertical layout look right, progress saves and resumes. The FD-pool trouble seen on M4 (`max_files` raised to 12) has not appeared, but nothing has deliberately probed for it.
+
+### Image rendering
+
+**(2026-08-02) — resolved in `f71b0e7f`.**
+
+Full-page images drew as two overlapping copies at different origins — one roughly in place, a
+second offset left and down — while text on the same page was correct.
+
+The cause was integer width, not geometry. `DirectPixelWriter::writePhysicalPixel` computed its
+framebuffer byte offset as `uint16_t`. HZ5.2's framebuffer is 1280×720/8 = **115,200 B**, so every
+offset above 65,535 wrapped: a pixel destined for physical row *r* ≥ 410 landed at `offset −
+65536`, which is 409 rows up **and** 96 bytes across, because the wrap point falls mid-row. That
+two-axis displacement, seen through the panel transpose, is the second copy.
+
+Measured on device before the fix, with temporary counters in the writer: one full-page image
+reported `writes=30358 wrapped=7898 maxIndex=95447` — a quarter of its pixels truncated.
+
+Why it survived to this board and this data type:
+
+- **X4 (48,000 B) and M4 (58,080 B) both fit in 16 bits.** HZ5.2 is the first panel whose
+  framebuffer does not. The line was correct everywhere it had ever run.
+- **Text was never affected** because `GfxRenderer::drawPixel` computes the identical offset in
+  `uint32_t` ([GfxRenderer.cpp:470](../lib/GfxRenderer/GfxRenderer.cpp#L470)). The two copies of
+  this write path had diverged on *integer width*, which no amount of checking the orientation
+  transform would have surfaced.
+
+The orientation transform was **not** implicated. It still has exactly two copies —
+`GfxRenderer.cpp:200` and `DirectPixelWriter.h:53` — both carrying `kPanelInvertsPortraitAxis`,
+and no third copy has appeared. The standing hazard from `57b3e7d6` remains real; it just was not
+this bug. Two other suspects were positively excluded by the same instrumented run rather than by
+reading: the **strip target** was inactive (`stripOriginY=0 stripRows=720`, as expected with
+`displayGrayscaleBits = 1`), and the BW pass ran **once** per page, not twice.
+
+The lesson worth carrying: three investigations went the wrong way reading this code, because the
+defect is invisible in source — it looks like ordinary framebuffer indexing and is wrong only
+against a panel dimension. Instrumenting the writer and reading the numbers off the device found
+it in one pass.
 
 **7. UI density pass — not started.** [Area 3](#area-3-ui-density-at-283-ppi). Board `ppi` capability, UI font sizing, sweep of hardcoded layout constants.
 
