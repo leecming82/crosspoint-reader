@@ -46,6 +46,10 @@ extern "C" {
 
 #include <cstring>
 
+// Must follow epdiy.h: it pulls in epd_internals.h inside epdiy.h's extern "C" block, so the
+// waveform types are already declared with C linkage by the time this is parsed.
+#include "hz52_waveform.h"
+
 namespace {
 
 // Panel calibration read from the stock UI before it was overwritten. epdiy takes the
@@ -84,8 +88,8 @@ int panelTemperature() {
   // Guard against an implausible read rather than feeding it to the waveform lookup.
   if (raw > -20.0f && raw < 60.0f) {
     cachedTemperatureC = static_cast<int>(raw + 0.5f) + PMIC_TO_PANEL_OFFSET_C;
-    LOG_INF("EPD", "Panel temp: pmic=%dC offset=%dC used=%dC", static_cast<int>(raw + 0.5f),
-            PMIC_TO_PANEL_OFFSET_C, cachedTemperatureC);
+    LOG_INF("EPD", "Panel temp: pmic=%dC offset=%dC used=%dC", static_cast<int>(raw + 0.5f), PMIC_TO_PANEL_OFFSET_C,
+            cachedTemperatureC);
   }
   temperatureReadAt = now;
   return cachedTemperatureC;
@@ -112,27 +116,50 @@ constexpr EpdDisplay_t HZ52_PANEL = {
     .display_type = DISPLAY_TYPE_GENERIC,
 };
 
-// Page turns use MODE_DU.
+// MODE_DU is not usable here. Its ED097TC2 waveform is 5 flat phases
+// ({ 1000,1000,1000,1000,1000 }) -- a one-directional push with no reset. It moves particles
+// that are already free but cannot unstick lodged ones and never reverses, so residue builds
+// in the shape of whatever was previously inked: the boxy shadows behind tategaki columns,
+// visible again after one or two page turns.
 //
-// MODE_GL16 was tried and rejected on hardware: despite carrying the reset stage described
-// below it left ghosting *unchanged* while costing 1.4 s (30 phases vs DU's 5) and adding a
-// visible shifting artefact on every refresh. That is a useful negative result -- if a full
-// reset waveform does not clear the residue, the cause is not waveform timing, and the
-// remaining suspects are drive voltage (VCOM/rails) or epdiy's belief about the glass
-// diverging from reality.
+// Nor is anything shorter available. epdiy's mode enum lists GC16_FAST(3), A2(4),
+// GL16_FAST(6) and DU4(7), but no bundled waveform table implements any of them -- every
+// table (ED097TC2, ED047TC1/TC2, ED060SC4, ED097OC4, ED060SCT, ED060XC3, ED133UT2) carries
+// only DU(1), GC16(2), GL16(5) and sometimes the WHITE_TO_GL16(16)/BLACK_TO_GL16(17) halves.
+// epdiy hand-synthesizes these from per-panel frame-time tables rather than parsing vendor
+// .wbf data (scripts/epdiy_waveform_gen.py), and has no ED052TC4 entry at all; its own
+// ED052TC4 display definition pairs the panel with epdiy_ED097TC2, exactly as we do.
 //
-// DU is a two-level mode whose waveform is a flat one-directional push (ED097TC2 DU is
-// literally { 1000,1000,1000,1000,1000 }). It moves particles that are already free but
-// cannot unstick lodged ones, and never reverses, so residue accumulates in the shape of
-// whatever was previously inked -- the boxy shadows behind tategaki columns.
+// A whiten-then-paint pass was tried, to get a de-ghost that fades to white instead of
+// flashing black: epd_push_pixels(area, t, 1) drives the whole panel toward white
+// unconditionally, so unlike an epd_hl paint it reaches every pixel. It does not work, and
+// the reason is worth keeping. epd_clear_area_cycles is 10 dark + 10 lighten + 2 neutral
+// frames per cycle; the dark half is what resets, and the neutral frames let the pixels
+// settle. Lighten frames alone drag particles partway and leave them un-settled, which paints
+// the whole screen a mottled grey with the previous image showing through -- worse than what
+// it was meant to fix, and for the same reason DU ghosts. A one-directional push cannot reset
+// e-ink. The dark stage is not cosmetic.
 //
-// GL16 carries a reset stage. Its 30 phases are exactly WHITE_TO_GL16's 15 followed by
-// BLACK_TO_GL16's 15: drive every pixel in the region toward a known rail regardless of
-// target, then drive from that known state to the target. That reset is applied to
-// unchanged pixels too, which is what erases history rather than just the visible diff.
-// GL16 is the non-flashing variant, so it does this without a visible inversion.
-constexpr enum EpdDrawMode PAGE_MODE = MODE_DU;
+// Page turns use GL16, the periodic de-ghost uses GC16. Decoded for pure B/W content the two
+// differ in exactly one class of pixel:
+//
+//            W->W        W->B      B->W      B->W
+//   GC16   darken+lighten  darken   lighten    --
+//   GL16       --          darken   lighten    --
+//
+// GC16 drives the unchanged white background through a full darken-then-lighten cycle, which
+// is the visible flash. GL16 leaves it alone, so a page turn shows no flash while changed
+// pixels still get the full 15 phases each way.
+//
+// GL16 was tried early in this port and dismissed as "no change", but that test predates both
+// fixes it needed: the dirty masks were still on, so it painted bands rather than the whole
+// screen, and phase_times was still being flattened by the LCD path, so no transition
+// completed. Neither is true now.
+//
+// GC16 stays as the interval refresh because GL16 never drives W->W or B->B at all, so the
+// background gets no periodic reset and would drift on its own over many pages.
 constexpr enum EpdDrawMode FULL_MODE = MODE_GC16;
+constexpr enum EpdDrawMode PAGE_MODE = MODE_GL16;
 
 uint8_t* panelBuffer = nullptr;  // 1bpp surface GfxRenderer draws into
 size_t panelBufferBytes = 0;
@@ -155,8 +182,8 @@ constexpr ExpandTable makeExpandTable() {
     for (int px = 0; px < 8; px++) {
       const bool white = (b >> (7 - px)) & 1;
       if (!white) continue;
-      const int byteIdx = px / 2;                  // which of the four output bytes
-      const int shift = (px % 2) ? 4 : 0;          // odd x -> high nibble
+      const int byteIdx = px / 2;          // which of the four output bytes
+      const int shift = (px % 2) ? 4 : 0;  // odd x -> high nibble
       out |= static_cast<uint32_t>(0xF) << (byteIdx * 8 + shift);
     }
     t.v[b] = out;
@@ -179,6 +206,11 @@ bool begin() {
   // per pixel holding the packed from/to pair). Against ~7.4 MB free.
   hlState = epd_hl_init(EPD_BUILTIN_WAVEFORM);
 
+  // Swap in the resampled waveform. Same phase count, so the same ~0.73 s, but the frames
+  // are redistributed to match the timeline ED097TC2 was authored against -- see
+  // scripts/gen_hz52_waveform.py. Data only: the draw path is unchanged.
+  epd_hl_waveform(&hlState, &hz52_waveform);
+
   // Our own 1bpp surface stays: GfxRenderer is 1bpp throughout, so it draws here and push()
   // expands into epdiy's 4bpp framebuffer.
   panelBufferBytes = static_cast<size_t>(epd_width() / 8) * epd_height();
@@ -190,10 +222,36 @@ bool begin() {
   memset(panelBuffer, 0xFF, panelBufferBytes);  // 0xFF = white, same polarity as EInkDisplay
 
   initialised = true;
-  LOG_INF("EPD", "Panel ready: %dx%d, 1bpp surface %u B + 4bpp hl state, VCOM -%d.%02d V, psramFree=%u",
-          epd_width(), epd_height(), static_cast<unsigned>(panelBufferBytes), VCOM_MV / 1000, (VCOM_MV % 1000) / 10,
+  LOG_INF("EPD", "Panel ready: %dx%d, 1bpp surface %u B + 4bpp hl state, VCOM -%d.%02d V, psramFree=%u", epd_width(),
+          epd_height(), static_cast<unsigned>(panelBufferBytes), VCOM_MV / 1000, (VCOM_MV % 1000) / 10,
           static_cast<unsigned>(ESP.getFreePsram()));
   return true;
+}
+
+size_t hlFrameBufferBytes() { return static_cast<size_t>(epd_width()) / 2 * epd_height(); }
+
+// epd_hl_update_screen, minus the dirty masks.
+//
+// epd_hl_update_area hands dirty_lines *and* dirty_columns to epd_draw_base, so what actually
+// gets driven is the intersection of changed rows and changed columns -- on a page of text,
+// literally a grid. Each driven band settles at a slightly different reflectance from its
+// undriven neighbour, and the seams between them are the light grid outlines that survive
+// every waveform change: they are not residue, they are partial-update boundaries.
+//
+// Passing NULL for both masks drives every line and column instead. Unchanged pixels take the
+// (from == to) LUT entry, which under GC16 is a full darken-then-lighten cycle, so the whole
+// screen flashes and lands uniform with no boundaries anywhere. It is not slower: frame time
+// is fixed by the line clock, not by how many pixels are dirty, which is why a 30-phase paint
+// costs ~0.73 s whether it touches one glyph or the entire panel.
+enum EpdDrawError drawFullScreen(enum EpdDrawMode mode, int temperature) {
+  epd_difference_image(hlState.front_fb, hlState.back_fb, hlState.difference_fb, hlState.dirty_lines,
+                       hlState.dirty_columns);
+  const enum EpdDrawError err = epd_draw_base(epd_full_screen(), hlState.difference_fb, epd_full_screen(),
+                                              static_cast<enum EpdDrawMode>(MODE_PACKING_1PPB_DIFFERENCE | mode),
+                                              temperature, nullptr, nullptr, hlState.waveform);
+  // epd_hl's own back-buffer sync is skipped along with it, so do it here.
+  memcpy(hlState.back_fb, hlState.front_fb, hlFrameBufferBytes());
+  return err;
 }
 
 uint8_t* frameBuffer() { return panelBuffer; }
@@ -204,13 +262,22 @@ int panelHeight() { return epd_height(); }
 void clear() {
   if (!initialised) return;
   // Mandatory on first boot after other firmware: epdiy has no idea what is physically on
-  // the glass. epd_hl_set_all_white() only updates epdiy's *belief*, so the physical clear
-  // has to happen too or the first differential update keeps the old image.
+  // the glass, so the physical wipe has to happen too.
+  //
+  // Ordering matters. epd_hl_set_all_white() fills the *front* buffer -- the one we draw
+  // into -- not back_fb, which is epdiy's record of what is on the glass. Painting that
+  // white frame is what syncs the record, so it has to happen before the wipe; doing it
+  // after leaves epdiy diffing the next frame against the pre-clear image and skipping
+  // every pixel the two have in common. This is epd_fullclear()'s ordering.
+  //
+  // At boot both buffers are already 0xFF, so the paint finds an empty diff and costs
+  // nothing; it only does work when clearing mid-session.
   const uint32_t start = millis();
   epd_poweron();
+  epd_hl_set_all_white(&hlState);
+  epd_hl_update_screen(&hlState, FULL_MODE, panelTemperature());
   epd_clear();
   epd_poweroff();
-  epd_hl_set_all_white(&hlState);
   panelIsWhite = true;
   LOG_INF("EPD", "Full clear in %lums", static_cast<unsigned long>(millis() - start));
 }
@@ -252,15 +319,6 @@ void logPmicState() {
 bool push(bool deghost) {
   if (!initialised) return false;
 
-  // Expand the 1bpp surface into epdiy's 4bpp framebuffer. epdiy diffs this against its own
-  // back buffer and drives only what changed, so the two-pass differential this driver used
-  // to run by hand -- and the prev/passBlack/passWhite buffers it needed -- are gone.
-  uint8_t* fb = epd_hl_get_framebuffer(&hlState);
-  auto* out = reinterpret_cast<uint32_t*>(fb);
-  for (size_t i = 0; i < panelBufferBytes; i++) {
-    out[i] = EXPAND.v[panelBuffer[i]];
-  }
-
   epd_poweron();
   static bool pmicLogged = false;
   if (!pmicLogged) {
@@ -268,7 +326,27 @@ bool push(bool deghost) {
     logPmicState();
   }
   const uint32_t start = millis();
-  const enum EpdDrawError err = epd_hl_update_screen(&hlState, deghost ? FULL_MODE : PAGE_MODE, panelTemperature());
+  const int temperature = panelTemperature();
+
+  // A de-ghost used to need a black pre-flash here: epd_hl only drove the diff, so the only
+  // way to give every pixel a transition was to make every pixel change. drawFullScreen()
+  // drives the whole panel directly, and GC16 already takes W->W through a full
+  // darken-then-lighten cycle, so the pre-flash is redundant -- it just cost a second 30-phase
+  // pass.
+  //
+  // Painting the whole screen absolutely instead (epd_draw_base with MODE_PACKING_2PPB |
+  // PREVIOUSLY_WHITE, the only way to reach MODE_EPDIY_WHITE_TO_GL16's 15 phases) was tried
+  // and hangs the device hard on the LCD render method -- unrecoverable over USB-JTAG,
+  // needing a physical reset. Do not reach for it again without a recovery path.
+
+  // Expand the 1bpp surface into epdiy's 4bpp framebuffer.
+  uint8_t* fb = epd_hl_get_framebuffer(&hlState);
+  auto* out = reinterpret_cast<uint32_t*>(fb);
+  for (size_t i = 0; i < panelBufferBytes; i++) {
+    out[i] = EXPAND.v[panelBuffer[i]];
+  }
+
+  const enum EpdDrawError err = drawFullScreen(deghost ? FULL_MODE : PAGE_MODE, temperature);
   const uint32_t elapsed = millis() - start;
   epd_poweroff();
 
@@ -277,8 +355,8 @@ bool push(bool deghost) {
     LOG_ERR("EPD", "Draw failed: err=0x%x", static_cast<int>(err));
     return false;
   }
-  LOG_INF("EPD", "Drew in %lums (%s, temp=%dC)", static_cast<unsigned long>(elapsed),
-          deghost ? "GC16" : (PAGE_MODE == MODE_DU ? "DU" : "GL16"), panelTemperature());
+  LOG_INF("EPD", "Drew in %lums (%s, temp=%dC)", static_cast<unsigned long>(elapsed), deghost ? "GC16" : "GL16",
+          panelTemperature());
   return true;
 }
 
@@ -304,8 +382,8 @@ void fillLogicalRect(int lx, int ly, int w, int h, bool black) {
   }
 }
 
-int logicalWidth() { return epd_height(); }   // 720
-int logicalHeight() { return epd_width(); }   // 1280
+int logicalWidth() { return epd_height(); }  // 720
+int logicalHeight() { return epd_width(); }  // 1280
 
 }  // namespace Hz52Display
 
