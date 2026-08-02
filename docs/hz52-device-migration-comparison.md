@@ -6,18 +6,19 @@ Date: 2026-07-27 (last worked 2026-08-02)
 
 ## RESUME HERE (2026-08-02)
 
-**Done:** milestones 1–5, plus the panel refresh work below. The device boots to the normal
-CrossPoint UI, renders through `HalDisplay`/`GfxRenderer`, navigates with its three buttons, and
-runs the TTF reader. **Nothing is pushed** — the submodule branch `hz52-sd-cs` (commit
-`3e50170`) must be pushed before the parent, or the parent references a commit nobody can fetch.
+**Done:** milestones 1–6. The device boots to the normal CrossPoint UI, renders through
+`HalDisplay`/`GfxRenderer`, navigates with its three buttons, and reads a tategaki Japanese EPUB
+end to end through the TTF reader. **Nothing is pushed** — the submodule branch `hz52-sd-cs`
+(commit `3e50170`) must be pushed before the parent, or the parent references a commit nobody can
+fetch.
 
-**Ghosting is resolved and page turns no longer flash.** It took four independent fixes; the full
-account is in [Ghosting investigation](#ghosting-investigation) under Milestones. Current
-behaviour, measured on device:
+**Ghosting is resolved and page turns no longer flash.** It took four independent fixes plus a
+waveform merge; the full account is in [Panel refresh](#panel-refresh) under milestone 4. Measured
+on device:
 
 | | mode | cost |
 | --- | --- | --- |
-| page turn | GL16, whole panel | ~0.74 s |
+| page turn | GL16, merged halves, whole panel | ~0.40 s |
 | interval refresh (`refreshFrequency`, default 15) | GC16, whole panel | ~0.74 s |
 | boot / full clear | `epd_clear()` | ~1.62 s |
 
@@ -27,15 +28,17 @@ which is exactly what the GC16 interval pass is for, and why the setting still e
 
 **Next, in rough order:**
 
-1. **Sweep the waveform frame count.** Frame count is the only thing that costs time on this
-   hardware (~24.4 ms each), and `scripts/gen_hz52_waveform.py --frames N` regenerates the table.
-   30 frames is today's 0.74 s; 20 → ~0.49 s, 16 → ~0.39 s, 12 → ~0.29 s. Sweep down until
-   transitions visibly stop completing.
+1. **Sweep the waveform frame count**, if 0.40 s ever stops feeling fast enough. Frame count is
+   the only thing that costs time on this hardware (~24.4 ms each), and
+   `scripts/gen_hz52_waveform.py --gl-frames N` regenerates the table: 15 is today's 0.40 s,
+   12 → ~0.32 s, 10 → ~0.27 s. Unlike the merge this is genuine downsampling, so it does trade
+   quality — sweep down until transitions visibly stop completing.
 2. **Page preparation, not the panel.** `prewarm` (TTF glyph rasterization) adds 157–1043 ms on
-   top of the panel time, so a page turn totals ~1.3–2.0 s. The panel drive blocks its task for
-   ~0.74 s doing no CPU work, so rasterizing the *next* page in that window would take prewarm
-   toward zero for sequential reading. The glyph sidecar is also only at 30–36% of its cache
-   limit.
+   top of the panel time, so a page turn totals ~0.6–1.4 s. It cannot be overlapped *with* the
+   refresh — epdiy pins a max-priority feed task to both cores for the duration (see
+   [Core affinity during refresh](#core-affinity-during-refresh)) — but it can be moved into the
+   idle time between page turns, which is far more plentiful. The glyph sidecar is also only at
+   30–36% of its cache limit, so raising that cuts misses outright.
 3. **Resolve the PMIC power-good decode** — see the investigation section. Cheap, never done, and
    it either retires a suspect or reopens one.
 
@@ -262,17 +265,11 @@ Board forcing is important for safety on this board specifically: the X3 fingerp
 
 **Guard refactor.** The TTF reader symbols (`TTF_READER_METRICS`, `TtfFontCandidate`, the `buildTtf*Setting()` builders) were gated on `CROSSPOINT_BOARD_MURPHY_M4`, which made them unavailable to any other PSRAM board. Converted the *declaration* guards in `TtfReaderMetrics.{h,cpp}`, `TtfFontScanner.{h,cpp}`, `ReaderFontProvider.cpp` and `SettingsList.h` to `CROSSPOINT_TTF_READER_DIRECT_FREETYPE` — a feature both S3 environments already define. Semantically a no-op for Murphy. Activity-level UX guards (touch targets, layout, hints) were deliberately **left** on the board macro, since HZ5.2 must not inherit Murphy's touch behaviour.
 
-Result: `pio run -e hz52` succeeds — 5,395,030 bytes, 75.5% of the app partition, RAM 34%. `murphy_m4` still succeeds (5,504,214 bytes).
+Both `hz52` and `murphy_m4` build. A temporary bring-up guard kept `setup()` in diagnostics-only mode until the display and SD pins landed, because the build otherwise fell through to the X4 pin block and would have driven panel control lines as SPI — lifted in milestone 5.
+
+Rollback path if ever needed: flash `test/firmware-5inch-01-droid-sans-fallback.bin` at `0x0`, a merged bootloader + partition table + app image. It will not restore the vendor's NVS, though VCOM is recorded here.
 
 **Pre-existing, not caused by this work:** `pio run -e default` fails, and did before these changes. [SettingsList.h](../src/SettingsList.h) calls `buildTtfFontFamilySetting()`/`buildTtfFontSizeSetting()`/`buildTtfFontWeightSetting()` unconditionally while declaring them only under a guard no C3 environment defines. Consistent with [ttf-migration-plan.md](ttf-migration-plan.md) scoping X3/X4 out of this branch. Left alone rather than silently repaired.
-
-**Bring-up guard.** Flashing as built would have been destructive: the `hz52` build falls through to the X4 pin block in [HalGPIO.h](../lib/hal/HalGPIO.h), which maps `EPD_MOSI` to `GPIO10` (a TPS65185/panel control line), `EPD_CS` to `GPIO21` (a button to ground), `EPD_DC` to `GPIO4` (`LCD_PCLK`), and SCLK/RST/BUSY/MISO onto `LCD_DATA_OUT9/14/15/12`; `SDCardManager`'s `SD_CS = 12` is another control line on the same bus. Driving `GPIO10` risks powering the panel rails with no waveform scanning, leaving the panel under a static DC field. `setup()` now sets the existing `bootDiagnosticsOnly` flag for HZ5.2 immediately after `logBootDiagnostics()` and returns, before any storage or display init. **Lift this guard only once the epdiy display HAL and SPI SD pins land (milestones 3–4).**
-
-**Verified on hardware.** Flashed 5,371,072 bytes at `0x10000`, hash verified. Boot log confirms the board-profile banner, `Reset reason: USB(11)`, CPU 240 MHz, and a stable diagnostic heartbeat (heap flat at 221,396 across 20 s, no watchdog or panic). This also measured **PSRAM at 8 MB**.
-
-Rollback path if needed: flash `test/firmware-5inch-01-droid-sans-fallback.bin` at `0x0` — it is a merged bootloader + partition table + app image. Note it will not restore the vendor's NVS, though VCOM is recorded here.
-
-`clang-format` is not installed locally, so formatting is unverified against the CI format check.
 
 **3. Boot, diagnostics, storage — done (2026-07-27). Verified on hardware.**
 
@@ -358,10 +355,12 @@ re-initialised on wake** — a resumed mount will not survive the gate cycling. 
 unidentified, but are now known *not* to gate either SD or I²C, which narrows them to panel control
 (`PWRUP`, `VCOM_CTRL`, `OE`, `MODE`).
 
-**4. Display bring-up (epdiy, 1bpp) — done (2026-08-01). Renders through `HalDisplay`/`GfxRenderer`.**
+**4. Display bring-up (epdiy) — done (2026-08-02). Renders through `HalDisplay`/`GfxRenderer`.**
 
-The panel powers, clears, and draws. A 1bpp full-screen update completes in **221 ms** (**232 ms** including
-the bit-order conversion below).
+The panel powers, clears and draws, and page turns are clean and flash-free. `GfxRenderer` stays 1bpp;
+`Hz52Display::push()` expands that surface into epdiy's 4bpp framebuffer, which is what allows a real
+frame-indexed waveform to run (see [Panel refresh](#panel-refresh)). Page turns cost ~0.40 s, the
+interval refresh ~0.74 s.
 
 `HalDisplay` now routes every method to `Hz52Display` under `CROSSPOINT_BOARD_HZ52`, so `GfxRenderer` draws
 into the framebuffer `HalDisplay` hands it and activities need no board-specific code. Text and shapes render
@@ -408,18 +407,15 @@ time, not by transposing a buffer afterwards: a post-hoc transpose would cost ~9
 refresh, and `GfxRenderer` already applies orientation transforms at draw time on X3/X4, so this folds into
 the existing mechanism rather than adding one.
 
-**Memory: use the low-level API, not `epd_hl_*`.** `epd_hl_init()` allocates **1.84 MB** of PSRAM for its
-front/back diff pair. `epd_draw_base()` with `MODE_PACKING_8PPB` takes a **115,200-byte** 1bpp buffer — a 16×
-saving. This makes render model (a) the proven path. The packing shares CrossPoint's polarity but **not** its
-bit order — see "The 8PPB bit-order trap" below, which cost the most debugging time of anything in milestone 4.
+**Memory: `epd_hl_*` costs 1.84 MB of PSRAM** for its front/back/difference set, against 115,200 bytes for
+a 1bpp `epd_draw_base()` buffer. The low-level path was chosen first for that 16× saving and later abandoned
+anyway: 1bpp has nowhere to record a pixel's current state, so no real waveform can run. Against ~7.4 MB free
+the memory was never the binding constraint. See [Panel refresh](#panel-refresh).
 
-**Pixel clock is halved to 11 MHz** because Arduino's prebuilt libs use a 32-byte data cache line; epdiy
-reduces the clock rather than risk coherency faults. Stock is IDF-native and gets 22 MHz. Largely moot in
-practice: at 221 ms for a DU update there is little left to win, so rebuilding the Arduino libs with
-`CONFIG_ESP32S3_DATA_CACHE_LINE_64B` is not worth it for now.
-
-Timings measured: `epd_clear()` 2.9 s, `MODE_DU` 1bpp update **221 ms**, `MODE_GC16` (4bpp, high-level) 1.45 s.
-Ambient reads 31 °C from the PMIC.
+Both early conclusions in this section were later overturned — the 8PPB packing (wrong bit order, and moot
+once the driver went 4bpp) and the pixel clock ("largely moot in practice", which it was not: raising it
+halved every refresh). Timings here are pre-fix and superseded by the table in
+[RESUME HERE](#resume-here-2026-08-02). Ambient reads 31 °C from the PMIC.
 
 **Four epdiy API traps**, each of which cost a flash cycle and none obvious from the docs:
 
@@ -445,78 +441,45 @@ would otherwise be invalid, since that flag is a correctness requirement rather 
 
 ### The 8PPB bit-order trap
 
-The claim carried through most of milestone 4 — that 8PPB is byte-for-byte CrossPoint's format — is **wrong**,
-and it was wrong in the most expensive possible way: five of six properties match, so the buffer renders a
-recognisable image and looks correct on anything solid.
+Historical: the first driver used epdiy's `MODE_PACKING_8PPB` with a 1bpp buffer, on the claim that
+it is byte-for-byte CrossPoint's format. Five of six properties match — 1bpp, 8 pixels per byte,
+`0` = black, row-major, `width / 8` stride — but **bit order within a byte is reversed**
+(`EInkDisplay` puts the first pixel in the MSB, epdiy in the LSB).
 
-| Property | `EInkDisplay` (SSD1677) | epdiy `MODE_PACKING_8PPB` |
-| --- | --- | --- |
-| Bits per pixel | 1 | 1 |
-| Pixels per byte | 8 | 8 |
-| Polarity | `0` = black, `1` = white | same |
-| Row order / stride | row-major, `width / 8` | same |
-| **Bit order within a byte** | **MSB = first pixel** | **LSB = first pixel** |
+It hid because reversing a byte whose bits are all equal is a no-op, so filled rectangles and rules
+looked perfect; only glyph strokes, 1–2 px wide and therefore nearly all mixed bytes, were mirrored.
+The push path now expands 1bpp into 4bpp through a `constexpr` table, so the packing question is
+moot, but the shape of the mistake is worth remembering.
 
-Evidence, from `lut_8ppB_start_at_white` in `.pio/libdeps/hz52/epdiy/src/output_common/lut.c`: `lut[0x01]`
-(input LSB set) alters the *lowest* output slot and `lut[0x80]` (input MSB set) the *highest*, and the panel
-shifts that run out in the opposite sense to ours. `lut[0x00] = 0x5555` (all slots `01`, drive to black) and
-`lut[0xFF] = 0x0000` confirm the shared polarity.
+**Method note.** Three hypotheses reasoned from source were all wrong (font decompression, 2-bit
+misread, `drawLine` fast path). Two measurements settled it: dumping the glyph bitmap both ways
+proved the font data and decode correct, then hand-blitting a glyph through `drawPixel` put the
+fault *below* the renderer. No amount of reading `drawText` would have shown that. Prefer the
+measurement — a lesson this port then had to learn twice more, in [Panel refresh](#panel-refresh).
 
-**Why it hid.** Reversing a byte whose 8 bits are all equal is a no-op, so filled rectangles, rules and
-borders are unaffected apart from a ≤7 px nudge on their edge bytes. Every early test was solid shapes, so
-the wrong assumption looked confirmed. Glyph strokes are 1–2 px wide, so nearly every byte is a mixed pattern
-and nearly every one was mirrored.
+### Core affinity during refresh
 
-**Why it did not look like a packing bug.** Because the panel is transposed (`phyX` is *logical y*), the
-8-pixel byte group runs **vertically** on screen. Mirroring inside a byte flips 8 screen rows top-to-bottom,
-so horizontal glyph strokes were displaced up and down in 8-row bands — presenting as a layout or font fault,
-not a bit-order one. On a non-transposed panel the same bug would smear horizontally, which is far more
-recognisable.
+`render.c:310` creates one `epd_prep` feed task **per core** (`NUM_RENDER_THREADS = 2`, pinned via
+`xTaskCreatePinnedToCore(..., i)`) at `configMAX_PRIORITIES - 1`, the highest priority in the
+system. A refresh therefore occupies **both** cores at maximum priority. The tasks block on their
+line queues when idle, so this costs nothing between refreshes — but during one, nothing else runs
+meaningfully.
 
-**Fix:** convert at the epdiy boundary in `Hz52Display::push()` via a 256-entry `constexpr` reverse table
-(flash-resident, no DRAM cost) into a second PSRAM scratch buffer. ~11 ms per full push against a 220 ms draw.
-Deliberately *not* in `GfxRenderer::drawPixel` — that is the hottest path in the renderer and shared by every
-board, and bit order is a property of this panel's interface, not of CrossPoint's framebuffer. One convention
-holds everywhere upstream; only the push adapts.
+Consequences to design around:
 
-**Method note.** Three hypotheses reasoned from source were all wrong (font decompression, 2-bit misread,
-`drawLine` fast path). Two measurements settled it: dumping the glyph bitmap both ways proved the font data
-and decode correct, then hand-blitting a glyph through `drawPixel` put the fault *below* the renderer, which
-no amount of reading `drawText` would have shown. Prefer the measurement.
+- **The overlap trick is unavailable.** On the SSD1677 boards you can start a refresh and prepare
+  the next page while the controller works. Here there is no core to do it on. Any page-preparation
+  optimisation has to run in the *idle* time between refreshes, not during them — which is fine,
+  since a reader spends far longer idle than refreshing, but it is a different mechanism.
+- **Watchdog headroom.** The idle task is starved on both cores for the duration. Worst case is
+  `epd_clear()` at 1.6 s against a 5 s default.
 
-**Core affinity resolved — and there is no choice to make.** `render.c:316` creates an `epd_prep` feed task
-**pinned to every core** (`xTaskCreatePinnedToCore(..., i)`) at `configMAX_PRIORITIES - 1`, the highest priority
-in the system, marked `IRAM_ATTR`. A refresh therefore occupies **both** cores at max priority; there is no
-"give epdiy one core and keep the other" option. Consequences to design around:
+`HalDisplay` routes every method to `Hz52Display` under `CROSSPOINT_BOARD_HZ52`. Its
+SSD1677-shaped greyscale surface (`copyGrayscale*`, `writeGrayscalePlaneStrip`) is stubbed inert
+here — that scheme has no analogue on this panel, so 16-level greyscale (milestone 9) is a rewrite
+of that path rather than a wiring-up.
 
-- Nothing else runs meaningfully during a refresh — not Wi-Fi, not SD, not page pre-render. The overlap trick
-  the SSD1677 boards get for free (start refresh, prepare the next page while the controller works) is
-  unavailable here.
-- The idle task is starved on both cores for the duration, so the task watchdog is a real consideration. Our
-  measured worst case is `epd_clear()` at 2.9 s against a 5 s default — closer than is comfortable, and worth
-  an explicit feed or a shorter clear.
-
-Remaining for this milestone: fold `Hz52Display` behind the board profile into `HalDisplay` so activities
-render through the normal path. Deliberately **not** attempted as part of the tidy-up: `HalDisplay` hardcodes
-`EInkDisplay`'s geometry (`DISPLAY_WIDTH = 800`, `MAX_BUFFER_SIZE = 52272` static arrays) and exposes an
-SSD1677-shaped grayscale surface (`copyGrayscale*`, `writeGrayscalePlaneStrip`) that has no analogue here.
-Rewiring that touches every board and belongs with the render-path work, not with a cleanup commit.
-
-**5. Physical button input — next.** Pins are known (`38`, `0`, `21`); build the 3-button + long-press event model behind a capability check. Document `GPIO0`'s boot-strap role.
-
-Two blockers must clear together before the bring-up guard in `setup()` can be lifted and the activity stack
-allowed to run — both abort or strand the boot rather than degrade:
-
-1. **`HalEnvSensor::begin()` calls `Wire.begin(ENV_SDA, ENV_SCL)` unconditionally** ([HalEnvSensor.cpp:28](../lib/hal/HalEnvSensor.cpp#L28)). epdiy owns SDA=39/SCL=40 through IDF for VCOM and panel temperature; claiming it with Arduino `Wire` makes `epd_board_init()` fail its i2c assert and abort. Needs gating on `hasEnvironmentalSensor`. `HalClock` is already safe — it gates on `deviceIsX3()`/`deviceIsMurphyM4()`.
-2. **Input is not wired.** `HalGPIO::begin()` bypasses `InputManager` on this board (it assumes `POWER_BUTTON_PIN=3` and an ADC ladder on GPIO1/2), so the three buttons reach no activity; the UI would render but not navigate.
-
-**6. Japanese EPUB smoke test — not started.** Expect FD-pool issues as on M4 (`max_files` had to go to 12).
-
-**7. UI density pass — not started.** [Area 3](#area-3-ui-density-at-283-ppi). Board `ppi` capability, UI font sizing, sweep of hardcoded layout constants.
-
-**8. Three-button UX conversion — not started.** Jump menus replacing `Left`/`Right`, hint layout, `ButtonRemapActivity` hidden, keyboard-entry strategy decided.
-
-### Ghosting investigation
+### Panel refresh
 
 **(2026-08-02) — resolved.**
 
@@ -571,6 +534,25 @@ GC16 takes the unchanged white background through a full darken-then-lighten cyc
 visible flash. GL16 leaves it alone, so page turns use GL16 and show no flash, while changed pixels
 still get the full 15 phases each way. GC16 remains the interval refresh precisely because GL16
 never drives `W→W` or `B→B`, so the background would otherwise never be reset at all.
+
+**5. Half of GL16's frames were idle.** GL16's 30 phases are two 15-phase halves: the first drives
+`W→B`, the second `B→W`. So each pixel does nothing for half of them — a `W→B` pixel is idle during
+15–29, a `B→W` pixel during 0–14. For greyscale that sequencing is required, but binary content only
+reaches transitions that live in one half, and the panel drives every pixel independently. The
+generator superimposes the halves instead of concatenating them: identical per-pixel drive in 15
+frames. **Page turns 0.74 s → 0.40 s.**
+
+This is correct *only* while the content is binary, which is load-bearing rather than incidental.
+Over all 256 `(from, to)` transitions, real GL16 drives **224 in both halves** — a mid-grey to
+mid-grey pixel genuinely needs drive-to-rail then drive-to-target, in sequence. Only the 30 starting
+from a rail are single-half, and those are exactly what binary content reaches. The merged table
+covers only those 30, so a greyscale pixel would get *no drive at all* rather than a degraded one.
+`--no-merge` emits the real 30-phase GL16 for when milestone 9 lands, and the generator refuses to
+merge if it ever finds the halves contesting a transition.
+
+An earlier note here claimed the merge would be valid for greyscale too, on the grounds that the
+two tables never contest an entry. That was a misreading: they never contest because they *barely
+overlap*, leaving 226 transitions untouched by both — sparse coverage, not disjoint coverage.
 
 DU is not usable at any point: 5 flat phases, a one-directional push with no reset stage. Nothing
 shorter exists either. epdiy's mode enum lists `GC16_FAST`(3), `A2`(4), `GL16_FAST`(6) and `DU4`(7),
@@ -705,7 +687,24 @@ the prebuilt libs, and returning to `hz52` rebuilds from source. Both directions
 builds against pristine Feb-dated libs with a 32-byte line, hz52 round-trips back to 64. Alternating
 between the two envs costs one framework rebuild each way.
 
-**9. 16-level greyscale — not started.** Native 4bpp reader rendering (model (b)). Validate the ED047-waveform mode does not ghost or stress the panel over long runs.
+**5. Physical button input — done (2026-08-01).** Three buttons (`38` confirm/back-on-hold, `0` up, `21` down) drive the normal activity stack. `GPIO21` is the wake source; `GPIO0` is also the boot strap, so it is read but never held at reset.
+
+Two blockers had to clear together before the bring-up guard in `setup()` could be lifted, since both abort or strand the boot rather than degrade:
+
+1. **`HalEnvSensor::begin()` calls `Wire.begin(ENV_SDA, ENV_SCL)` unconditionally** ([HalEnvSensor.cpp:28](../lib/hal/HalEnvSensor.cpp#L28)). epdiy owns SDA=39/SCL=40 through IDF for VCOM and panel temperature; claiming it with Arduino `Wire` makes `epd_board_init()` fail its i2c assert and abort. Needs gating on `hasEnvironmentalSensor`. `HalClock` is already safe — it gates on `deviceIsX3()`/`deviceIsMurphyM4()`.
+2. **Input is not wired.** `HalGPIO::begin()` bypasses `InputManager` on this board (it assumes `POWER_BUTTON_PIN=3` and an ADC ladder on GPIO1/2), so the three buttons reach no activity; the UI would render but not navigate.
+
+**6. Japanese EPUB smoke test — passing (2026-08-02), not stress-tested.** A tategaki EPUB renders end to end through the TTF reader: section cache deserialises, ruby and vertical layout look right, progress saves and resumes. The FD-pool trouble seen on M4 (`max_files` raised to 12) has not appeared, but nothing has deliberately probed for it.
+
+**7. UI density pass — not started.** [Area 3](#area-3-ui-density-at-283-ppi). Board `ppi` capability, UI font sizing, sweep of hardcoded layout constants.
+
+**8. Three-button UX conversion — not started.** Jump menus replacing `Left`/`Right`, hint layout, `ButtonRemapActivity` hidden, keyboard-entry strategy decided.
+
+**9. 16-level greyscale — not started.** Native 4bpp reader rendering. Two prerequisites, both
+recorded where they bite: `HalDisplay`'s greyscale surface is SSD1677-shaped and inert here, and the
+GL16 waveform is currently **merged for binary content only** — regenerate with
+`scripts/gen_hz52_waveform.py --no-merge` before raising `displayGrayscaleBits`, or every
+mid-grey pixel gets no drive at all. Page turns would go ~0.40 s → ~0.74 s.
 
 **10. Fully functional Japanese EPUB — not started.** Horizontal and vertical, ruby/furigana through parse/cache/layout/render, dictionary cursor geometry, SD fonts, bookmarks, TOC, footnotes, percent/chapter nav, orientation, progress save/resume.
 
